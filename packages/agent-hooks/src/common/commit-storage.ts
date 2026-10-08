@@ -1,13 +1,11 @@
 /** Private atomic receipt storage and serialized ownership recovery. */
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync,
   existsSync,
   linkSync,
   lstatSync,
   mkdirSync,
   opendirSync,
-  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -203,19 +201,3 @@ export async function reserveReceiptCapacity(
 }
 
 /** Fail-closed file creation also checks the current user's ownership on existing state. */
-export function privateEmptyFile(path: string): void {
-  const descriptor = openSync(path, 'wx', 0o600);
-  closeSync(descriptor);
-}
-
-export function appendReceiptDiagnostic(directory: string, message: string): void {
-  const path = join(directory, 'diagnostics.json');
-  try {
-    const prior = existsSync(path) ? readJson(path, 16384) : [];
-    if (!Array.isArray(prior) || prior.length >= 16) return;
-    const bounded = message.slice(0, 512);
-    if (!prior.includes(bounded)) atomicJson(path, [...prior, bounded]);
-  } catch {
-    /* Evidence diagnostics cannot alter the user's Git outcome. */
-  }
-}

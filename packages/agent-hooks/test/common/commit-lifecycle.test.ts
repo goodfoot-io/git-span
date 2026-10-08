@@ -13,10 +13,10 @@ const active: CommitInvocationState = {
   enrollment,
   status: 'active',
   pendingNonces: [],
-  liveLease: true,
+  observing: true,
   lastActivityMs: 0
 };
-const completed: CommitInvocationState = { ...active, status: 'completed', pendingNonces: [nonce], liveLease: false };
+const completed: CommitInvocationState = { ...active, status: 'completed', pendingNonces: [nonce], observing: false };
 const owner = { token: 'owner-1234567890abcdef', pid: 1000 };
 const emptyUsage = { invocations: 0, totalBytes: 0, invocationReceipts: 0, invocationBytes: 0 };
 
@@ -24,7 +24,7 @@ describe('independent invocation lifecycle', () => {
   it('publishes a receipt without completing active yielded execution', () => {
     expect(transitionCommitInvocation(active, { kind: 'receipt', receipt, nowMs: 1 })).toMatchObject({
       ok: true,
-      value: { status: 'active', pendingNonces: [nonce], liveLease: true }
+      value: { status: 'active', pendingNonces: [nonce], observing: true }
     });
   });
   it('deduplicates identical receipt nonce publication', () => {
@@ -44,7 +44,7 @@ describe('independent invocation lifecycle', () => {
         { ...active, pendingNonces: [nonce] },
         { kind: 'terminal', identity: enrollment, nowMs: 1 }
       )
-    ).toMatchObject({ ok: true, value: { status: 'completed', pendingNonces: [nonce], liveLease: false } });
+    ).toMatchObject({ ok: true, value: { status: 'completed', pendingNonces: [nonce], observing: false } });
   });
   it('rejects another session terminal delivery', () => {
     expect(

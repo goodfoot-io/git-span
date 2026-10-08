@@ -459,21 +459,18 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
         info: () => undefined
       };
       const planned = await fixture.plan(input as never, { logger: testLogger } as never);
-      const updatedInput = (planned?.stdout as { hookSpecificOutput?: { updatedInput?: { command?: string } } })
-        ?.hookSpecificOutput?.updatedInput;
-      expect(typeof updatedInput?.command, fixture.sessionId).toBe('string');
-      if (typeof updatedInput?.command !== 'string') throw new Error('expected actual pre-hook command replacement');
+      expect(planned == null, fixture.sessionId).toBe(true);
       expect(
         existsSync(join(layout.base, fixture.sessionId, 'planned-touches', `${fixture.toolUseId}.json`)),
         fixture.sessionId
       ).toBe(true);
-      const execution = spawnSync('/bin/bash', ['-c', updatedInput.command], { cwd: repoA.root, encoding: 'utf8' });
+      const execution = spawnSync('/bin/bash', ['-c', command], { cwd: repoA.root, encoding: 'utf8' });
       expect(execution, fixture.sessionId).toMatchObject({ status: 1, stdout: '', stderr: '' });
       recorded.calls.length = 0;
       await fixture.post(
         {
           ...input,
-          tool_input: updatedInput,
+          tool_input: input.tool_input,
           tool_response: { output: execution.stdout, exitStatus: execution.status }
         } as never,
         { logger: testLogger } as never

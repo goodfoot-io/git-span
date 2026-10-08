@@ -15,7 +15,7 @@ export interface CommitInvocationState {
   readonly enrollment: CommitEnrollment;
   readonly status: CommitInvocationStatus;
   readonly pendingNonces: readonly string[];
-  readonly liveLease: boolean;
+  readonly observing: boolean;
   readonly lastActivityMs: number;
 }
 
@@ -59,7 +59,7 @@ export function transitionCommitInvocation(
         value: {
           ...state,
           status: state.pendingNonces.length === 0 ? 'acknowledged' : 'completed',
-          liveLease: false,
+          observing: false,
           lastActivityMs: event.nowMs
         }
       };
@@ -80,10 +80,10 @@ export function transitionCommitInvocation(
     }
     case 'cleanup':
       if (event.host !== state.enrollment.host) return reject('cleanup host mismatch');
-      if (state.liveLease || state.status !== 'acknowledged') return keep();
+      if (state.observing || state.status !== 'acknowledged') return keep();
       return { ok: true, value: { ...state, status: 'retired', lastActivityMs: event.nowMs } };
     case 'expire':
-      if (state.liveLease || event.nowMs - state.lastActivityMs < COMMIT_RECEIPT_LIMITS.abandonedRetentionMs)
+      if (state.observing || event.nowMs - state.lastActivityMs < COMMIT_RECEIPT_LIMITS.abandonedRetentionMs)
         return keep();
       return { ok: true, value: { ...state, status: 'retired', pendingNonces: [], lastActivityMs: event.nowMs } };
   }

@@ -456,14 +456,14 @@ function postToolUseHook(config, handler) {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve5, reject2) => {
+  return new Promise((resolve6, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve5(chunks.join(""));
+      resolve6(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -525,8 +525,8 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve5, reject2) => {
-    stream.write(content, (error) => error ? reject2(error) : resolve5());
+  return new Promise((resolve6, reject2) => {
+    stream.write(content, (error) => error ? reject2(error) : resolve6());
   });
 }
 async function writeUnexpectedErrorStderr(error) {
@@ -7405,8 +7405,8 @@ async function runTouchHooks(inputs, executors, memo, invocationId, probeCache, 
   const prepared = [];
   for (const [index, input] of inputs.entries()) {
     if (input.kind === "write" && input.targetState !== void 0) {
-      const probe = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
-      const outcome = evaluateWriteGate(input, probe);
+      const probe2 = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
+      const outcome = evaluateWriteGate(input, probe2);
       if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") continue;
     }
     const repoRoot = resolveRepoRoot(dirname5(input.filePath));
@@ -9200,9 +9200,9 @@ async function runApplyPatchTouches(patchText, cwd, sessionId, planned, executor
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { chmodSync as chmodSync2, existsSync as existsSync7, lstatSync as lstatSync3, readFileSync as readFileSync10, realpathSync as realpathSync3, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "node:fs";
+import { existsSync as existsSync7, lstatSync as lstatSync3, realpathSync as realpathSync3, rmSync as rmSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { isAbsolute as isAbsolute8, join as join9 } from "node:path";
+import { join as join9 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-association.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -9387,9 +9387,6 @@ function serializeCommitNoteDocument(document) {
   });
 }
 
-// packages/agent-hooks/src/common/commit-git.ts
-import { isAbsolute as isAbsolute5, resolve as resolve3 } from "node:path";
-
 // packages/agent-hooks/src/common/commit-lifecycle.ts
 var COMMIT_INVOCATION_STATUSES = ["active", "completed", "acknowledged", "retired"];
 function decideCommitClaim(owner, liveness, remainingMs) {
@@ -9410,6 +9407,7 @@ function commitCliBudgetMs(phaseStartedMs, nowMs) {
 
 // packages/agent-hooks/src/common/commit-native-io.ts
 import { spawn, spawnSync } from "node:child_process";
+import { createHash as createHash4 } from "node:crypto";
 import {
   accessSync,
   closeSync as closeSync2,
@@ -9421,8 +9419,74 @@ import {
   readSync,
   realpathSync as realpathSync2
 } from "node:fs";
-import { delimiter, isAbsolute as isAbsolute6, join as join7, resolve as resolve4 } from "node:path";
+import { delimiter, isAbsolute as isAbsolute5, join as join7, resolve as resolve3 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+function probe(executable, argv, cwd) {
+  const result = spawnSync(executable, [...argv], {
+    cwd,
+    encoding: "utf8",
+    timeout: 1e3,
+    maxBuffer: 65536,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (result.error || result.status !== 0) throw new Error("Git repository probe failed");
+  return result.stdout.trimEnd();
+}
+function prefixDigest(descriptor, length) {
+  const bytes = Buffer.alloc(Math.min(length, 4096));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(descriptor, bytes, offset, bytes.length - offset, length - bytes.length + offset);
+    if (count === 0) throw new Error("reflog prefix truncated");
+    offset += count;
+  }
+  return createHash4("sha256").update(bytes).digest("hex");
+}
+function readCommitReflogAppend(path, checkpoint, maxBytes) {
+  if (!existsSync5(path)) return null;
+  const descriptor = openSync2(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error("HEAD reflog is not a file");
+    if (checkpoint.existed && prefixDigest(descriptor, checkpoint.offset) !== checkpoint.prefixDigest)
+      throw new Error("observed reflog prefix changed");
+    const length = stat.size - checkpoint.offset;
+    const exceededBudget = length > maxBytes;
+    const bytes = Buffer.alloc(Math.max(0, Math.min(length, maxBytes)));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, checkpoint.offset + offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return {
+      device: String(stat.dev),
+      inode: String(stat.ino),
+      fileSize: stat.size,
+      bytes: bytes.subarray(0, offset),
+      exceededBudget
+    };
+  } finally {
+    closeSync2(descriptor);
+  }
+}
+function verifyCommitObject(executable, repository, sha) {
+  try {
+    const format = probe(
+      executable,
+      ["--git-dir", repository.gitDirectory, "rev-parse", "--show-object-format"],
+      repository.commonDirectory
+    );
+    const type = probe(
+      executable,
+      ["--git-dir", repository.gitDirectory, "cat-file", "-t", sha],
+      repository.commonDirectory
+    );
+    return format === repository.objectFormat && type === "commit" ? { ok: true, value: sha } : { ok: false, reason: "witness is not a commit object in the actual object format" };
+  } catch {
+    return { ok: false, reason: "commit object verification failed" };
+  }
+}
 async function executeCommitNotes(executable, command) {
   return new Promise((resolveResult) => {
     let stdout = "";
@@ -9482,16 +9546,89 @@ async function executeCommitNotes(executable, command) {
   });
 }
 
+// packages/agent-hooks/src/common/commit-observation.ts
+import { createHash as createHash5 } from "node:crypto";
+import { resolve as resolve5 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-git.ts
+import { isAbsolute as isAbsolute6, resolve as resolve4 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-observation.ts
+function readCommitObservations(value, enrollment) {
+  if (!Array.isArray(value) || value.length > 32) throw new Error("invalid commit observations");
+  return value.map((item) => {
+    if (!isRecord(item) || !isRecord(item.checkpoint)) throw new Error("invalid commit observation");
+    const receipt = validateCommitReceipt(
+      {
+        schemaVersion: 1,
+        invocationKey: enrollment.invocationKey,
+        nonce: "observation",
+        sha: "a".repeat(isRecord(item.repository) && item.repository.objectFormat === "sha256" ? 64 : 40),
+        repository: item.repository
+      },
+      enrollment
+    );
+    const point = item.checkpoint;
+    if (!receipt.ok || !Number.isSafeInteger(point.offset) || point.offset < 0)
+      throw new Error("invalid commit observation checkpoint");
+    let checkpoint;
+    if (point.existed === false && point.offset === 0) checkpoint = { existed: false, offset: 0 };
+    else if (point.existed === true && typeof point.device === "string" && typeof point.inode === "string" && typeof point.prefixDigest === "string" && /^[a-f0-9]{64}$/.test(point.prefixDigest))
+      checkpoint = {
+        existed: true,
+        device: point.device,
+        inode: point.inode,
+        offset: point.offset,
+        prefixDigest: point.prefixDigest
+      };
+    else throw new Error("invalid commit observation identity");
+    return { repository: receipt.value.repository, checkpoint };
+  });
+}
+function observedCommitReceipts(observation, enrollment) {
+  const { repository, checkpoint } = observation;
+  const append = readCommitReflogAppend(repository.headReflog, checkpoint, COMMIT_RECEIPT_LIMITS.reflogBytes);
+  if (append === null) {
+    if (checkpoint.existed) throw new Error("observed reflog disappeared");
+    return [];
+  }
+  if (checkpoint.existed && (checkpoint.device !== append.device || checkpoint.inode !== append.inode))
+    throw new Error("observed reflog replaced");
+  if (append.exceededBudget) throw new Error("reflog evidence exceeds budget");
+  if (append.fileSize < checkpoint.offset || append.fileSize - checkpoint.offset !== append.bytes.byteLength)
+    throw new Error("observed reflog truncated or incomplete read");
+  const text2 = new TextDecoder("utf-8", { fatal: true }).decode(append.bytes);
+  if (text2 === "") return [];
+  if (!text2.endsWith("\n")) throw new Error("incomplete observed reflog");
+  const length = repository.objectFormat === "sha1" ? 40 : 64;
+  const record2 = new RegExp(`^([0-9a-f]{${length}}) ([0-9a-f]{${length}}) .+ <[^>]*> [0-9]+ [+-][0-9]{4}\\t(.+)$`);
+  const commits = /* @__PURE__ */ new Set();
+  for (const line of text2.slice(0, -1).split("\n")) {
+    const match = record2.exec(line);
+    if (!match) throw new Error("malformed observed reflog");
+    const sha = match[2];
+    const action = match[3];
+    if (sha && action && !/^(?:checkout|reset|fetch|branch): /.test(action) && !/^0+$/.test(sha)) commits.add(sha);
+  }
+  if (commits.size > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation)
+    throw new Error("observed commit count exceeds budget");
+  return [...commits].map((sha) => ({
+    schemaVersion: 1,
+    invocationKey: enrollment.invocationKey,
+    nonce: `observed-${createHash5("sha256").update(repository.gitDirectory).digest("hex")}-${sha}`,
+    sha,
+    repository
+  }));
+}
+
 // packages/agent-hooks/src/common/commit-storage.ts
-import { createHash as createHash4, randomBytes } from "node:crypto";
+import { createHash as createHash6, randomBytes } from "node:crypto";
 import {
-  closeSync as closeSync3,
   existsSync as existsSync6,
   linkSync,
   lstatSync as lstatSync2,
   mkdirSync as mkdirSync5,
   opendirSync,
-  openSync as openSync3,
   readFileSync as readFileSync9,
   renameSync as renameSync4,
   rmSync as rmSync3,
@@ -9501,7 +9638,7 @@ import {
 import { dirname as dirname7, isAbsolute as isAbsolute7, join as join8 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 function identityKey(identity) {
-  return createHash4("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
+  return createHash6("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
 }
 function privateDirectory(path) {
   if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
@@ -9649,12 +9786,6 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
     if (!original.ok) throw new Error(original.reason);
     const restored = { ...result, original: original.value };
     result = restored;
-    try {
-      const lease = readFileSync10(join9(directory, "lease"), "utf8");
-      if (!/^[1-9][0-9]*$/.test(lease)) logger2?.warn("git-span commit receipts: invocation lease unavailable");
-    } catch {
-      logger2?.warn("git-span commit receipts: invocation lease unavailable");
-    }
     const claim = await acquireReceiptClaim(
       root,
       `invocation-${identityKey(identity)}`,
@@ -9667,10 +9798,26 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
     try {
       const state = readState(directory, valid.value);
       if (state.status === "retired") return restored;
+      if (state.status === "active") {
+        const observations = readCommitObservations(readJson(join9(directory, "observations.json")), valid.value);
+        for (const observation of observations) {
+          try {
+            for (const receipt of observedCommitReceipts(observation, valid.value)) {
+              if (performance.now() >= started + COMMIT_RECEIPT_LIMITS.drainMs)
+                throw new Error("commit observation deadline exhausted");
+              const object = verifyCommitObject(valid.value.gitExecutable, receipt.repository, receipt.sha);
+              if (!object.ok) throw new Error(object.reason);
+              await publishReceipt(root, directory, receipt, started + COMMIT_RECEIPT_LIMITS.drainMs);
+            }
+          } catch (error) {
+            logger2?.warn(`git-span commit observation: ${errorMessage2(error)}`);
+          }
+        }
+      }
       atomicJson(join9(directory, "state.json"), {
-        ...state,
+        ...readState(directory, valid.value),
         status: "completed",
-        liveLease: false,
+        observing: false,
         lastActivityMs: Date.now()
       });
       const drained = await drainDirectory(root, directory, valid.value, options, started, logger2);
@@ -9692,13 +9839,13 @@ function errorMessage2(error) {
 function readState(directory, enrollment) {
   const value = readJson(join9(directory, "state.json"));
   const stored = isRecord(value) ? validateCommitEnrollment(value.enrollment) : null;
-  if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.liveLease !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
+  if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.observing !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
     throw new Error("invalid private invocation lifecycle");
   return {
     enrollment: stored.value,
     status: value.status,
     pendingNonces: value.pendingNonces,
-    liveLease: value.liveLease,
+    observing: value.observing,
     lastActivityMs: value.lastActivityMs
   };
 }
@@ -9707,6 +9854,24 @@ function readUsage(directory) {
   if (!isRecord(usage) || typeof usage.bytes !== "number" || !Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || typeof usage.receipts !== "number" || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
     throw new Error("invalid invocation usage");
   return { bytes: usage.bytes, receipts: usage.receipts };
+}
+async function publishReceipt(root, directory, receipt, deadline) {
+  const enrollment = validateCommitEnrollment(readJson(join9(directory, "enrollment.json")));
+  if (!enrollment.ok) throw new Error(enrollment.reason);
+  if (existsSync7(join9(directory, "receipts", `${receipt.nonce}.json`))) return;
+  const state = readState(directory, enrollment.value);
+  if (state.status !== "active") throw new Error("receipt invocation is no longer active");
+  const usage = readUsage(directory);
+  const bytes = Buffer.byteLength(JSON.stringify(receipt));
+  if (usage.receipts >= COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || usage.bytes + bytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 0, bytes, deadline))
+    throw new Error("receipt capacity exceeded");
+  atomicJson(join9(directory, "usage.json"), { bytes: usage.bytes + bytes, receipts: usage.receipts + 1 });
+  atomicJson(join9(directory, "receipts", `${receipt.nonce}.json`), receipt, true);
+  atomicJson(join9(directory, "state.json"), {
+    ...state,
+    pendingNonces: [...state.pendingNonces, receipt.nonce],
+    lastActivityMs: Date.now()
+  });
 }
 async function drainDirectory(root, directory, enrollment, options, started, logger2) {
   const deadline = started + COMMIT_RECEIPT_LIMITS.drainMs;
@@ -9718,7 +9883,8 @@ async function drainDirectory(root, directory, enrollment, options, started, log
       break;
     }
     try {
-      if (!/^receipt-[a-f0-9]+\.json$/.test(name)) throw new Error("invalid receipt filename");
+      if (!/^observed-[a-f0-9]{64}-[a-f0-9]{40}(?:[a-f0-9]{24})?\.json$/.test(name))
+        throw new Error("invalid receipt filename");
       const valid = validateCommitReceipt(readJson(join9(directory, "receipts", name)), enrollment);
       if (!valid.ok) throw new Error(valid.reason);
       const document = createCommitNoteDocument(enrollment);
@@ -9779,17 +9945,9 @@ async function drainDirectory(root, directory, enrollment, options, started, log
     ...state,
     status: pendingNames.length === 0 ? "acknowledged" : "completed",
     pendingNonces: pendingNames.map((name) => name.replace(/\.json$/, "")),
-    liveLease: false,
+    observing: false,
     lastActivityMs: Date.now()
   });
-  if (existsSync7(join9(directory, "diagnostics.json"))) {
-    const diagnostics = readJson(join9(directory, "diagnostics.json"), 16384);
-    if (Array.isArray(diagnostics)) {
-      for (const message of diagnostics)
-        if (typeof message === "string") logger2?.warn(`git-span commit receipts: ${message.slice(0, 512)}`);
-    }
-    rmSync4(join9(directory, "diagnostics.json"));
-  }
   return { acknowledged, pending: pendingNames.length };
 }
 async function invokeNotes(enrollment, receipt, options, args, stdin, started) {

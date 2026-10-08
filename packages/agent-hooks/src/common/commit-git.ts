@@ -1,6 +1,6 @@
-/** Pure argv and reflog evidence contracts for the invocation-local Git shim. */
+/** Pure Git argv classification and reflog checkpoint contracts. */
 import { isAbsolute, resolve } from 'node:path';
-import type { CommitObjectFormat, CommitValidation } from './commit-contracts.js';
+import type { CommitValidation } from './commit-contracts.js';
 
 export interface CommitGitInvocation {
   /** Exact original argv, including global options, is forwarded once. */
@@ -120,7 +120,13 @@ export function parseCommitGitInvocation(argv: readonly string[], cwd: string): 
 /** A missing pre-execution reflog is allowed for unborn HEAD; an existing log must retain its identity. */
 export type CommitReflogCheckpoint =
   | { readonly existed: false; readonly offset: 0 }
-  | { readonly existed: true; readonly device: string; readonly inode: string; readonly offset: number };
+  | {
+      readonly existed: true;
+      readonly device: string;
+      readonly inode: string;
+      readonly offset: number;
+      readonly prefixDigest: string;
+    };
 
 /** The IO adapter reads at most the evidence budget and reports actual metadata rather than trusting receipt metadata. */
 export interface CommitReflogAppend {
@@ -129,58 +135,4 @@ export interface CommitReflogAppend {
   readonly fileSize: number;
   readonly bytes: Uint8Array;
   readonly exceededBudget: boolean;
-}
-
-export interface CommitCreationEvidence {
-  readonly checkpoint: CommitReflogCheckpoint;
-  readonly append: CommitReflogAppend | null;
-  readonly objectFormat: CommitObjectFormat;
-  readonly nonce: string;
-  readonly gitExitCode: number | null;
-  readonly gitSignal: string | null;
-  readonly builtinCommit: boolean;
-  readonly dryRun: boolean;
-}
-
-/** Exactly one complete nonce-tagged transition after successful builtin commit yields the frozen full SHA. */
-export function validateCommitCreationEvidence(evidence: CommitCreationEvidence): CommitValidation<string> {
-  const reject = (reason: string): CommitValidation<string> => ({ ok: false, reason });
-  if (!evidence.builtinCommit || evidence.dryRun || evidence.gitExitCode !== 0 || evidence.gitSignal !== null) {
-    return reject('no successful builtin commit');
-  }
-  if (!/^[a-zA-Z0-9_-]{1,256}$/.test(evidence.nonce)) return reject('invalid reflog nonce');
-  if (evidence.objectFormat !== 'sha1' && evidence.objectFormat !== 'sha256')
-    return reject('unsupported object format');
-  const { append, checkpoint } = evidence;
-  if (!append) return reject('missing HEAD reflog');
-  if (!Number.isSafeInteger(checkpoint.offset) || checkpoint.offset < 0 || !Number.isSafeInteger(append.fileSize)) {
-    return reject('invalid reflog offset');
-  }
-  if (checkpoint.existed && (checkpoint.device !== append.device || checkpoint.inode !== append.inode)) {
-    return reject('reflog replaced');
-  }
-  if (append.exceededBudget || append.bytes.byteLength > 1_048_576) return reject('reflog evidence exceeds budget');
-  if (append.fileSize < checkpoint.offset || append.fileSize - checkpoint.offset !== append.bytes.byteLength) {
-    return reject('reflog truncated or incomplete read');
-  }
-  const length = evidence.objectFormat === 'sha1' ? 40 : 64;
-  const header = new RegExp(`^([0-9a-f]{${length}}) ([0-9a-f]{${length}}) .+ <[^>]*> [0-9]+ [+-][0-9]{4}$`);
-  const text = new TextDecoder().decode(append.bytes);
-  if (text.length === 0 || !text.endsWith('\n')) return reject('incomplete reflog evidence');
-  const lines = text.slice(0, -1).split('\n');
-  const matches: string[] = [];
-  for (const line of lines) {
-    const tab = line.indexOf('\t');
-    if (tab < 0) return reject('malformed reflog evidence');
-    const parsed = header.exec(line.slice(0, tab));
-    const [, oldSha, newSha] = parsed ?? [];
-    if (oldSha === undefined || newSha === undefined) return reject('malformed reflog evidence');
-    if (!line.slice(tab + 1).startsWith(`${evidence.nonce}: `)) continue;
-    if (/^0+$/.test(newSha) || oldSha === newSha) return reject('invalid nonce-tagged transition');
-    matches.push(newSha);
-  }
-  const [transition, ...ambiguous] = matches;
-  return transition !== undefined && ambiguous.length === 0
-    ? { ok: true, value: transition }
-    : reject('missing or ambiguous nonce-tagged transition');
 }

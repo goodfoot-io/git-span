@@ -1,5 +1,6 @@
 /** Actual Git and notes subprocess adapters, with bounded metadata/evidence reads. */
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   accessSync,
   closeSync,
@@ -15,7 +16,7 @@ import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { CommitRepository, CommitValidation } from './commit-contracts.js';
 import type { CommitReflogAppend, CommitReflogCheckpoint } from './commit-git.js';
-import type { CommitNotesCommand, CommitNotesResult, CommitProcessResult } from './commit-io.js';
+import type { CommitNotesCommand, CommitNotesResult } from './commit-io.js';
 
 export function executableOnPath(name: string): string {
   const candidates = isAbsolute(name)
@@ -94,11 +95,33 @@ export function gitRefBackend(executable: string, globalArguments: readonly stri
   if (result.error || (result.status !== 0 && result.status !== 1)) throw new Error('Git ref backend probe failed');
   return result.status === 1 ? 'files' : result.stdout.trim();
 }
+/** Fingerprint the bounded tail of the old prefix so truncate-and-regrow cannot masquerade as append. */
+function prefixDigest(descriptor: number, length: number): string {
+  const bytes = Buffer.alloc(Math.min(length, 4096));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(descriptor, bytes, offset, bytes.length - offset, length - bytes.length + offset);
+    if (count === 0) throw new Error('reflog prefix truncated');
+    offset += count;
+  }
+  return createHash('sha256').update(bytes).digest('hex');
+}
 export function checkpointCommitReflog(path: string): CommitReflogCheckpoint {
   if (!existsSync(path)) return { existed: false, offset: 0 };
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('unsupported HEAD reflog');
-  return { existed: true, device: String(stat.dev), inode: String(stat.ino), offset: stat.size };
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error('unsupported HEAD reflog');
+    return {
+      existed: true,
+      device: String(stat.dev),
+      inode: String(stat.ino),
+      offset: stat.size,
+      prefixDigest: prefixDigest(descriptor, stat.size)
+    };
+  } finally {
+    closeSync(descriptor);
+  }
 }
 export function readCommitReflogAppend(
   path: string,
@@ -110,6 +133,8 @@ export function readCommitReflogAppend(
   try {
     const stat = fstatSync(descriptor);
     if (!stat.isFile()) throw new Error('HEAD reflog is not a file');
+    if (checkpoint.existed && prefixDigest(descriptor, checkpoint.offset) !== checkpoint.prefixDigest)
+      throw new Error('observed reflog prefix changed');
     const length = stat.size - checkpoint.offset;
     const exceededBudget = length > maxBytes;
     const bytes = Buffer.alloc(Math.max(0, Math.min(length, maxBytes)));
@@ -152,34 +177,6 @@ export function verifyCommitObject(
   } catch {
     return { ok: false, reason: 'commit object verification failed' };
   }
-}
-export async function executeCommitGit(
-  executable: string,
-  argv: readonly string[],
-  cwd: string,
-  reflogAction?: string
-): Promise<CommitProcessResult> {
-  return new Promise((resolveResult) => {
-    const child = spawn(executable, [...argv], {
-      cwd,
-      stdio: 'inherit',
-      env: reflogAction === undefined ? process.env : { ...process.env, GIT_REFLOG_ACTION: reflogAction }
-    });
-    const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
-    const handlers = signals.map((signal) => {
-      const handler = () => {
-        child.kill(signal);
-      };
-      process.on(signal, handler);
-      return { signal, handler };
-    });
-    const finish = (result: CommitProcessResult) => {
-      for (const { signal, handler } of handlers) process.removeListener(signal, handler);
-      resolveResult(result);
-    };
-    child.once('error', () => finish({ exitCode: 127, signal: null }));
-    child.once('close', (exitCode, signal) => finish({ exitCode, signal }));
-  });
 }
 export async function executeCommitNotes(executable: string, command: CommitNotesCommand): Promise<CommitNotesResult> {
   return new Promise((resolveResult) => {

@@ -453,14 +453,14 @@ function stopHook(config, handler) {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve4, reject2) => {
+  return new Promise((resolve5, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve4(chunks.join(""));
+      resolve5(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -522,8 +522,8 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve4, reject2) => {
-    stream.write(content, (error) => error ? reject2(error) : resolve4());
+  return new Promise((resolve5, reject2) => {
+    stream.write(content, (error) => error ? reject2(error) : resolve5());
   });
 }
 async function writeUnexpectedErrorStderr(error) {
@@ -817,9 +817,9 @@ function cleanupSessionState(layout, sessionId, now = Date.now()) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { chmodSync, existsSync as existsSync5, lstatSync as lstatSync3, readFileSync as readFileSync2, realpathSync as realpathSync3, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync5, lstatSync as lstatSync3, realpathSync as realpathSync3, rmSync as rmSync3 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { isAbsolute as isAbsolute5, join as join4 } from "node:path";
+import { join as join4 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-association.ts
 import { createHash } from "node:crypto";
@@ -995,9 +995,6 @@ function serializeCommitNoteDocument(document) {
   });
 }
 
-// packages/agent-hooks/src/common/commit-git.ts
-import { isAbsolute as isAbsolute2, resolve as resolve2 } from "node:path";
-
 // packages/agent-hooks/src/common/commit-lifecycle.ts
 var COMMIT_INVOCATION_STATUSES = ["active", "completed", "acknowledged", "retired"];
 function decideCommitClaim(owner, liveness, remainingMs) {
@@ -1018,6 +1015,7 @@ function commitCliBudgetMs(phaseStartedMs, nowMs) {
 
 // packages/agent-hooks/src/common/commit-native-io.ts
 import { spawn, spawnSync } from "node:child_process";
+import { createHash as createHash2 } from "node:crypto";
 import {
   accessSync,
   closeSync as closeSync2,
@@ -1029,7 +1027,7 @@ import {
   readSync,
   realpathSync as realpathSync2
 } from "node:fs";
-import { delimiter, isAbsolute as isAbsolute3, join as join2, resolve as resolve3 } from "node:path";
+import { delimiter, isAbsolute as isAbsolute2, join as join2, resolve as resolve2 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 async function executeCommitNotes(executable, command) {
   return new Promise((resolveResult) => {
@@ -1090,16 +1088,21 @@ async function executeCommitNotes(executable, command) {
   });
 }
 
+// packages/agent-hooks/src/common/commit-observation.ts
+import { createHash as createHash3 } from "node:crypto";
+import { resolve as resolve4 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-git.ts
+import { isAbsolute as isAbsolute3, resolve as resolve3 } from "node:path";
+
 // packages/agent-hooks/src/common/commit-storage.ts
-import { createHash as createHash2, randomBytes } from "node:crypto";
+import { createHash as createHash4, randomBytes } from "node:crypto";
 import {
-  closeSync as closeSync3,
   existsSync as existsSync4,
   linkSync,
   lstatSync as lstatSync2,
   mkdirSync as mkdirSync3,
   opendirSync,
-  openSync as openSync3,
   readFileSync,
   renameSync as renameSync2,
   rmSync as rmSync2,
@@ -1267,7 +1270,7 @@ async function cleanupCommitInvocations(host, sessionId, options = {}, logger2) 
       try {
         const state = readState(directory, valid.value);
         const abandoned = Date.now() - state.lastActivityMs >= COMMIT_RECEIPT_LIMITS.abandonedRetentionMs;
-        if (abandoned && (state.status !== "active" || !invocationIsLive(directory))) {
+        if (abandoned) {
           const usage = readUsage(directory);
           logger2?.warn("git-span commit receipts: expired abandoned state and pending evidence");
           if (await reserveReceiptCapacity(root, -1, -usage.bytes, deadline)) {
@@ -1286,7 +1289,7 @@ async function cleanupCommitInvocations(host, sessionId, options = {}, logger2) 
             ...state,
             status: "retired",
             pendingNonces: [],
-            liveLease: false,
+            observing: false,
             lastActivityMs: Date.now()
           });
           result.retired++;
@@ -1309,13 +1312,13 @@ function errorMessage(error) {
 function readState(directory, enrollment) {
   const value = readJson(join4(directory, "state.json"));
   const stored = isRecord(value) ? validateCommitEnrollment(value.enrollment) : null;
-  if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.liveLease !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
+  if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.observing !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
     throw new Error("invalid private invocation lifecycle");
   return {
     enrollment: stored.value,
     status: value.status,
     pendingNonces: value.pendingNonces,
-    liveLease: value.liveLease,
+    observing: value.observing,
     lastActivityMs: value.lastActivityMs
   };
 }
@@ -1324,18 +1327,6 @@ function readUsage(directory) {
   if (!isRecord(usage) || typeof usage.bytes !== "number" || !Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || typeof usage.receipts !== "number" || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
     throw new Error("invalid invocation usage");
   return { bytes: usage.bytes, receipts: usage.receipts };
-}
-function invocationIsLive(directory) {
-  try {
-    if (!existsSync5(join4(directory, "lease"))) return false;
-    const lease = readFileSync2(join4(directory, "lease"), "utf8");
-    if (lease === "") return false;
-    const pid = Number(lease);
-    if (!Number.isSafeInteger(pid) || pid <= 0) return true;
-    return ownerLiveness({ token: "lease", pid }) !== "dead";
-  } catch {
-    return true;
-  }
 }
 async function drainDirectory(root, directory, enrollment, options, started, logger2) {
   const deadline = started + COMMIT_RECEIPT_LIMITS.drainMs;
@@ -1347,7 +1338,8 @@ async function drainDirectory(root, directory, enrollment, options, started, log
       break;
     }
     try {
-      if (!/^receipt-[a-f0-9]+\.json$/.test(name)) throw new Error("invalid receipt filename");
+      if (!/^observed-[a-f0-9]{64}-[a-f0-9]{40}(?:[a-f0-9]{24})?\.json$/.test(name))
+        throw new Error("invalid receipt filename");
       const valid = validateCommitReceipt(readJson(join4(directory, "receipts", name)), enrollment);
       if (!valid.ok) throw new Error(valid.reason);
       const document = createCommitNoteDocument(enrollment);
@@ -1408,17 +1400,9 @@ async function drainDirectory(root, directory, enrollment, options, started, log
     ...state,
     status: pendingNames.length === 0 ? "acknowledged" : "completed",
     pendingNonces: pendingNames.map((name) => name.replace(/\.json$/, "")),
-    liveLease: false,
+    observing: false,
     lastActivityMs: Date.now()
   });
-  if (existsSync5(join4(directory, "diagnostics.json"))) {
-    const diagnostics = readJson(join4(directory, "diagnostics.json"), 16384);
-    if (Array.isArray(diagnostics)) {
-      for (const message of diagnostics)
-        if (typeof message === "string") logger2?.warn(`git-span commit receipts: ${message.slice(0, 512)}`);
-    }
-    rmSync3(join4(directory, "diagnostics.json"));
-  }
   return { acknowledged, pending: pendingNames.length };
 }
 async function invokeNotes(enrollment, receipt, options, args, stdin, started) {

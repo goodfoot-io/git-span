@@ -1,36 +1,11 @@
 /** Injectable IO ports use real implementations in acceptance checks, independent of host SDKs. */
 
-import type { CommitRepository, CommitValidation } from './commit-contracts.js';
-import type { CommitReflogAppend, CommitReflogCheckpoint } from './commit-git.js';
+import type { CommitValidation } from './commit-contracts.js';
 import type { CommitClaimOwner, CommitOwnerLiveness } from './commit-lifecycle.js';
 
 export interface CommitProcessResult {
   readonly exitCode: number | null;
   readonly signal: string | null;
-}
-
-export interface CommitGitIO {
-  /** Probe from the ORIGINAL child cwd with original global options; never apply -C again to effectiveCwd. */
-  resolveRepository(
-    executable: string,
-    globalArguments: readonly string[],
-    cwd: string
-  ): Promise<CommitValidation<CommitRepository>>;
-  /** Verify the witnessed full SHA resolves to a commit object using the repository actual object format. */
-  validateCommitObject(repository: CommitRepository, sha: string): Promise<CommitValidation<string>>;
-  checkpoint(reflogPath: string): Promise<CommitValidation<CommitReflogCheckpoint>>;
-  readAppend(
-    reflogPath: string,
-    checkpoint: CommitReflogCheckpoint,
-    maxBytes: number
-  ): Promise<CommitValidation<CommitReflogAppend | null>>;
-  /** Inherited stdio; caller environment is unchanged except this child's unique GIT_REFLOG_ACTION. */
-  execute(
-    executable: string,
-    argv: readonly string[],
-    cwd: string,
-    reflogAction?: string
-  ): Promise<CommitProcessResult>;
 }
 
 export interface CommitNotesCommand {

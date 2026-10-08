@@ -22,7 +22,7 @@ export interface CommitEnrollment {
   readonly transcriptLocator?: string;
 }
 
-/** Canonical repository identity is resolved before the builtin commit executes. */
+/** Canonical repository identity is frozen before tool execution. */
 export interface CommitRepository {
   readonly cwd: string;
   readonly gitDirectory: string;
@@ -31,7 +31,7 @@ export interface CommitRepository {
   readonly objectFormat: CommitObjectFormat;
 }
 
-/** A receipt proves creation independently of shell response text or later HEAD movement. */
+/** A receipt records an observed commit independently of shell response text or later HEAD movement. */
 export interface CommitReceipt {
   readonly schemaVersion: 1;
   readonly invocationKey: string;

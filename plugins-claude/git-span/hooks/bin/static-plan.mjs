@@ -8,7 +8,6 @@ const __dirname = __pathDirname(__filename);
 
 // packages/agent-hooks/src/claude/static-plan.ts
 import { dirname as dirname8, join as join10 } from "node:path";
-import { fileURLToPath } from "node:url";
 
 // node_modules/@goodfoot/agent-hooks/dist/core/logger.js
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
@@ -521,25 +520,17 @@ var EXIT_CODES = {
   /** Handler threw exception OR blocking action requested. stderr shown to Claude. */
   BLOCK: 2
 };
-function createHookSpecificOutputBuilder(hookType) {
-  return (options = {}) => {
-    const { hookSpecificOutput, ...rest } = options;
-    const stdout = hookSpecificOutput !== void 0 ? { ...rest, hookSpecificOutput: { hookEventName: hookType, ...hookSpecificOutput } } : rest;
-    return { _type: hookType, stdout };
-  };
-}
-var preToolUseOutput = /* @__PURE__ */ createHookSpecificOutputBuilder("PreToolUse");
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve5, reject2) => {
+  return new Promise((resolve6, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve5(chunks.join(""));
+      resolve6(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -601,8 +592,8 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve5, reject2) => {
-    stream.write(content, (error) => error ? reject2(error) : resolve5());
+  return new Promise((resolve6, reject2) => {
+    stream.write(content, (error) => error ? reject2(error) : resolve6());
   });
 }
 async function writeUnexpectedErrorStderr(error) {
@@ -1272,9 +1263,9 @@ function scanHeredocDelimiter(s) {
     j += 1;
   }
   while (s.cmd[j] === " " || s.cmd[j] === "	") j += 1;
-  const quote2 = s.cmd.charAt(j);
-  if (quote2 === "'" || quote2 === '"') {
-    const q = s.cmd.indexOf(quote2, j + 1);
+  const quote = s.cmd.charAt(j);
+  if (quote === "'" || quote === '"') {
+    const q = s.cmd.indexOf(quote, j + 1);
     if (q === -1) return { delim: s.cmd.slice(j + 1), allowTabs, next: s.n };
     return { delim: s.cmd.slice(j + 1, q), allowTabs, next: q + 1 };
   }
@@ -1684,11 +1675,11 @@ function flushWord(t) {
   t.quoted = false;
 }
 function appendQuotedContent(t, out, start) {
-  const quote2 = t.src[start];
+  const quote = t.src[start];
   let j = start + 1;
   while (j < t.n) {
     const c = t.src.charAt(j);
-    if (quote2 === "'") {
+    if (quote === "'") {
       if (c === "'") return { out, next: j + 1 };
       out += c;
       j += 1;
@@ -1854,6 +1845,86 @@ function argvOf(simpleCmd) {
       continue;
     }
     skipTarget = redirectAttachedTarget(token.text) === null;
+  }
+  return argv;
+}
+var WRAPPER_BUILTINS = /* @__PURE__ */ new Set([
+  "exit",
+  "exec",
+  "true",
+  "false",
+  ":",
+  "cd",
+  "set",
+  "unset",
+  "export",
+  "readonly",
+  "return",
+  "break",
+  "continue"
+]);
+var RECOGNIZED_EXTERNAL_NAMES = /* @__PURE__ */ new Set([
+  "sed",
+  "head",
+  "tail",
+  "cat",
+  "nl",
+  "git",
+  "true",
+  "false",
+  "timeout",
+  "env",
+  "command"
+]);
+var TIMEOUT_DURATION = /^\d+(?:\.\d+)?[smhd]?$/;
+var ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
+function skipWhile(argv, from, test) {
+  let j = from;
+  for (let word = argv[j]; word !== void 0 && test(word); word = argv[j]) j++;
+  return j;
+}
+function stripWrappersOnce(argv) {
+  const i = skipWhile(argv, 0, (word) => word === "!");
+  const head = argv[i];
+  if (head === void 0) return [];
+  if (head === "command") {
+    const next = argv[i + 1];
+    if (next === "-v" || next === "-V") return null;
+    if (next === "-p") return argv.slice(i + 2);
+    if (next !== void 0 && !next.startsWith("-")) return argv.slice(i + 1);
+    return null;
+  }
+  if (head === "builtin") {
+    const next = argv[i + 1];
+    if (next !== void 0 && WRAPPER_BUILTINS.has(next)) return argv.slice(i + 2);
+    return null;
+  }
+  if (head === "env") {
+    const j = skipWhile(argv, i + 1, (word) => ENV_ASSIGNMENT.test(word));
+    if (j === i + 1) return null;
+    return argv.slice(j);
+  }
+  if (head === "timeout") {
+    const j = skipWhile(argv, i + 1, (word) => word.startsWith("--"));
+    const duration = argv[j];
+    if (duration === void 0 || !TIMEOUT_DURATION.test(duration)) return null;
+    return argv.slice(j + 1);
+  }
+  if (head.startsWith("/")) {
+    const base = head.slice(head.lastIndexOf("/") + 1);
+    if (RECOGNIZED_EXTERNAL_NAMES.has(base)) return [base, ...argv.slice(i + 1)];
+    return null;
+  }
+  if (head.includes("/")) return null;
+  return argv.slice(i);
+}
+function stripWrappers(argv) {
+  let current = argv;
+  for (let iter = 0; iter < argv.length + 2; iter++) {
+    const next = stripWrappersOnce(current);
+    if (next === null) return argv;
+    if (next.length === current.length && next.every((w, k) => w === current[k])) return current;
+    current = next;
   }
   return argv;
 }
@@ -2244,9 +2315,9 @@ function findHeredocOpener(raw, from) {
     while (k < n && !/\s/.test(raw.charAt(k)) && raw[k] !== "<" && raw[k] !== ">") {
       const c = raw[k];
       if (c === "'" || c === '"') {
-        const quote2 = c;
+        const quote = c;
         let m = k + 1;
-        while (m < n && raw[m] !== quote2) {
+        while (m < n && raw[m] !== quote) {
           d += raw[m];
           m += 1;
         }
@@ -4212,27 +4283,27 @@ function shellQuote(value) {
 }
 function expandLiteralLoopVariable(body, variable, binding) {
   let command = "";
-  let quote2 = null;
+  let quote = null;
   let replacements = 0;
   let unsafeUnquoted = false;
   for (let index = 0; index < body.length; index += 1) {
     const character = body[index];
-    if (character === "\\" && quote2 !== "'") {
+    if (character === "\\" && quote !== "'") {
       command += character;
       if (index + 1 < body.length) command += body[++index];
       continue;
     }
-    if (character === "'" && quote2 !== '"') {
-      quote2 = quote2 === "'" ? null : "'";
+    if (character === "'" && quote !== '"') {
+      quote = quote === "'" ? null : "'";
       command += character;
       continue;
     }
-    if (character === '"' && quote2 !== "'") {
-      quote2 = quote2 === '"' ? null : '"';
+    if (character === '"' && quote !== "'") {
+      quote = quote === '"' ? null : '"';
       command += character;
       continue;
     }
-    if (character !== "$" || quote2 === "'") {
+    if (character !== "$" || quote === "'") {
       command += character;
       continue;
     }
@@ -4244,8 +4315,8 @@ function expandLiteralLoopVariable(body, variable, binding) {
       continue;
     }
     const length = braced ? variable.length + 3 : variable.length + 1;
-    if (quote2 === null && /\s/.test(binding)) unsafeUnquoted = true;
-    command += quote2 === '"' ? binding.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$") : shellQuote(binding);
+    if (quote === null && /\s/.test(binding)) unsafeUnquoted = true;
+    command += quote === '"' ? binding.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$") : shellQuote(binding);
     replacements += 1;
     index += length - 1;
   }
@@ -4474,7 +4545,7 @@ function extractPythonProgram(command) {
 function splitPythonStatements(program) {
   const statements = [];
   let statement = "";
-  let quote2 = null;
+  let quote = null;
   let escaped = false;
   let depth = 0;
   let comment = false;
@@ -4489,15 +4560,15 @@ function splitPythonStatements(program) {
       }
       continue;
     }
-    if (quote2 !== null) {
+    if (quote !== null) {
       statement += character;
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
-      else if (character === quote2) quote2 = null;
+      else if (character === quote) quote = null;
       continue;
     }
     if (character === "'" || character === '"') {
-      quote2 = character;
+      quote = character;
       statement += character;
       continue;
     }
@@ -4517,7 +4588,7 @@ function splitPythonStatements(program) {
     }
     statement += character;
   }
-  if (quote2 !== null || escaped || depth !== 0) return null;
+  if (quote !== null || escaped || depth !== 0) return null;
   if (statement.trim() !== "") statements.push(statement.trim());
   return statements;
 }
@@ -4884,7 +4955,7 @@ function splitNodeStatements(program) {
   if (program.includes("`")) return null;
   const statements = [];
   let statement = "";
-  let quote2 = null;
+  let quote = null;
   let escaped = false;
   let depth = 0;
   let lineComment = false;
@@ -4909,15 +4980,15 @@ function splitNodeStatements(program) {
       }
       continue;
     }
-    if (quote2 !== null) {
+    if (quote !== null) {
       statement += character;
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
-      else if (character === quote2) quote2 = null;
+      else if (character === quote) quote = null;
       continue;
     }
     if (character === "'" || character === '"') {
-      quote2 = character;
+      quote = character;
       statement += character;
       continue;
     }
@@ -4943,26 +5014,26 @@ function splitNodeStatements(program) {
     }
     statement += character;
   }
-  if (quote2 !== null || escaped || depth !== 0 || blockComment) return null;
+  if (quote !== null || escaped || depth !== 0 || blockComment) return null;
   if (statement.trim() !== "") statements.push(statement.trim());
   return statements;
 }
 function splitNodeArguments(source) {
   const arguments_ = [];
   let argument = "";
-  let quote2 = null;
+  let quote = null;
   let escaped = false;
   let depth = 0;
   for (const character of source) {
-    if (quote2 !== null) {
+    if (quote !== null) {
       argument += character;
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
-      else if (character === quote2) quote2 = null;
+      else if (character === quote) quote = null;
       continue;
     }
     if (character === "'" || character === '"') {
-      quote2 = character;
+      quote = character;
       argument += character;
       continue;
     }
@@ -4978,7 +5049,7 @@ function splitNodeArguments(source) {
     }
     argument += character;
   }
-  if (quote2 !== null || escaped || depth !== 0) return null;
+  if (quote !== null || escaped || depth !== 0) return null;
   if (argument.trim() !== "" || arguments_.length > 0) arguments_.push(argument.trim());
   return arguments_;
 }
@@ -6662,9 +6733,9 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { chmodSync as chmodSync2, existsSync as existsSync7, lstatSync as lstatSync3, readFileSync as readFileSync9, realpathSync as realpathSync3, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "node:fs";
+import { existsSync as existsSync7, lstatSync as lstatSync3, realpathSync as realpathSync3, rmSync as rmSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { isAbsolute as isAbsolute8, join as join9 } from "node:path";
+import { join as join9 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-association.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -6733,141 +6804,6 @@ function validateCommitEnrollment(value) {
   return { ok: true, value: enrollment };
 }
 
-// packages/agent-hooks/src/common/commit-git.ts
-import { isAbsolute as isAbsolute5, resolve as resolve3 } from "node:path";
-function parseCommitGitInvocation(argv, cwd) {
-  const reject2 = (reason) => ({ ok: false, reason });
-  if (!isAbsolute5(cwd) || argv.some((arg) => arg.includes("\0"))) return reject2("invalid Git argv or cwd");
-  let effectiveCwd = cwd;
-  let gitDirectory;
-  let workTree;
-  let index = 0;
-  const switches = /* @__PURE__ */ new Set([
-    "--no-pager",
-    "--paginate",
-    "-p",
-    "-P",
-    "--bare",
-    "--no-replace-objects",
-    "--literal-pathspecs",
-    "--glob-pathspecs",
-    "--noglob-pathspecs",
-    "--icase-pathspecs",
-    "--no-optional-locks"
-  ]);
-  for (let argument = argv[index]; argument?.startsWith("-") === true; argument = argv[index]) {
-    if (switches.has(argument)) {
-      index++;
-      continue;
-    }
-    let option;
-    let value;
-    if (argument === "-C" || argument === "-c" || argument === "--git-dir" || argument === "--work-tree" || argument === "--config-env") {
-      option = argument;
-      value = argv[++index];
-    } else if (argument.startsWith("-C") || argument.startsWith("-c")) {
-      option = argument.slice(0, 2);
-      value = argument.slice(2);
-    } else {
-      const equals = argument.indexOf("=");
-      option = equals < 0 ? argument : argument.slice(0, equals);
-      value = equals < 0 ? void 0 : argument.slice(equals + 1);
-      if (!["--git-dir", "--work-tree", "--config-env"].includes(option))
-        return reject2("unsupported Git global option");
-    }
-    if (value === void 0 || value === "" && option !== "-C") return reject2("incomplete Git global option");
-    if (option === "-C" && value !== "") effectiveCwd = resolve3(effectiveCwd, value);
-    if (option === "--git-dir") gitDirectory = value;
-    if (option === "--work-tree") workTree = value;
-    index++;
-  }
-  const command = argv[index];
-  if (!command) return reject2("missing Git builtin command");
-  const commandArguments = argv.slice(index + 1);
-  let dryRun = false;
-  const consumes = /* @__PURE__ */ new Set([
-    "-m",
-    "--message",
-    "-F",
-    "--file",
-    "-C",
-    "--reuse-message",
-    "-c",
-    "--reedit-message",
-    "--author",
-    "--date",
-    "--fixup",
-    "--squash",
-    "-t",
-    "--template",
-    "--pathspec-from-file",
-    "--trailer",
-    "--cleanup"
-  ]);
-  for (let i = 0; i < commandArguments.length; i++) {
-    const argument = commandArguments[i];
-    if (argument === void 0 || argument === "--") break;
-    if (consumes.has(argument)) {
-      i++;
-      continue;
-    }
-    if (argument === "--dry-run") dryRun = true;
-  }
-  return {
-    ok: true,
-    value: {
-      argv: [...argv],
-      effectiveCwd,
-      globalArguments: argv.slice(0, index),
-      command,
-      commandArguments,
-      builtinCommit: command === "commit",
-      dryRun: command === "commit" && dryRun,
-      ...gitDirectory === void 0 ? {} : { gitDirectory },
-      ...workTree === void 0 ? {} : { workTree }
-    }
-  };
-}
-function validateCommitCreationEvidence(evidence) {
-  const reject2 = (reason) => ({ ok: false, reason });
-  if (!evidence.builtinCommit || evidence.dryRun || evidence.gitExitCode !== 0 || evidence.gitSignal !== null) {
-    return reject2("no successful builtin commit");
-  }
-  if (!/^[a-zA-Z0-9_-]{1,256}$/.test(evidence.nonce)) return reject2("invalid reflog nonce");
-  if (evidence.objectFormat !== "sha1" && evidence.objectFormat !== "sha256")
-    return reject2("unsupported object format");
-  const { append, checkpoint } = evidence;
-  if (!append) return reject2("missing HEAD reflog");
-  if (!Number.isSafeInteger(checkpoint.offset) || checkpoint.offset < 0 || !Number.isSafeInteger(append.fileSize)) {
-    return reject2("invalid reflog offset");
-  }
-  if (checkpoint.existed && (checkpoint.device !== append.device || checkpoint.inode !== append.inode)) {
-    return reject2("reflog replaced");
-  }
-  if (append.exceededBudget || append.bytes.byteLength > 1048576) return reject2("reflog evidence exceeds budget");
-  if (append.fileSize < checkpoint.offset || append.fileSize - checkpoint.offset !== append.bytes.byteLength) {
-    return reject2("reflog truncated or incomplete read");
-  }
-  const length = evidence.objectFormat === "sha1" ? 40 : 64;
-  const header = new RegExp(`^([0-9a-f]{${length}}) ([0-9a-f]{${length}}) .+ <[^>]*> [0-9]+ [+-][0-9]{4}$`);
-  const text2 = new TextDecoder().decode(append.bytes);
-  if (text2.length === 0 || !text2.endsWith("\n")) return reject2("incomplete reflog evidence");
-  const lines = text2.slice(0, -1).split("\n");
-  const matches = [];
-  for (const line of lines) {
-    const tab = line.indexOf("	");
-    if (tab < 0) return reject2("malformed reflog evidence");
-    const parsed = header.exec(line.slice(0, tab));
-    const [, oldSha, newSha] = parsed ?? [];
-    if (oldSha === void 0 || newSha === void 0) return reject2("malformed reflog evidence");
-    if (!line.slice(tab + 1).startsWith(`${evidence.nonce}: `)) continue;
-    if (/^0+$/.test(newSha) || oldSha === newSha) return reject2("invalid nonce-tagged transition");
-    matches.push(newSha);
-  }
-  const [transition, ...ambiguous] = matches;
-  return transition !== void 0 && ambiguous.length === 0 ? { ok: true, value: transition } : reject2("missing or ambiguous nonce-tagged transition");
-}
-
 // packages/agent-hooks/src/common/commit-lifecycle.ts
 var COMMIT_INVOCATION_STATUSES = ["active", "completed", "acknowledged", "retired"];
 function decideCommitClaim(owner, liveness, remainingMs) {
@@ -6881,6 +6817,7 @@ function decideCommitClaim(owner, liveness, remainingMs) {
 
 // packages/agent-hooks/src/common/commit-native-io.ts
 import { spawn, spawnSync } from "node:child_process";
+import { createHash as createHash4 } from "node:crypto";
 import {
   accessSync,
   closeSync as closeSync2,
@@ -6892,10 +6829,10 @@ import {
   readSync,
   realpathSync as realpathSync2
 } from "node:fs";
-import { delimiter, isAbsolute as isAbsolute6, join as join7, resolve as resolve4 } from "node:path";
+import { delimiter, isAbsolute as isAbsolute5, join as join7, resolve as resolve3 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 function executableOnPath(name) {
-  const candidates = isAbsolute6(name) ? [name] : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((directory) => resolve4(directory, name));
+  const candidates = isAbsolute5(name) ? [name] : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((directory) => resolve3(directory, name));
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants.X_OK);
@@ -6955,89 +6892,175 @@ function gitRefBackend(executable, globalArguments, cwd) {
   if (result.error || result.status !== 0 && result.status !== 1) throw new Error("Git ref backend probe failed");
   return result.status === 1 ? "files" : result.stdout.trim();
 }
+function prefixDigest(descriptor, length) {
+  const bytes = Buffer.alloc(Math.min(length, 4096));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(descriptor, bytes, offset, bytes.length - offset, length - bytes.length + offset);
+    if (count === 0) throw new Error("reflog prefix truncated");
+    offset += count;
+  }
+  return createHash4("sha256").update(bytes).digest("hex");
+}
 function checkpointCommitReflog(path) {
   if (!existsSync5(path)) return { existed: false, offset: 0 };
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsupported HEAD reflog");
-  return { existed: true, device: String(stat.dev), inode: String(stat.ino), offset: stat.size };
-}
-function readCommitReflogAppend(path, checkpoint, maxBytes) {
-  if (!existsSync5(path)) return null;
   const descriptor = openSync2(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = fstatSync(descriptor);
-    if (!stat.isFile()) throw new Error("HEAD reflog is not a file");
-    const length = stat.size - checkpoint.offset;
-    const exceededBudget = length > maxBytes;
-    const bytes = Buffer.alloc(Math.max(0, Math.min(length, maxBytes)));
-    let offset = 0;
-    while (offset < bytes.length) {
-      const count = readSync(descriptor, bytes, offset, bytes.length - offset, checkpoint.offset + offset);
-      if (count === 0) break;
-      offset += count;
-    }
+    if (!stat.isFile()) throw new Error("unsupported HEAD reflog");
     return {
+      existed: true,
       device: String(stat.dev),
       inode: String(stat.ino),
-      fileSize: stat.size,
-      bytes: bytes.subarray(0, offset),
-      exceededBudget
+      offset: stat.size,
+      prefixDigest: prefixDigest(descriptor, stat.size)
     };
   } finally {
     closeSync2(descriptor);
   }
 }
-function verifyCommitObject(executable, repository, sha) {
-  try {
-    const format = probe(
-      executable,
-      ["--git-dir", repository.gitDirectory, "rev-parse", "--show-object-format"],
-      repository.commonDirectory
-    );
-    const type = probe(
-      executable,
-      ["--git-dir", repository.gitDirectory, "cat-file", "-t", sha],
-      repository.commonDirectory
-    );
-    return format === repository.objectFormat && type === "commit" ? { ok: true, value: sha } : { ok: false, reason: "witness is not a commit object in the actual object format" };
-  } catch {
-    return { ok: false, reason: "commit object verification failed" };
+
+// packages/agent-hooks/src/common/commit-observation.ts
+import { createHash as createHash5 } from "node:crypto";
+import { resolve as resolve5 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-git.ts
+import { isAbsolute as isAbsolute6, resolve as resolve4 } from "node:path";
+function parseCommitGitInvocation(argv, cwd) {
+  const reject2 = (reason) => ({ ok: false, reason });
+  if (!isAbsolute6(cwd) || argv.some((arg) => arg.includes("\0"))) return reject2("invalid Git argv or cwd");
+  let effectiveCwd = cwd;
+  let gitDirectory;
+  let workTree;
+  let index = 0;
+  const switches = /* @__PURE__ */ new Set([
+    "--no-pager",
+    "--paginate",
+    "-p",
+    "-P",
+    "--bare",
+    "--no-replace-objects",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-optional-locks"
+  ]);
+  for (let argument = argv[index]; argument?.startsWith("-") === true; argument = argv[index]) {
+    if (switches.has(argument)) {
+      index++;
+      continue;
+    }
+    let option;
+    let value;
+    if (argument === "-C" || argument === "-c" || argument === "--git-dir" || argument === "--work-tree" || argument === "--config-env") {
+      option = argument;
+      value = argv[++index];
+    } else if (argument.startsWith("-C") || argument.startsWith("-c")) {
+      option = argument.slice(0, 2);
+      value = argument.slice(2);
+    } else {
+      const equals = argument.indexOf("=");
+      option = equals < 0 ? argument : argument.slice(0, equals);
+      value = equals < 0 ? void 0 : argument.slice(equals + 1);
+      if (!["--git-dir", "--work-tree", "--config-env"].includes(option))
+        return reject2("unsupported Git global option");
+    }
+    if (value === void 0 || value === "" && option !== "-C") return reject2("incomplete Git global option");
+    if (option === "-C" && value !== "") effectiveCwd = resolve4(effectiveCwd, value);
+    if (option === "--git-dir") gitDirectory = value;
+    if (option === "--work-tree") workTree = value;
+    index++;
   }
+  const command = argv[index];
+  if (!command) return reject2("missing Git builtin command");
+  const commandArguments = argv.slice(index + 1);
+  let dryRun = false;
+  const consumes = /* @__PURE__ */ new Set([
+    "-m",
+    "--message",
+    "-F",
+    "--file",
+    "-C",
+    "--reuse-message",
+    "-c",
+    "--reedit-message",
+    "--author",
+    "--date",
+    "--fixup",
+    "--squash",
+    "-t",
+    "--template",
+    "--pathspec-from-file",
+    "--trailer",
+    "--cleanup"
+  ]);
+  for (let i = 0; i < commandArguments.length; i++) {
+    const argument = commandArguments[i];
+    if (argument === void 0 || argument === "--") break;
+    if (consumes.has(argument)) {
+      i++;
+      continue;
+    }
+    if (argument === "--dry-run") dryRun = true;
+  }
+  return {
+    ok: true,
+    value: {
+      argv: [...argv],
+      effectiveCwd,
+      globalArguments: argv.slice(0, index),
+      command,
+      commandArguments,
+      builtinCommit: command === "commit",
+      dryRun: command === "commit" && dryRun,
+      ...gitDirectory === void 0 ? {} : { gitDirectory },
+      ...workTree === void 0 ? {} : { workTree }
+    }
+  };
 }
-async function executeCommitGit(executable, argv, cwd, reflogAction) {
-  return new Promise((resolveResult) => {
-    const child = spawn(executable, [...argv], {
-      cwd,
-      stdio: "inherit",
-      env: reflogAction === void 0 ? process.env : { ...process.env, GIT_REFLOG_ACTION: reflogAction }
-    });
-    const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
-    const handlers = signals.map((signal) => {
-      const handler = () => {
-        child.kill(signal);
-      };
-      process.on(signal, handler);
-      return { signal, handler };
-    });
-    const finish = (result) => {
-      for (const { signal, handler } of handlers) process.removeListener(signal, handler);
-      resolveResult(result);
-    };
-    child.once("error", () => finish({ exitCode: 127, signal: null }));
-    child.once("close", (exitCode, signal) => finish({ exitCode, signal }));
-  });
+
+// packages/agent-hooks/src/common/commit-observation.ts
+function checkpointCommitInvocation(enrollment, deadline) {
+  const observations = /* @__PURE__ */ new Map();
+  const add = (cwd2, args) => {
+    if (performance.now() >= deadline) throw new Error("repository observation deadline exhausted");
+    let repository;
+    try {
+      repository = resolveCommitRepository(enrollment.gitExecutable, args, cwd2);
+    } catch {
+      return;
+    }
+    if (observations.has(repository.headReflog)) return;
+    if (observations.size >= 32) throw new Error("repository observation count exceeds budget");
+    observations.set(repository.headReflog, { repository, checkpoint: checkpointCommitReflog(repository.headReflog) });
+  };
+  let cwd = enrollment.cwd;
+  add(cwd, []);
+  for (const stage of splitTopLevel(enrollment.originalCommand).stages) {
+    const args = stripWrappers(argvOf(stage.text) ?? []);
+    const executable = args[0]?.split("/").at(-1);
+    if (executable === "cd" && args.length === 2 && args[1] && !/[`$~*?]/.test(args[1])) {
+      cwd = resolve5(cwd, args[1]);
+      add(cwd, []);
+    } else if (executable === "git") {
+      const parsed = parseCommitGitInvocation(args.slice(1), cwd);
+      if (parsed.ok && !parsed.value.globalArguments.some((arg) => /[`$~*?]/.test(arg))) {
+        add(cwd, parsed.value.globalArguments);
+      }
+    }
+  }
+  return [...observations.values()];
 }
 
 // packages/agent-hooks/src/common/commit-storage.ts
-import { createHash as createHash4, randomBytes } from "node:crypto";
+import { createHash as createHash6, randomBytes } from "node:crypto";
 import {
-  closeSync as closeSync3,
   existsSync as existsSync6,
   linkSync,
   lstatSync as lstatSync2,
   mkdirSync as mkdirSync5,
   opendirSync,
-  openSync as openSync3,
   readFileSync as readFileSync8,
   renameSync as renameSync4,
   rmSync as rmSync3,
@@ -7047,7 +7070,7 @@ import {
 import { dirname as dirname7, isAbsolute as isAbsolute7, join as join8 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 function identityKey(identity) {
-  return createHash4("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
+  return createHash6("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
 }
 function privateDirectory(path) {
   if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
@@ -7163,20 +7186,6 @@ async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline
     claim.release();
   }
 }
-function privateEmptyFile(path) {
-  const descriptor = openSync3(path, "wx", 384);
-  closeSync3(descriptor);
-}
-function appendReceiptDiagnostic(directory, message) {
-  const path = join8(directory, "diagnostics.json");
-  try {
-    const prior = existsSync6(path) ? readJson(path, 16384) : [];
-    if (!Array.isArray(prior) || prior.length >= 16) return;
-    const bounded = message.slice(0, 512);
-    if (!prior.includes(bounded)) atomicJson(path, [...prior, bounded]);
-  } catch {
-  }
-}
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 async function enrollCommitInvocation(request, options = {}, logger2) {
@@ -7205,12 +7214,9 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
           throw new Error("invocation key cannot be reused");
         return {
           kind: "enrolled",
-          enrollment: existing.value,
-          updatedInput: replacementInput(existing.value, directory)
+          enrollment: existing.value
         };
       }
-      if (!isAbsolute8(request.bundlePath) || !lstatSync3(request.bundlePath).isFile())
-        throw new Error("deployed shim bundle must be an absolute file");
       if (!lstatSync3(realpathSync3(request.cwd)).isDirectory())
         throw new Error("effective shell cwd must be a directory");
       const originalInput = JSON.parse(JSON.stringify(request.toolInput));
@@ -7229,15 +7235,12 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
       };
       const valid = validateCommitEnrollment(enrollment);
       if (!valid.ok) throw new Error(valid.reason);
-      const config = { schemaVersion: 1, root, directory, enrollment: valid.value };
-      const launcher = `#!/bin/sh
-exec ${quote(process.execPath)} ${quote(request.bundlePath)} --git-span-commit-shim ${quote(join9(directory, "shim.json"))} -- "$@"
-`;
+      const observations = checkpointCommitInvocation(valid.value, deadline);
       const state = {
         enrollment: valid.value,
         status: "active",
         pendingNonces: [],
-        liveLease: true,
+        observing: true,
         lastActivityMs: Date.now()
       };
       const maximumState = {
@@ -7247,13 +7250,13 @@ exec ${quote(process.execPath)} ${quote(request.bundlePath)} --git-span-commit-s
           { length: COMMIT_RECEIPT_LIMITS.receiptsPerInvocation },
           () => "x".repeat(COMMIT_RECEIPT_LIMITS.identityKeyBytes)
         ),
-        liveLease: false,
+        observing: false,
         lastActivityMs: Number.MAX_SAFE_INTEGER
       };
-      const serializedBytes = [valid.value, config, maximumState].map(
+      const serializedBytes = [valid.value, observations, maximumState].map(
         (value) => Buffer.byteLength(JSON.stringify(value))
       );
-      const initialBytes = serializedBytes.reduce((sum, bytes) => sum + bytes, 0) + Buffer.byteLength(launcher) + 32768;
+      const initialBytes = serializedBytes.reduce((sum, bytes) => sum + bytes, 0) + 32768;
       if (serializedBytes.some((bytes) => bytes > COMMIT_RECEIPT_LIMITS.jsonFileBytes) || initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation) {
         const reason = "serialized receipt envelope exceeds private state bounds";
         logger2?.warn(`git-span commit receipts: ${reason}`);
@@ -7263,21 +7266,17 @@ exec ${quote(process.execPath)} ${quote(request.bundlePath)} --git-span-commit-s
         throw new Error("private receipt state capacity exceeded");
       try {
         privateDirectory(directory);
-        privateDirectory(join9(directory, "bin"));
         privateDirectory(join9(directory, "receipts"));
-        privateEmptyFile(join9(directory, "lease"));
         atomicJson(enrollmentPath, valid.value, true);
         atomicJson(join9(directory, "state.json"), state);
         atomicJson(join9(directory, "usage.json"), { bytes: initialBytes, receipts: 0 });
-        atomicJson(join9(directory, "shim.json"), config, true);
-        writeFileSync4(join9(directory, "bin", "git"), launcher, { mode: 448, flag: "wx" });
-        chmodSync2(join9(directory, "bin", "git"), 448);
+        atomicJson(join9(directory, "observations.json"), observations, true);
       } catch (error) {
         await reserveReceiptCapacity(root, -1, -initialBytes, deadline);
         rmSync4(directory, { recursive: true, force: true });
         throw error;
       }
-      return { kind: "enrolled", enrollment: valid.value, updatedInput: replacementInput(valid.value, directory) };
+      return { kind: "enrolled", enrollment: valid.value };
     } finally {
       claim.release();
     }
@@ -7287,73 +7286,8 @@ exec ${quote(process.execPath)} ${quote(request.bundlePath)} --git-span-commit-s
     return { kind: "unavailable", reason };
   }
 }
-async function dispatchCommitShim(argv = process.argv.slice(2)) {
-  if (argv[0] !== "--git-span-commit-shim") return false;
-  const configPath = argv[1];
-  if (!configPath || !isAbsolute8(configPath) || argv[2] !== "--") throw new Error("invalid receipt shim dispatch");
-  const config = readShimConfig(configPath);
-  const { enrollment } = config;
-  const gitArgv = argv.slice(3);
-  const parsed = parseCommitGitInvocation(gitArgv, process.cwd());
-  const nonce = `receipt-${randomBytes2(24).toString("hex")}`;
-  let repository = null;
-  let checkpoint = null;
-  if (parsed.ok && parsed.value.builtinCommit && !parsed.value.dryRun) {
-    try {
-      repository = resolveCommitRepository(enrollment.gitExecutable, parsed.value.globalArguments, process.cwd());
-      checkpoint = checkpointCommitReflog(repository.headReflog);
-    } catch (error) {
-      appendReceiptDiagnostic(config.directory, errorMessage2(error));
-    }
-  } else if (!parsed.ok) appendReceiptDiagnostic(config.directory, parsed.reason);
-  const result = await executeCommitGit(
-    enrollment.gitExecutable,
-    gitArgv,
-    process.cwd(),
-    parsed.ok && parsed.value.builtinCommit ? nonce : void 0
-  );
-  if (repository !== null && checkpoint !== null) {
-    try {
-      const evidence = validateCommitCreationEvidence({
-        checkpoint,
-        append: readCommitReflogAppend(repository.headReflog, checkpoint, COMMIT_RECEIPT_LIMITS.reflogBytes),
-        objectFormat: repository.objectFormat,
-        nonce,
-        gitExitCode: result.exitCode,
-        gitSignal: result.signal,
-        builtinCommit: true,
-        dryRun: false
-      });
-      if (!evidence.ok) {
-        if (result.exitCode === 0 && result.signal === null) appendReceiptDiagnostic(config.directory, evidence.reason);
-      } else {
-        const object = verifyCommitObject(enrollment.gitExecutable, repository, evidence.value);
-        if (!object.ok) appendReceiptDiagnostic(config.directory, object.reason);
-        else
-          await publishReceipt(config.root, config.directory, {
-            schemaVersion: 1,
-            invocationKey: enrollment.invocationKey,
-            nonce,
-            sha: evidence.value,
-            repository
-          });
-      }
-    } catch (error) {
-      appendReceiptDiagnostic(config.directory, errorMessage2(error));
-    }
-  }
-  if (result.signal !== null) {
-    process.kill(process.pid, result.signal);
-    await new Promise(() => {
-    });
-  }
-  process.exit(result.exitCode ?? 127);
-}
 function receiptRoot(options) {
   return options.stateRoot ?? join9(homedir2(), ".cache", "git-span", "commit-receipts");
-}
-function quote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 function errorMessage2(error) {
   return (error instanceof Error ? error.message : String(error)).slice(0, 512);
@@ -7370,108 +7304,20 @@ function unsupportedCommandReason(input, command) {
   const split = splitTopLevel(command);
   if (split.stages.some((stage) => stage.precededBy === "background") || /&\s*$/.test(command))
     return "background shell execution is unsupported";
-  for (const stage of split.stages) {
-    const args = argvOf(stage.text) ?? [];
-    const tokens = tokenize(stage.text) ?? [];
-    const leadingAssignments = [];
-    for (const token of tokens) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text)) break;
-      leadingAssignments.push(token.text);
-    }
-    const wrapper = args[0]?.split("/").at(-1);
-    if (leadingAssignments.some((arg) => /^PATH=/.test(arg)) || ["export", "env"].includes(wrapper ?? "") && args.some((arg) => /^PATH=/.test(arg)) || args[0] === "unset" && args.includes("PATH") || wrapper === "env" && (args.includes("-i") || args.includes("--ignore-environment")))
-      return "observable instrumentation PATH override is unsupported";
-    let executableIndex = 0;
-    for (; executableIndex < args.length; ) {
-      let index = executableIndex;
-      const name = args[index]?.split("/").at(-1);
-      if (name === "export" && args.slice(index + 1).some((arg) => /^PATH=/.test(arg)) || name === "unset" && args.slice(index + 1).includes("PATH"))
-        return "observable instrumentation PATH override is unsupported";
-      if (!["builtin", "command", "exec", "env", "hash"].includes(name ?? "")) break;
-      if (name === "hash" && args.length > index + 1)
-        return "observable executable-search mutation bypasses receipt instrumentation";
-      index++;
-      for (let arg = args[index]; arg !== void 0; arg = args[index]) {
-        if (arg === "--") {
-          index++;
-          break;
-        }
-        if (name === "command" && /^-[^-]*p/.test(arg))
-          return "observable executable-search mutation bypasses receipt instrumentation";
-        if (name === "env" && (/^PATH=/.test(arg) || arg === "--ignore-environment" || /^-[^-]*i/.test(arg) || arg === "--unset=PATH" || /^(?:-[^-]*u)PATH$/.test(arg) || (arg === "-u" || arg === "--unset") && args[index + 1] === "PATH" || arg === "-S" || arg.startsWith("--split-string")))
-          return "observable executable-search mutation bypasses receipt instrumentation";
-        if (name === "env" && ["-u", "--unset", "-C", "--chdir"].includes(arg)) {
-          index += 2;
-          continue;
-        }
-        if (arg.startsWith("-") || name === "env" && /^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) {
-          index++;
-          continue;
-        }
-        break;
-      }
-      executableIndex = index;
-    }
-    const executable = args[executableIndex];
-    if (executable !== void 0 && isAbsolute8(executable) && /(?:^|\/)git$/.test(executable))
-      return "absolute Git invocation bypasses receipt instrumentation";
-  }
   return null;
-}
-function replacementInput(enrollment, directory) {
-  const command = `{ printf '%s' "$$" > ${quote(join9(directory, "lease"))}; } 2>/dev/null || :; export PATH=${quote(join9(directory, "bin"))}:"$PATH"; ${enrollment.originalCommand}`;
-  return { ...enrollment.originalInput, command };
-}
-function readShimConfig(configPath) {
-  const config = readJson(configPath);
-  const valid = isRecord(config) ? validateCommitEnrollment(config.enrollment) : null;
-  if (!isRecord(config) || valid === null || !valid.ok || config.schemaVersion !== 1 || typeof config.root !== "string" || !isAbsolute8(config.root) || typeof config.directory !== "string" || !isAbsolute8(config.directory))
-    throw new Error("invalid immutable receipt shim configuration");
-  return { root: config.root, directory: config.directory, enrollment: valid.value };
 }
 function readState(directory, enrollment) {
   const value = readJson(join9(directory, "state.json"));
   const stored = isRecord(value) ? validateCommitEnrollment(value.enrollment) : null;
-  if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.liveLease !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
+  if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.observing !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
     throw new Error("invalid private invocation lifecycle");
   return {
     enrollment: stored.value,
     status: value.status,
     pendingNonces: value.pendingNonces,
-    liveLease: value.liveLease,
+    observing: value.observing,
     lastActivityMs: value.lastActivityMs
   };
-}
-function readUsage(directory) {
-  const usage = readJson(join9(directory, "usage.json"), 4096);
-  if (!isRecord(usage) || typeof usage.bytes !== "number" || !Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || typeof usage.receipts !== "number" || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
-    throw new Error("invalid invocation usage");
-  return { bytes: usage.bytes, receipts: usage.receipts };
-}
-async function publishReceipt(root, directory, receipt) {
-  const deadline = performance.now() + COMMIT_RECEIPT_LIMITS.drainMs;
-  const enrollment = validateCommitEnrollment(readJson(join9(directory, "enrollment.json")));
-  if (!enrollment.ok) throw new Error(enrollment.reason);
-  const key2 = identityKey(enrollment.value);
-  const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline);
-  if (!claim) throw new Error("receipt publication ownership unavailable");
-  try {
-    const state = readState(directory, enrollment.value);
-    if (state.status !== "active") throw new Error("receipt invocation is no longer active");
-    const usage = readUsage(directory);
-    const bytes = Buffer.byteLength(JSON.stringify(receipt));
-    if (usage.receipts >= COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || usage.bytes + bytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 0, bytes, deadline))
-      throw new Error("receipt capacity exceeded");
-    atomicJson(join9(directory, "usage.json"), { bytes: usage.bytes + bytes, receipts: usage.receipts + 1 });
-    atomicJson(join9(directory, "receipts", `${receipt.nonce}.json`), receipt, true);
-    atomicJson(join9(directory, "state.json"), {
-      ...state,
-      pendingNonces: [...state.pendingNonces, receipt.nonce],
-      lastActivityMs: Date.now()
-    });
-  } finally {
-    claim.release();
-  }
 }
 
 // packages/agent-hooks/src/common/update-check-env.ts
@@ -7485,7 +7331,7 @@ function narrowCommand(toolInput) {
   const command = toolInput.command;
   return typeof command === "string" && command.length > 0 ? command : null;
 }
-function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}, bundlePath = fileURLToPath(import.meta.url)) {
+function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) {
   const options = { stateRoot: join10(dirname8(layout.base), "commit-receipts"), ...runtimeOptions };
   return async (input, ctx) => {
     try {
@@ -7513,8 +7359,7 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}, bun
           toolUseId: input.tool_use_id,
           cwd: input.cwd ?? "",
           toolInput,
-          ...input.transcript_path ? { transcriptLocator: input.transcript_path } : {},
-          bundlePath
+          ...input.transcript_path ? { transcriptLocator: input.transcript_path } : {}
         },
         options,
         ctx.logger
@@ -7523,16 +7368,12 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}, bun
         ctx.logger.warn("git-span commit attribution enrollment unavailable", { reason: result.reason });
         return null;
       }
-      return preToolUseOutput({ hookSpecificOutput: { updatedInput: result.updatedInput } });
+      return null;
     } catch (err) {
       ctx.logger.warn("git-span static Bash pre-plan failed closed for attribution", { err });
       return null;
     }
   };
-}
-if (process.argv[2] === "--git-span-commit-shim") {
-  await dispatchCommitShim();
-  process.exit(0);
 }
 disableUpdateCheck();
 var static_plan_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
