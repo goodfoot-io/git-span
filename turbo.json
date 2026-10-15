@@ -1,0 +1,107 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "remoteCache": {
+    "enabled": false
+  },
+  "envMode": "strict",
+  "globalDependencies": [
+    "package.json",
+    "tsconfig.json",
+    ".yarnrc.yml",
+    "biome.json",
+    "scripts/ensure-worktree-local-generated.mjs"
+  ],
+  "tasks": {
+    "transit": {
+      "dependsOn": [
+        "^transit"
+      ]
+    },
+    "test:uncached": {
+      "dependsOn": [
+        "transit"
+      ],
+      "outputs": [],
+      "env": [
+        "NODE_OPTIONS",
+        "NODE_ENV",
+        "CI",
+        "DISABLE_TEST_CACHE",
+        "GIT_SPAN_*",
+        "CARGO_*",
+        "RUSTFLAGS",
+        "RUSTUP_TOOLCHAIN",
+        "HEADLESS",
+        "DISPLAY",
+        "ELECTRON_*",
+        "VSCODE_TEST_CACHE_PATH",
+        "GOODFOOT_VITEST_FORCE",
+        "GOODFOOT_TEST_VERBOSE"
+      ],
+      "passThroughEnv": [
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "TZ",
+        "PROJECT_CWD",
+        "COREPACK_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "CC",
+        "CXX",
+        "RUSTUP_HOME",
+        "CARGO_HOME"
+      ]
+    },
+    "test:unit:uncached": {
+      "dependsOn": [
+        "transit"
+      ],
+      "outputs": [],
+      "env": [
+        "NODE_OPTIONS",
+        "NODE_ENV",
+        "CI",
+        "DISABLE_TEST_CACHE",
+        "GIT_SPAN_*",
+        "CARGO_*",
+        "RUSTFLAGS",
+        "RUSTUP_TOOLCHAIN",
+        "HEADLESS",
+        "DISPLAY",
+        "ELECTRON_*",
+        "VSCODE_TEST_CACHE_PATH",
+        "GOODFOOT_VITEST_FORCE",
+        "GOODFOOT_TEST_VERBOSE"
+      ],
+      "passThroughEnv": [
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "TZ",
+        "PROJECT_CWD",
+        "COREPACK_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "CC",
+        "CXX",
+        "RUSTUP_HOME",
+        "CARGO_HOME"
+      ]
+    }
+  }
+}

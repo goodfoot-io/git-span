@@ -1,0 +1,20 @@
+{
+  "files": {
+    "packages/discover/test/config.test.ts": [],
+    "packages/discover/test/merge.test.ts": [],
+    "packages/discover/test/paths.test.ts": [],
+    "packages/discover/test/signals/clones.test.ts": [],
+    "packages/discover/test/signals/cochange.test.ts": [],
+    "packages/discover/test/signals/commitMessages.test.ts": [],
+    "packages/discover/test/signals/docReferences.test.ts": [],
+    "packages/discover/test/signals/implTest.test.ts": [],
+    "packages/discover/test/signals/manifestWiring.test.ts": [],
+    "packages/discover/test/signals/pathLiterals.test.ts": [],
+    "packages/discover/test/signals/sharedLiterals.test.ts": [],
+    "packages/discover/test/signals/syncComments.test.ts": [],
+    "packages/discover/test/signals/sourceText.test.ts": [
+      "packages/discover/src/signals/cochange.ts",
+      "packages/discover/src/signals/sharedLiterals.ts"
+    ]
+  }
+}

@@ -246,6 +246,34 @@ yarn test
 Run `yarn validate` from the workspace root before finalizing code or
 configuration changes.
 
+### Test caches
+
+`yarn test` runs workspace tests through [Turborepo](turbo.json), one package
+at a time. Repeated successful tasks replay their cached logs. Package-level
+`yarn test` commands use the same cache, and the extension also runs its Vitest
+unit suite before its Electron suite. Builds, lint, and typechecks keep their
+existing commands.
+
+On a task cache miss, the four Vitest suites use `@goodfoot/vitest-cache`.
+Each package's `vitest.cache.json` lists reviewed tests and non-import inputs;
+unlisted tests execute without file-level reuse. Add or review declarations
+when introducing filesystem reads or subprocesses. Website browser and protocol
+gates remain separate from the default test command.
+
+```bash
+yarn test:skip-cache                 # execute every test without either cache
+yarn workspace discover test config.test.ts
+yarn workspace git-span-extension test:unit
+```
+
+Turbo stores results under `.turbo/cache` and shares them across linked
+worktrees. Vitest result records live under
+`${TMPDIR:-/tmp}/goodfoot-vitest-cache`, keyed by the common Git directory;
+its module cache lives under `node_modules/.experimental-vitest-cache`.
+CI restores all three stores. Remote Turbo caching is disabled. Changing the
+installed toolchain or external test services requires `yarn test:skip-cache`;
+those ambient resources are outside repository content hashes.
+
 ### Manpage
 
 The CLI ships a `git-span(1)` manpage generated from the clap definitions. To

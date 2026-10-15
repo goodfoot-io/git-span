@@ -1,4 +1,4 @@
-.githooks/pre-commit.version-lock.sh rk64:f97ac1da3009bcea
+.githooks/pre-commit.version-lock.sh rk64:e7c1290aa4f114f2
 package.json#L34-L34 rk64:9ed9e94c793e83d7
 scripts/bump.sh#L37-L43 rk64:06b3f2199dbf9b32
 scripts/check-version-consistency.mjs rk64:2553297f47e11f2c
@@ -7,4 +7,4 @@ scripts/plugin-manifests.mjs rk64:14729707af6bc2bd
 scripts/sync-versions.sh#L54-L76 rk64:05e35dd805df9756
 scripts/sync-versions.sh#L110-L132 rk64:3eddd333502fc955
 
-packages/git-span/package.json is the authoritative version source, and bump.sh, sync-versions.sh, the pre-commit version-lock hook, and check-version-consistency.mjs align workspace manifests, all four plugins-*/git-span platform manifests, the marketplace entry, and the CLI optionalDependencies so version changes run through yarn bump. The per-platform manifest layout is defined once in scripts/plugin-manifests.mjs and imported by both the version-lock hook and the consistency checker (which treats the marketplace entry as mandatory), while sync-versions.sh still enumerates by hand — a new plugins-* tree must land in both plugin-manifests.mjs and sync-versions.sh or it silently ships version-lagged, which no build step catches.
+packages/git-span/package.json is the authoritative version source for the git-span release train, and bump.sh, sync-versions.sh, the pre-commit version-lock hook, and check-version-consistency.mjs align its workspace manifests, all four plugins-*/git-span platform manifests, marketplace entry, and CLI optionalDependencies. git-mora and its five npm platform packages release independently and are excluded from this lock; the hook validates their own version contract instead. The per-platform manifest layout is defined once in scripts/plugin-manifests.mjs and imported by both the version-lock hook and the consistency checker, while sync-versions.sh still enumerates by hand, so a new plugins-* tree must land in both maps.

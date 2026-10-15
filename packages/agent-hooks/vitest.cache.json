@@ -1,0 +1,12 @@
+{
+  "files": {
+    "packages/agent-hooks/test/common/commit-association.test.ts": [],
+    "packages/agent-hooks/test/common/commit-contracts.test.ts": [],
+    "packages/agent-hooks/test/common/commit-lifecycle.test.ts": [],
+    "packages/agent-hooks/test/common/anchor-tree.test.ts": [],
+    "packages/agent-hooks/test/common/session-layout.test.ts": [],
+    "packages/agent-hooks/test/common/shell-split-machines.test.ts": [],
+    "packages/agent-hooks/test/codex/apply-patch.test.ts": [],
+    "packages/agent-hooks/test/codex/shell-command.test.ts": []
+  }
+}

@@ -15,10 +15,17 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "paths": {
-      "~/*": ["./app/*"],
-      "collections/*": ["./.source/*"]
+      "~/*": [
+        "./app/*"
+      ],
+      "collections/*": [
+        "./.source/*"
+      ]
     },
-    "types": ["vite/client", "@cloudflare/workers-types"]
+    "types": [
+      "vite/client",
+      "@cloudflare/workers-types"
+    ]
   },
   "include": [
     "app/**/*.ts",
@@ -27,6 +34,7 @@
     ".react-router/types/**/*.d.ts",
     "source.config.ts",
     "vite.config.ts",
-    "react-router.config.ts"
+    "react-router.config.ts",
+    "vitest.config.ts"
   ]
 }

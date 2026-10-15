@@ -1,0 +1,23 @@
+{
+  "extends": [
+    "//"
+  ],
+  "tasks": {
+    "test:uncached": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/scripts/**",
+        "!$TURBO_ROOT$/**/.DS_Store",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo",
+        "!$TURBO_ROOT$/**/target-cache/**",
+        "!$TURBO_ROOT$/**/target/**",
+        "!$TURBO_ROOT$/**/.source/**",
+        "!$TURBO_ROOT$/**/.react-router/**",
+        "!$TURBO_ROOT$/scripts/dist/**",
+        "!$TURBO_ROOT$/scripts/ssh/**"
+      ]
+    }
+  }
+}

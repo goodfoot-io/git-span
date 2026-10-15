@@ -46,15 +46,18 @@
     "vscode:prepublish": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node scripts/build/build-production.js",
     "build": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && vsce package --no-dependencies --follow-symlinks && { [ -n \"${SKIP_INSTALL:-}\" ] || bash scripts/install-vsix.sh; }",
     "build:testing": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node scripts/build/build-testing.js",
-    "test": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node --import tsx test/runTest.ts",
-    "test:unit": "vitest run",
+    "test": "yarn run -T turbo run test:uncached --filter=git-span-extension --cwd \"$PROJECT_CWD\" --",
+    "test:unit": "yarn run -T turbo run test:unit:uncached --filter=git-span-extension --cwd \"$PROJECT_CWD\" --",
     "lint": "biome ci --error-on-warnings --max-diagnostics 500 ./src ./test ./scripts && jsdoczoom -l",
     "lint:fix": "biome check --write ./src ./test ./scripts",
     "typecheck": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && tsgo --noEmit",
-    "clean": "rm -rf dist out dist-test-* *.vsix tsconfig.tsbuildinfo"
+    "clean": "rm -rf dist out dist-test-* *.vsix tsconfig.tsbuildinfo",
+    "test:uncached": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node --import tsx test/runTest.ts",
+    "test:unit:uncached": "vitest run"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
+    "@goodfoot/vitest-cache": "1.0.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
     "@types/vscode": "^1.101.0",
@@ -67,7 +70,8 @@
     "mocha": "^11.8.0",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4"
   },
   "repository": {
     "type": "git",

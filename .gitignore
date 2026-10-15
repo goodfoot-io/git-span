@@ -103,3 +103,8 @@ vendor/
 
 # opencode plugin ships its esbuild bundle checked in (published npm package)
 !plugins-opencode/git-span/dist/
+
+# Turborepo task results and logs
+.turbo/
+
+scratchpad/

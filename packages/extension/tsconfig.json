@@ -2,7 +2,9 @@
   "compilerOptions": {
     "module": "Node16",
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "sourceMap": true,
     "outDir": "dist",
     "rootDir": ".",
@@ -25,11 +27,27 @@
     "exactOptionalPropertyTypes": false,
     "allowUnusedLabels": false,
     "allowUnreachableCode": false,
-    "typeRoots": ["../../node_modules/@types", "./node_modules/@types"],
-    "types": ["node", "vscode"],
+    "typeRoots": [
+      "../../node_modules/@types",
+      "./node_modules/@types"
+    ],
+    "types": [
+      "node",
+      "vscode"
+    ],
     "incremental": true,
     "tsBuildInfoFile": "./tsconfig.tsbuildinfo"
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "scripts/**/*.ts"],
-  "exclude": ["node_modules", "dist", "out"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "test/**/*.ts",
+    "scripts/**/*.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "out"
+  ]
 }

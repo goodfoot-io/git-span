@@ -10,21 +10,24 @@
   },
   "bin": "./src/bin/discover.ts",
   "scripts": {
-    "test": "node ../../scripts/ensure-worktree-local-generated.mjs packages/discover && vitest run",
+    "test": "yarn run -T turbo run test:uncached --filter=discover --cwd \"$PROJECT_CWD\" --",
     "lint": "biome ci --error-on-warnings --max-diagnostics 500 ./src ./test && jsdoczoom -l",
     "lint:fix": "biome check --write ./src ./test",
-    "typecheck": "node ../../scripts/ensure-worktree-local-generated.mjs packages/discover && tsgo --noEmit"
+    "typecheck": "node ../../scripts/ensure-worktree-local-generated.mjs packages/discover && tsgo --noEmit",
+    "test:uncached": "node ../../scripts/ensure-worktree-local-generated.mjs packages/discover && vitest run"
   },
   "dependencies": {
     "tsx": "^4.23.12"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
+    "@goodfoot/vitest-cache": "1.0.0",
     "@types/node": "24.x",
     "@typescript/native-preview": "^7.0.0-dev",
     "jsdoczoom": "^1.2.6",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4"
   },
   "engines": {
     "node": ">=22"

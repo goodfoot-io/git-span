@@ -13,13 +13,14 @@
     "build": "yarn build:man",
     "build:local": "bash scripts/build-local.sh",
     "build:clean": "bash scripts/cleanup-stale-target.sh && bash scripts/clean-shared-build.sh && yarn build",
-    "test": "bash scripts/with-target-lock.sh exclusive env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build\" bash -c 'cargo run --quiet --locked --bin gen-schemas -- --check ../website && cargo nextest run --locked'",
+    "test": "yarn run -T turbo run test:uncached --filter=git-span --cwd \"$PROJECT_CWD\" --",
     "lint": "bash scripts/with-target-lock.sh shared env RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/check\" cargo clippy --quiet --locked --all-targets --all-features -- -D warnings",
     "typecheck": "bash scripts/with-target-lock.sh shared env RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/check\" cargo clippy --quiet --locked --all-targets --all-features -- -D warnings",
     "bench:check": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build\" cargo bench --no-run --locked --features bench-corpus",
     "bench:context": "python3 scripts/context-acceptance.py --binary \"${GIT_SPAN_CONTEXT_BINARY:-target-cache/release/git-span}\"",
     "bench": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build\" cargo bench --locked",
-    "udeps": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/udeps\" cargo +nightly udeps"
+    "udeps": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/udeps\" cargo +nightly udeps",
+    "test:uncached": "bash scripts/with-target-lock.sh exclusive env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build\" bash -c 'cargo run --quiet --locked --bin gen-schemas -- --check ../website && cargo nextest run --locked'"
   },
   "files": [
     "bin/git-span.exe",

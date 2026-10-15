@@ -81,7 +81,7 @@ jobs:
 
       - name: Publish to Open VSX
         working-directory: packages/extension
-        run: yarn dlx ovsx publish *.vsix --pat ${{ secrets.GIT_SPAN_EXTENSION_OPEN_VSX_TOKEN }}
+        run: yarn dlx ovsx publish ./*.vsix --pat ${{ secrets.GIT_SPAN_EXTENSION_OPEN_VSX_TOKEN }}
 
       - name: Upload VSIX to GitHub Release
         uses: softprops/action-gh-release@v2

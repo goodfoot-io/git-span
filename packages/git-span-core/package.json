@@ -3,9 +3,10 @@
   "version": "1.1.30",
   "private": true,
   "scripts": {
-    "test": "bash ../git-span/scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span-core/build\" cargo test --locked",
+    "test": "yarn run -T turbo run test:uncached --filter=@goodfoot/git-span-core --cwd \"$PROJECT_CWD\" --",
     "lint": "bash ../git-span/scripts/with-target-lock.sh shared env RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span-core/check\" cargo clippy --quiet --locked --all-targets --all-features -- -D warnings",
-    "typecheck": "bash ../git-span/scripts/with-target-lock.sh shared env RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span-core/check\" cargo clippy --quiet --locked --all-targets --all-features -- -D warnings"
+    "typecheck": "bash ../git-span/scripts/with-target-lock.sh shared env RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span-core/check\" cargo clippy --quiet --locked --all-targets --all-features -- -D warnings",
+    "test:uncached": "bash ../git-span/scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span-core/build\" cargo test --locked"
   },
   "repository": {
     "type": "git",

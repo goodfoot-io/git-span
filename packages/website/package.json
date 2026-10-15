@@ -16,10 +16,11 @@
     "lint:fix": "biome check --write .",
     "fumadocs:generate": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && fumadocs-mdx",
     "typecheck": "yarn fumadocs:generate && react-router typegen && tsc --noEmit",
-    "test": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && fumadocs-mdx && vitest run",
+    "test": "yarn run -T turbo run test:uncached --filter=@goodfoot/git-span-website --cwd \"$PROJECT_CWD\" --",
     "gate:protocol": "bash scripts/with-gate-lock.sh 'yarn build && vitest run --config vitest.gate-protocol.config.ts'",
     "gate:agentic": "bash scripts/with-gate-lock.sh 'yarn build && vitest run --config vitest.agentic-gate.config.ts'",
-    "gate": "bash scripts/with-gate-lock.sh 'yarn build && vitest run --config vitest.gate-protocol.config.ts && vitest run --config vitest.agentic-gate.config.ts'"
+    "gate": "bash scripts/with-gate-lock.sh 'yarn build && vitest run --config vitest.gate-protocol.config.ts && vitest run --config vitest.agentic-gate.config.ts'",
+    "test:uncached": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && fumadocs-mdx && vitest run"
   },
   "dependencies": {
     "@fontsource-variable/ibm-plex-sans": "^5.3.0",
@@ -36,6 +37,7 @@
     "@biomejs/biome": "^2.5.8",
     "@cloudflare/vite-plugin": "^1.52.1",
     "@cloudflare/workers-types": "^5.20260814.1",
+    "@goodfoot/vitest-cache": "1.0.0",
     "@react-router/dev": "^8.3.0",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/dom": "^10.4.1",
@@ -51,8 +53,8 @@
     "playwright": "^1.62.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
-    "vite": "^8.2.1",
-    "vitest": "^4.1.10",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4",
     "wrangler": "^4.123.0"
   }
 }

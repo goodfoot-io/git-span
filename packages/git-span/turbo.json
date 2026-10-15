@@ -1,0 +1,35 @@
+{
+  "extends": [
+    "//"
+  ],
+  "tasks": {
+    "test:uncached": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/scripts/**",
+        "$TURBO_ROOT$/plugins-*/**",
+        "$TURBO_ROOT$/skills-src/**",
+        "$TURBO_ROOT$/.github/**",
+        "$TURBO_ROOT$/.yarn/patches/**",
+        "$TURBO_ROOT$/packages/git-span-core/src/**",
+        "$TURBO_ROOT$/packages/git-span-core/Cargo.*",
+        "$TURBO_ROOT$/packages/website/content/**",
+        "$TURBO_ROOT$/packages/website/public/schemas/**",
+        "$TURBO_ROOT$/README.md",
+        "$TURBO_ROOT$/.devcontainer/devcontainer.json",
+        "$TURBO_ROOT$/packages/*/.cargo/**",
+        "$TURBO_ROOT$/packages/*/package.json",
+        "!$TURBO_ROOT$/**/.DS_Store",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo",
+        "!$TURBO_ROOT$/**/target-cache/**",
+        "!$TURBO_ROOT$/**/target/**",
+        "!$TURBO_ROOT$/**/.source/**",
+        "!$TURBO_ROOT$/**/.react-router/**",
+        "!$TURBO_ROOT$/scripts/dist/**",
+        "!$TURBO_ROOT$/scripts/ssh/**"
+      ]
+    }
+  }
+}

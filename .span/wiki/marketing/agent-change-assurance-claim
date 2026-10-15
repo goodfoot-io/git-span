@@ -1,4 +1,4 @@
-.github/workflows/ci.yml#L209-L212 rk64:b5c27abda9676fb7
+.github/workflows/ci.yml#L231-L234 rk64:b5c27abda9676fb7
 packages/agent-hooks/src/common/touch-core.ts#L3-L16 rk64:702945b1cbe3f42a
 wiki/marketing/use-cases/agent-change-assurance.md#L14-L21 rk64:1e2658b2be00e4da
 

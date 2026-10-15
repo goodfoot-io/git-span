@@ -9,13 +9,17 @@
  * @module vitest.config
  */
 
+import { loadCacheContract, withTestOutput } from '@goodfoot/vitest-cache/policy';
 import { defineConfig } from 'vitest/config';
 
-export default defineConfig({
-  test: {
-    include: ['test/unit/**/*.test.ts'],
-    globals: false,
-    reporters: ['dot'],
-    testTimeout: 30_000
-  }
-});
+export default withTestOutput(
+  defineConfig({
+    test: {
+      include: ['test/unit/**/*.test.ts'],
+      globals: false,
+      reporters: ['dot'],
+      testTimeout: 30_000
+    }
+  }),
+  loadCacheContract(new URL('./vitest.cache.json', import.meta.url))
+);

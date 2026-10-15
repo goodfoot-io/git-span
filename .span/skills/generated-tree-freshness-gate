@@ -1,6 +1,6 @@
-.github/workflows/ci.yml#L110-L175 rk64:6cbb26d4f58f22f6
+.github/workflows/ci.yml#L110-L186 rk64:c8da0aa90e9c2b42
 .github/workflows/release-git-span.yml#L170-L181 rk64:06a961f646f3d080
-scripts/check-generated-tree-freshness.mjs rk64:023b4695b97a6c2a
+scripts/check-generated-tree-freshness.mjs rk64:99be1b0c6d9eb2a9
 scripts/run-pipeline-gates.sh#L14-L21 rk64:cb40d9eedad87e35
 scripts/run-pipeline-gates.sh#L73-L82 rk64:492fc37d0f3beb7e
 scripts/run-pipeline-gates.sh#L84-L98 rk64:b694cda92fb96228

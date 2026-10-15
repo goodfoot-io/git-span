@@ -19,7 +19,7 @@
     "lint:root": "biome ci --error-on-warnings --max-diagnostics 500 ./scripts ./.claude/skills ./.codex/skills ./packages/git-span/scripts ./plugins-opencode/git-span/bin",
     "lint:fix": "yarn workspaces foreach --parallel -A run lint:fix && yarn lint:root:fix",
     "lint:root:fix": "biome check --write ./scripts ./.claude/skills ./.codex/skills ./packages/git-span/scripts ./plugins-opencode/git-span/bin",
-    "test": "yarn workspaces foreach -A --parallel --jobs 7 --interlaced --verbose run test",
+    "test": "turbo run test:uncached --concurrency=1",
     "typecheck": "bash scripts/typecheck.sh",
     "build": "node scripts/ensure-worktree-local-generated.mjs --all && yarn workspaces foreach -At run build",
     "watch": "yarn workspaces foreach -Api run watch",
@@ -32,7 +32,8 @@
     "lint:agent-skills": "node scripts/lint-agent-skills.mjs",
     "validate": "bash scripts/validate.sh",
     "bump": "bash scripts/bump.sh",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "test:skip-cache": "DISABLE_TEST_CACHE=true turbo run test:uncached --force --concurrency=1"
   },
   "private": true,
   "packageManager": "yarn@4.18.0",
@@ -43,6 +44,7 @@
     "esbuild": "^0.28.2",
     "knip": "^6.32.2",
     "rkyv-js": "^0.3.0",
+    "turbo": "2.11.8",
     "typescript": "^7.0.2"
   },
   "dependencies": {

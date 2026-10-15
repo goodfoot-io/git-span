@@ -172,13 +172,26 @@ async function settlesBeforeTimeout(promise: Promise<unknown>): Promise<boolean>
 }
 
 describe('gitRepository session memoization (unit)', () => {
+  let consoleErrors: unknown[][];
+  let expectedErrors: unknown[][];
+
   beforeEach(() => {
+    consoleErrors = [];
+    expectedErrors = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      consoleErrors.push(args);
+    });
     control.reset();
     vi.useFakeTimers();
   });
 
   afterEach(() => {
-    vi.useRealTimers();
+    try {
+      expect(consoleErrors).toEqual(expectedErrors);
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
   });
 
   it('resolves the owning repository when vscode.git reports one', async () => {
@@ -206,6 +219,12 @@ describe('gitRepository session memoization (unit)', () => {
   });
 
   it('caches the timed-out outcome: the second open resolves fast with the same reason', async () => {
+    expectedErrors = [
+      [
+        'Git Span: vscode.git did not finish initializing:',
+        expect.objectContaining({ name: 'Error', message: TIMEOUT_REASON })
+      ]
+    ];
     const sut = await loadModule();
 
     const first = sut.getRepositoryForUri(spanUri);
@@ -223,6 +242,12 @@ describe('gitRepository session memoization (unit)', () => {
   });
 
   it('puts concurrent first opens on one shared bounded wait', async () => {
+    expectedErrors = [
+      [
+        'Git Span: vscode.git did not finish initializing:',
+        expect.objectContaining({ name: 'Error', message: TIMEOUT_REASON })
+      ]
+    ];
     const sut = await loadModule();
 
     const first = sut.getRepositoryForUri(spanUri);
@@ -246,6 +271,12 @@ describe('gitRepository session memoization (unit)', () => {
   });
 
   it('reports a concrete reason when vscode.git fails to activate, and caches it', async () => {
+    expectedErrors = [
+      [
+        'Git Span: failed to activate vscode.git:',
+        expect.objectContaining({ name: 'Error', message: 'Cannot activate the git extension' })
+      ]
+    ];
     control.failNextActivation = true;
     const sut = await loadModule();
 
@@ -257,6 +288,12 @@ describe('gitRepository session memoization (unit)', () => {
   });
 
   it('clears the memoized timeout when git initializes later in the session', async () => {
+    expectedErrors = [
+      [
+        'Git Span: vscode.git did not finish initializing:',
+        expect.objectContaining({ name: 'Error', message: TIMEOUT_REASON })
+      ]
+    ];
     const sut = await loadModule();
 
     const first = sut.getRepositoryForUri(spanUri);

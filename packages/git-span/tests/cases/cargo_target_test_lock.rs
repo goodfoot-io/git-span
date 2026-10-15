@@ -54,7 +54,9 @@ mod unix {
         path.push(inherited_path);
 
         let mut test_run = Command::new("yarn")
-            .arg("test")
+            // Exercise the Cargo lock itself. The public test command uses
+            // Turbo, whose environment filtering excludes fixture variables.
+            .arg("test:uncached")
             .current_dir(package_root())
             .env("PATH", path)
             .env("GIT_SPAN_CARGO_TARGET_ROOT", &target_root)
