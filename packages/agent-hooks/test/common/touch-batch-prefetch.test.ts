@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import {
   createDefaultTouchExecutors,
@@ -152,9 +152,15 @@ const INSTALLED_SMOKE_TIMEOUT_MS = 600_000;
 const SUBPROCESS_TIMEOUT_MS = 30_000;
 
 let PATH_DIR: string;
+const repos: RealBundleRepo[] = [];
+
+afterEach(() => {
+  for (const repo of repos.splice(0)) repo.cleanup();
+});
 
 function seedRepo(): RealBundleRepo {
   const repo = makeRealBundleRepo(PATH_DIR);
+  repos.push(repo);
   for (const f of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) {
     writeRepoFile(repo, f, 'alpha\nTARGET\nomega\n');
   }

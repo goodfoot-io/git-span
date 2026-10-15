@@ -160,10 +160,9 @@ export interface RealBundleRepo {
 /** Create an isolated real repository and HOME for emitted-hook subprocesses. */
 export function makeRealBundleRepo(pathDir: string): RealBundleRepo {
   const parent = mkdtempSync(join(tmpdir(), 'agent-hooks-installed-smoke-'));
+  const cleanup = (): void => rmSync(parent, { recursive: true, force: true });
   const root = join(parent, 'repo');
   const home = join(parent, 'home');
-  mkdirSync(root);
-  mkdirSync(home);
   const env = {
     ...process.env,
     HOME: home,
@@ -173,10 +172,18 @@ export function makeRealBundleRepo(pathDir: string): RealBundleRepo {
     GIT_COMMITTER_NAME: 'installed smoke',
     GIT_COMMITTER_EMAIL: 'installed-smoke@example.com'
   };
-  execFileSync('git', ['init', '-q'], { cwd: root, env, stdio: 'pipe' });
-  execFileSync('git', ['config', 'user.name', 'installed smoke'], { cwd: root, env, stdio: 'pipe' });
-  execFileSync('git', ['config', 'user.email', 'installed-smoke@example.com'], { cwd: root, env, stdio: 'pipe' });
-  return { root, home, env, cleanup: () => rmSync(parent, { recursive: true, force: true }) };
+  // The caller only receives `cleanup` on success, so a failed setup must remove the directory itself.
+  try {
+    mkdirSync(root);
+    mkdirSync(home);
+    execFileSync('git', ['init', '-q'], { cwd: root, env, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.name', 'installed smoke'], { cwd: root, env, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.email', 'installed-smoke@example.com'], { cwd: root, env, stdio: 'pipe' });
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+  return { root, home, env, cleanup };
 }
 
 export function writeRepoFile(repo: RealBundleRepo, path: string, content: string, executable = false): void {

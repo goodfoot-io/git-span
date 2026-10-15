@@ -38,6 +38,15 @@ import { loadRegistry, repo } from './agent-skills-registry.mjs';
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 
+// Scratch replay directories still on disk. fail() and every other refusal
+// leave through process.exit(), which skips `finally`, so the exit hook is
+// what guarantees a refused replay does not strand its scratch tree.
+/** @type {Set<string>} */
+const liveScratch = new Set();
+process.on('exit', () => {
+  for (const dir of liveScratch) rmSync(dir, { recursive: true, force: true });
+});
+
 /** @param {string} message @returns {never} */
 function fail(message) {
   process.stderr.write(`ERROR: ${message}\n`);
@@ -206,6 +215,7 @@ function treesWrittenBy(wrapper, build) {
     fail(`hook build script "${build.name}" writes outside the repository (${realOut}) — nothing to measure.`);
   }
   const scratch = mkdtempSync(path.join(tmpdir(), `hooks-tree-${build.agent}-`));
+  liveScratch.add(scratch);
   try {
     const scratchOut = path.join(scratch, path.basename(build.output));
     const result = spawnSync(process.execPath, [wrapper, ...swapArgValue(build.args, ['-o', '--output'], scratchOut)], {
@@ -239,6 +249,7 @@ function treesWrittenBy(wrapper, build) {
     return written.map((entry) => `${parent}/${entry}`);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
+    liveScratch.delete(scratch);
   }
 }
 
