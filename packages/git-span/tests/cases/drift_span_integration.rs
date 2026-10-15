@@ -117,22 +117,22 @@ fn same_path_same_text_anchors_resolve_independently() -> Result<()> {
 }
 
 /// Make a submodule gitlink at `sub/` pointing at a second scratch repo.
-/// Returns the bare-like path of the inner repo so the caller can advance
-/// its tip and re-stage the gitlink.
-fn add_submodule_gitlink(repo: &TestRepo, sub_rel: &str) -> Result<PathBuf> {
+/// Returns the inner repo's temp dir so the caller can advance its tip and
+/// re-stage the gitlink; it is removed when the caller drops it.
+fn add_submodule_gitlink(repo: &TestRepo, sub_rel: &str) -> Result<tempfile::TempDir> {
     let inner = tempfile::tempdir()?;
-    let inner_path = inner.keep();
+    let inner_path = inner.path();
     std::process::Command::new("git")
         .args(["init", "--initial-branch=main"])
-        .arg(&inner_path)
+        .arg(inner_path)
         .output()?;
     std::fs::write(inner_path.join("inner.txt"), "hello\n")?;
     std::process::Command::new("git")
-        .current_dir(&inner_path)
+        .current_dir(inner_path)
         .args(["-c", "user.email=t@e", "-c", "user.name=T", "add", "-A"])
         .output()?;
     std::process::Command::new("git")
-        .current_dir(&inner_path)
+        .current_dir(inner_path)
         .args([
             "-c",
             "user.email=t@e",
@@ -154,7 +154,7 @@ fn add_submodule_gitlink(repo: &TestRepo, sub_rel: &str) -> Result<PathBuf> {
         sub_rel,
     ])?;
     repo.commit_all("add submodule")?;
-    Ok(inner_path)
+    Ok(inner)
 }
 
 /// Replace an ordinary tracked directory with a submodule containing the
@@ -167,10 +167,10 @@ fn promote_directory_to_submodule(
     files: &[(&str, &str)],
 ) -> Result<()> {
     let inner = tempfile::tempdir()?;
-    let inner_path = inner.keep();
+    let inner_path = inner.path();
     let init = std::process::Command::new("git")
         .args(["init", "--initial-branch=main"])
-        .arg(&inner_path)
+        .arg(inner_path)
         .output()?;
     anyhow::ensure!(
         init.status.success(),
@@ -199,7 +199,7 @@ fn promote_directory_to_submodule(
         ],
     ] {
         let out = std::process::Command::new("git")
-            .current_dir(&inner_path)
+            .current_dir(inner_path)
             .args(args)
             .output()?;
         anyhow::ensure!(
@@ -610,9 +610,9 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
         repo.run_git(["commit", "-m", "span commit"])?;
     }
     // Advance inner repo and stage the bump in outer repo.
-    std::fs::write(inner.join("inner.txt"), "hello 2\n")?;
+    std::fs::write(inner.path().join("inner.txt"), "hello 2\n")?;
     std::process::Command::new("git")
-        .current_dir(&inner)
+        .current_dir(inner.path())
         .args([
             "-c",
             "user.email=t@e",

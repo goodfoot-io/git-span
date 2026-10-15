@@ -246,10 +246,10 @@ fn directory_promoted_to_submodule(equal_bytes: bool) -> Result<TestRepo> {
     repo.run_git(["commit", "-m", "add anchor"])?;
 
     let inner = tempfile::tempdir()?;
-    let inner_path = inner.keep();
+    let inner_path = inner.path();
     std::process::Command::new("git")
         .args(["init", "--initial-branch=main"])
-        .arg(&inner_path)
+        .arg(inner_path)
         .output()?;
     std::fs::write(
         inner_path.join("f.txt"),
@@ -260,11 +260,11 @@ fn directory_promoted_to_submodule(equal_bytes: bool) -> Result<TestRepo> {
         },
     )?;
     std::process::Command::new("git")
-        .current_dir(&inner_path)
+        .current_dir(inner_path)
         .args(["-c", "user.email=t@e", "-c", "user.name=T", "add", "-A"])
         .output()?;
     std::process::Command::new("git")
-        .current_dir(&inner_path)
+        .current_dir(inner_path)
         .args([
             "-c",
             "user.email=t@e",
