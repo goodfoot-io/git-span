@@ -1,0 +1,187 @@
+name: Git Mora
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    tags: ["git-mora-v*"]
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: corepack enable
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install linker
+        run: sudo apt-get update && sudo apt-get install -y mold clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/git-mora -> target-cache
+      - run: yarn install --immutable --mode=skip-build
+      - name: Check versions and release tag
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            yarn workspace git-mora check:versions "$GITHUB_REF_NAME"
+          else
+            yarn workspace git-mora check:versions
+          fi
+      - name: Rust formatting
+        working-directory: packages/git-mora
+        run: cargo fmt --check
+      - name: Lint and test
+        env:
+          GIT_SPAN_CARGO_TARGET_ROOT: ${{ runner.temp }}/git-span-target
+        run: |
+          yarn workspace git-mora lint
+          yarn workspace git-mora test
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            package: git-mora-linux-x64
+            binary: git-mora
+            smoke: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            package: git-mora-linux-arm64
+            binary: git-mora
+            smoke: false
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            package: git-mora-darwin-x64
+            binary: git-mora
+            smoke: true
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            package: git-mora-darwin-arm64
+            binary: git-mora
+            smoke: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package: git-mora-win32-x64
+            binary: git-mora.exe
+            smoke: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native binary
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          target: ${{ matrix.target }}
+          working-directory: packages/git-mora
+          args: --release --locked
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+      - name: Stage platform package
+        shell: bash
+        env:
+          PLATFORM_PACKAGE: ${{ matrix.package }}
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
+        run: |
+          mkdir -p "npm/$PLATFORM_PACKAGE/bin"
+          cp "packages/git-mora/target-cache/$TARGET/release/$BINARY" "npm/$PLATFORM_PACKAGE/bin/$BINARY"
+      - uses: actions/setup-node@v4
+        if: matrix.smoke
+        with:
+          node-version: "24"
+      - name: Test packed installer on native hosts
+        if: matrix.smoke
+        shell: bash
+        env:
+          MORA_BINARY: ${{ github.workspace }}/packages/git-mora/target-cache/${{ matrix.target }}/release/${{ matrix.binary }}
+          PLATFORM_PACKAGE: ${{ matrix.package }}
+        run: |
+          corepack enable
+          yarn install --immutable --mode=skip-build
+          host_platform="$(node -p 'process.platform + "-" + process.arch')"
+          if [ "$PLATFORM_PACKAGE" = "git-mora-$host_platform" ]; then
+            yarn workspace git-mora pack:smoke "$MORA_BINARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: npm/${{ matrix.package }}/bin/
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/git-mora-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: corepack enable
+      - run: yarn install --immutable --mode=skip-build
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage and verify every artifact before publishing
+        shell: bash
+        run: |
+          yarn workspace git-mora check:versions "$GITHUB_REF_NAME"
+          mkdir -p release-assets
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            package="git-mora-$platform"
+            binary=git-mora
+            suffix=""
+            if [ "$platform" = win32-x64 ]; then binary=git-mora.exe; suffix=.exe; fi
+            test -s "artifacts/$package/$binary"
+            mkdir -p "npm/$package/bin"
+            cp "artifacts/$package/$binary" "npm/$package/bin/$binary"
+            chmod +x "npm/$package/bin/$binary"
+            cp "artifacts/$package/$binary" "release-assets/$package$suffix"
+          done
+          yarn workspace git-mora pack:smoke "$PWD/artifacts/git-mora-linux-x64/git-mora"
+      - name: Generate checksums
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { createHash } from 'node:crypto';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { platforms } from './packages/git-mora/scripts/versions.mjs';
+          const manifest = { version: process.env.GITHUB_REF_NAME.slice('git-mora-v'.length), assets: {} };
+          for (const platform of platforms) {
+            const name = `git-mora-${platform}${platform === 'win32-x64' ? '.exe' : ''}`;
+            manifest.assets[platform] = { name, sha256: createHash('sha256').update(readFileSync(`release-assets/${name}`)).digest('hex') };
+          }
+          writeFileSync('release-assets/git-mora-cli-checksums.json', `${JSON.stringify(manifest, null, 2)}\n`);
+          JS
+      - name: Publish platform packages, then installer
+        env:
+          YARN_NPM_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            yarn workspace "git-mora-$platform" npm publish --access public --provenance
+          done
+          yarn workspace git-mora npm publish --access public --provenance
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*
+          fail_on_unmatched_files: true

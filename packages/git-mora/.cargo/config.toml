@@ -1,0 +1,8 @@
+[build]
+target-dir = "target-cache"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "cc.mold-wrapper"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "cc.mold-wrapper"

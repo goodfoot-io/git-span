@@ -63,6 +63,14 @@
         "scripts/**/*.js"
       ]
     },
+    "packages/git-mora": {
+      "entry": [
+        "scripts/*.{js,mjs}"
+      ],
+      "project": [
+        "scripts/*.{js,mjs}"
+      ]
+    },
     "packages/git-span": {
       "entry": [
         "scripts/*.{js,mjs}"

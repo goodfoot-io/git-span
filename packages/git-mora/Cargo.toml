@@ -1,0 +1,14 @@
+[package]
+name = "git-mora"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Git mora command-line utility"
+repository = "https://github.com/goodfoot-io/git-span"
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+undocumented_unsafe_blocks = "deny"

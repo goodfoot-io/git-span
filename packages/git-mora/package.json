@@ -1,0 +1,38 @@
+{
+  "name": "git-mora",
+  "version": "0.1.0",
+  "description": "Git mora command-line utility",
+  "license": "MIT",
+  "bin": "bin/git-mora.exe",
+  "files": [
+    "bin/git-mora.exe",
+    "scripts/postinstall.js"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "build": "bash scripts/cargo.sh build build --release --locked",
+    "build:local": "bash scripts/build-local.sh",
+    "test": "node --test scripts/*.test.mjs && bash scripts/cargo.sh build test --locked",
+    "lint": "biome ci --error-on-warnings scripts && bash scripts/cargo.sh check clippy --quiet --locked --all-targets --all-features -- -D warnings",
+    "typecheck": "bash scripts/cargo.sh check clippy --quiet --locked --all-targets --all-features -- -D warnings",
+    "check:versions": "node scripts/versions.mjs check",
+    "bump": "node scripts/versions.mjs bump \"$@\" && yarn install --mode=skip-build",
+    "release": "node scripts/release.mjs",
+    "pack:smoke": "bash scripts/pack-smoke.sh"
+  },
+  "optionalDependencies": {
+    "git-mora-darwin-arm64": "0.1.0",
+    "git-mora-darwin-x64": "0.1.0",
+    "git-mora-linux-arm64": "0.1.0",
+    "git-mora-linux-x64": "0.1.0",
+    "git-mora-win32-x64": "0.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodfoot-io/git-span.git",
+    "directory": "packages/git-mora"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.8"
+  }
+}

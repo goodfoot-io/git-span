@@ -1,0 +1,20 @@
+{
+  "name": "git-mora-linux-arm64",
+  "version": "0.1.0",
+  "description": "Platform-specific binary for git-mora",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodfoot-io/git-span.git",
+    "directory": "npm/git-mora-linux-arm64"
+  }
+}

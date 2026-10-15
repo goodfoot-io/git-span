@@ -1,0 +1,12 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test:uncached": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/path/to/other/package/schema.sql",
+        "!$TURBO_ROOT$/**/.DS_Store"
+      ]
+    }
+  }
+}

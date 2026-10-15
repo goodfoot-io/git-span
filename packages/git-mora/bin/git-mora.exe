@@ -1,0 +1,4 @@
+git-mora placeholder. scripts/postinstall.js replaces this file
+with the native binary for your platform. Keep this file non-executable
+and without a shebang so Windows package-manager shims execute the native
+binary directly after installation.

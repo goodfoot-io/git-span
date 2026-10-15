@@ -1,0 +1,15 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "remoteCache": { "enabled": false },
+  "envMode": "strict",
+  "globalDependencies": ["package.json", "tsconfig.json", ".yarnrc.yml"],
+  "tasks": {
+    "transit": { "dependsOn": ["^transit"] },
+    "test:uncached": {
+      "dependsOn": ["transit"],
+      "outputs": [],
+      "env": ["NODE_OPTIONS", "NODE_ENV", "CI", "DISABLE_TEST_CACHE"],
+      "passThroughEnv": ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM", "TZ"]
+    }
+  }
+}
