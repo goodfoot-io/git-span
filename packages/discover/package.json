@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
-    "@goodfoot/vitest-cache": "1.0.0",
+    "@goodfoot/vitest-cache": "1.0.5",
     "@types/node": "24.x",
     "@typescript/native-preview": "^7.0.0-dev",
     "jsdoczoom": "^1.2.6",

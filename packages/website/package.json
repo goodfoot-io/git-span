@@ -37,7 +37,7 @@
     "@biomejs/biome": "^2.5.8",
     "@cloudflare/vite-plugin": "^1.52.1",
     "@cloudflare/workers-types": "^5.20260814.1",
-    "@goodfoot/vitest-cache": "1.0.0",
+    "@goodfoot/vitest-cache": "1.0.5",
     "@react-router/dev": "^8.3.0",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/dom": "^10.4.1",
