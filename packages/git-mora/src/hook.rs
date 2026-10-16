@@ -94,23 +94,40 @@ fn post_rewrite() -> Result<()> {
     topics::apply(additions)
 }
 
-/// True only when native evidence corroborates that HEAD is a merge commit this operation created.
-fn made_new_merge(head: &str) -> Result<bool> {
-    let parents = parents(head)?;
-    if parents.len() < 2 {
-        return Ok(false);
-    }
-    let orig = git::query(&["rev-parse", "--verify", "--quiet", "ORIG_HEAD^{commit}"])?;
-    if orig.as_deref() != Some(parents[0].as_str()) {
-        return Ok(false);
-    }
+/// What native evidence says about the HEAD that a merge just produced.
+enum MergeOutcome {
+    /// HEAD is a merge commit this operation created.
+    NewMerge,
+    /// The branch only moved; no commit was created, so there is nothing to annotate.
+    FastForward,
+    /// Native evidence neither corroborates a new merge commit nor identifies a fast-forward.
+    Unverified,
+}
+
+fn merge_outcome(head: &str) -> Result<MergeOutcome> {
+    // The reflog entry proves HEAD was last moved by a merge-family operation (merge, pull, ...).
     let Some(entry) = git::query(&["log", "-g", "-n", "1", "--format=%H%x09%gs", "HEAD"])? else {
-        return Ok(false);
+        return Ok(MergeOutcome::Unverified);
     };
     let Some((oid, subject)) = entry.split_once('\t') else {
-        return Ok(false);
+        return Ok(MergeOutcome::Unverified);
     };
-    Ok(oid == head && subject.starts_with("merge ") && !subject.ends_with("Fast-forward"))
+    if oid != head {
+        return Ok(MergeOutcome::Unverified);
+    }
+    if subject.ends_with("Fast-forward") {
+        return Ok(MergeOutcome::FastForward);
+    }
+    let parents = parents(head)?;
+    if parents.len() < 2 {
+        return Ok(MergeOutcome::Unverified);
+    }
+    let orig = git::query(&["rev-parse", "--verify", "--quiet", "ORIG_HEAD^{commit}"])?;
+    if orig.as_deref() == Some(parents[0].as_str()) {
+        Ok(MergeOutcome::NewMerge)
+    } else {
+        Ok(MergeOutcome::Unverified)
+    }
 }
 
 fn post_merge(squash: bool) -> Result<()> {
@@ -118,13 +135,12 @@ fn post_merge(squash: bool) -> Result<()> {
         return Ok(());
     }
     let head = head()?;
-    if made_new_merge(&head)? {
-        annotate_new_commit(&head)
-    } else {
-        eprintln!(
-            "git-mora: post-merge made no topic annotation (no corroborated new merge commit); \
-             use 'git mora topic add' for a known commit"
-        );
-        Ok(())
+    match merge_outcome(&head)? {
+        MergeOutcome::NewMerge => annotate_new_commit(&head),
+        MergeOutcome::FastForward => Ok(()),
+        MergeOutcome::Unverified => bail!(
+            "post-merge could not corroborate whether {head} is a new merge commit, so its topics were not recorded; \
+             run 'git mora topic add <topic> {head}' for each intended topic"
+        ),
     }
 }

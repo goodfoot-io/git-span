@@ -1,0 +1,37 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-mora-wait 1  "wait " 
+.SH NAME
+git\-mora\-wait \- Wait for matching tags or branches to exist or disappear
+.SH SYNOPSIS
+\fBgit mora wait\fR [\fB\-\-tag\fR] [\fB\-\-branch\fR] [\fB\-\-agent\-id\fR] [\fB\-\-target\fR] [\fB\-\-attempt\-id\fR] [\fB\-\-topic\fR] [\fB\-\-absent\fR] [\fB\-\-timeout\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Wait for matching tags or branches to exist or disappear
+.SH OPTIONS
+.TP
+\fB\-\-tag\fR \fI<pattern>\fR
+Ordinary tag name pattern, e.g. \*(Aqpending/main/*\*(Aq
+.TP
+\fB\-\-branch\fR \fI<pattern>\fR
+Ordinary branch name pattern, e.g. \*(Aqagent/alice/*\*(Aq
+.TP
+\fB\-\-agent\-id\fR \fI<id>\fR
+Parsed agent, or the current branch association for a tag
+.TP
+\fB\-\-target\fR \fI<name>\fR
+Target encoded in a workflow name
+.TP
+\fB\-\-attempt\-id\fR \fI<id>\fR
+Attempt encoded in a workflow name
+.TP
+\fB\-\-topic\fR \fI<id>\fR
+Direct topic membership of the pointed\-to commit
+.TP
+\fB\-\-absent\fR
+Wait until no names satisfy the filters
+.TP
+\fB\-\-timeout\fR \fI<d>\fR
+Stop after this duration (exit 3)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

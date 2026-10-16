@@ -153,6 +153,8 @@ fn branch_creates_without_switching_and_validates_target() {
     assert_eq!(repo.git(&["rev-parse", &name]), repo.git(&["rev-parse", "HEAD"]));
 
     let first = repo.commit("second");
+    assert!(repo.fails(&["branch", "--agent-id", "bob", "--target", "release", "HEAD~1"]).contains("not an existing local branch"));
+    repo.git(&["branch", "release"]);
     let second = repo.ok(&["branch", "--agent-id", "bob", "--target", "release", "HEAD~1"]);
     assert!(second.starts_with("agent/bob/release/"));
     assert_ne!(repo.git(&["rev-parse", &second]), first);
@@ -421,8 +423,32 @@ fn merge_hook_annotates_new_merges_but_not_fast_forwards() {
         cmd.output().expect("run")
     };
     assert!(o.status.success(), "{o:?}");
+    assert!(o.stderr.is_empty(), "fast-forward must not warn: {o:?}");
     assert_eq!(repo.git(&["rev-parse", "HEAD"]), merge);
     assert_eq!(repo.ok(&["topic", "of", &merge]), "ctx\nside-topic");
+}
+
+#[test]
+fn merge_hook_annotates_pull_merges_and_fails_closed_when_unverifiable() {
+    let repo = Repo::new();
+    repo.install_hooks();
+    repo.git(&["switch", "-q", "-c", "side"]);
+    repo.ok(&["topic", "exec", "--topic", "side-topic", "--", "git", "commit", "-q", "--allow-empty", "-m", "side"]);
+    repo.git(&["switch", "-q", "main"]);
+    repo.commit("main work");
+
+    // A pull-created merge has reflog action "pull", yet is a genuine new merge commit.
+    repo.git(&["pull", "-q", "--no-rebase", "--no-ff", "--no-edit", ".", "side"]);
+    let merge = repo.git(&["rev-parse", "HEAD"]);
+    assert_eq!(repo.ok(&["topic", "of", &merge]), "side-topic");
+
+    // Without corroborating ORIG_HEAD evidence the hook must refuse rather than skip silently.
+    repo.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    repo.git(&["merge", "-q", "--no-ff", "--no-edit", "side"]);
+    let again = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["update-ref", "ORIG_HEAD", "HEAD"]);
+    let err = repo.fails(&["hook", "post-merge", "0"]);
+    assert!(err.contains("could not corroborate") && err.contains(&again), "{err}");
 }
 
 #[test]

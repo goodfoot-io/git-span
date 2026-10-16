@@ -1,0 +1,37 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-mora-list 1  "list " 
+.SH NAME
+git\-mora\-list \- List matching local branches and tags, then exit
+.SH SYNOPSIS
+\fBgit mora list\fR [\fB\-\-tag\fR] [\fB\-\-branch\fR] [\fB\-\-agent\-id\fR] [\fB\-\-target\fR] [\fB\-\-attempt\-id\fR] [\fB\-\-topic\fR] [\fB\-\-json\fR] [\fB\-\-names\-only\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+List matching local branches and tags, then exit
+.SH OPTIONS
+.TP
+\fB\-\-tag\fR \fI<pattern>\fR
+Ordinary tag name pattern, e.g. \*(Aqpending/main/*\*(Aq
+.TP
+\fB\-\-branch\fR \fI<pattern>\fR
+Ordinary branch name pattern, e.g. \*(Aqagent/alice/*\*(Aq
+.TP
+\fB\-\-agent\-id\fR \fI<id>\fR
+Parsed agent, or the current branch association for a tag
+.TP
+\fB\-\-target\fR \fI<name>\fR
+Target encoded in a workflow name
+.TP
+\fB\-\-attempt\-id\fR \fI<id>\fR
+Attempt encoded in a workflow name
+.TP
+\fB\-\-topic\fR \fI<id>\fR
+Direct topic membership of the pointed\-to commit
+.TP
+\fB\-\-json\fR
+One JSON object per line
+.TP
+\fB\-\-names\-only\fR
+One ordinary name per line
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

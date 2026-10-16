@@ -1,0 +1,23 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-mora-tag 1  "tag " 
+.SH NAME
+git\-mora\-tag \- Tag the current attempt as pending, merge, or discard
+.SH SYNOPSIS
+\fBgit mora tag\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Tag the current attempt as pending, merge, or discard
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+git\-mora\-tag\-pending(1)
+Create the pending tag at HEAD (requires a clean worktree)
+.TP
+git\-mora\-tag\-merge(1)
+Turn the pending snapshot at HEAD into a merge tag
+.TP
+git\-mora\-tag\-discard(1)
+Turn the pending or merge snapshot at HEAD into a discard tag

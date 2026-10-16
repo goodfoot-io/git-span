@@ -1,0 +1,46 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-mora 1  "git-mora 0.1.0" 
+.SH NAME
+git\-mora \- Small helpers for agent branches, workflow tags, and informational topics
+.SH SYNOPSIS
+\fBgit mora\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Small helpers for agent branches, workflow tags, and informational topics.
+.PP
+Names: agent branch   agent/<agent\-id>/<target>/<attempt\-id> workflow tags  pending|merge|discard/<target>/<attempt\-id> topic index    refs/topics/<topic\-id>
+.PP
+Mora never moves an existing tag to different code, runs reviews, chooses integrations, or publishes. Only requested branches/tags, topic blobs/refs, and optional worktree\-local topic context are persisted.
+.PP
+Exit status: 0 success (including no\-op or empty list), 1 operation failed, 2 invalid arguments, 3 wait timed out.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+git\-mora\-branch(1)
+Create a uniquely named agent branch and print its name
+.TP
+git\-mora\-tag(1)
+Tag the current attempt as pending, merge, or discard
+.TP
+git\-mora\-list(1)
+List matching local branches and tags, then exit
+.TP
+git\-mora\-listen(1)
+Watch for matching tags and branches being created
+.TP
+git\-mora\-wait(1)
+Wait for matching tags or branches to exist or disappear
+.TP
+git\-mora\-hook(1)
+Run a topic\-tracking adapter from an existing Git hook
+.TP
+git\-mora\-topic(1)
+Create, inspect, and update informational topic associations
+.SH VERSION
+v0.1.0

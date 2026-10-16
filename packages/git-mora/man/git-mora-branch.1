@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-mora-branch 1  "branch " 
+.SH NAME
+git\-mora\-branch \- Create a uniquely named agent branch and print its name
+.SH SYNOPSIS
+\fBgit mora branch\fR <\fB\-\-agent\-id\fR> [\fB\-\-target\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fISTART_POINT\fR] 
+.SH DESCRIPTION
+Create a uniquely named agent branch and print its name
+.SH OPTIONS
+.TP
+\fB\-\-agent\-id\fR \fI<id>\fR
+Agent/session identifier
+.TP
+\fB\-\-target\fR \fI<branch>\fR
+Intended publication target; defaults to the current branch\*(Aqs literal name
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fISTART_POINT\fR]
+Starting commit or branch; defaults to HEAD

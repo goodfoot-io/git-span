@@ -26,6 +26,9 @@ pub fn run(args: &BranchArgs) -> Result<()> {
             None => bail!("HEAD is detached; pass --target"),
         },
     };
+    if git::query(&["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("refs/heads/{target}")])?.is_none() {
+        bail!("target '{target}' is not an existing local branch");
+    }
     let start = git::query(&[
         "rev-parse",
         "--verify",

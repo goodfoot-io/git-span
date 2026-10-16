@@ -1,0 +1,24 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-mora-hook-post-rewrite 1  "post-rewrite " 
+.SH NAME
+git\-mora\-hook\-post\-rewrite \- Carry topic membership onto rewritten commits (reads old/new pairs on stdin)
+.SH SYNOPSIS
+\fBgit mora hook post\-rewrite\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIMODE\fR> 
+.SH DESCRIPTION
+Carry topic membership onto rewritten commits (reads old/new pairs on stdin)
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fIMODE\fR>
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+amend
+.IP \(bu 2
+rebase
+.RE

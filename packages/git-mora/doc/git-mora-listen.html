@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>git-mora-listen</title>
+</head>
+<body>
+<h1>git-mora-listen</h1>
+<pre>Watch for matching tags and branches being created
+
+Usage: git mora listen [OPTIONS] [-- &lt;command&gt;...]
+
+Arguments:
+  [command]...
+          Command invoked once per match with the JSON line on stdin
+
+Options:
+      --tag &lt;pattern&gt;
+          Ordinary tag name pattern, e.g. 'pending/main/*'
+
+      --branch &lt;pattern&gt;
+          Ordinary branch name pattern, e.g. 'agent/alice/*'
+
+      --agent-id &lt;id&gt;
+          Parsed agent, or the current branch association for a tag
+
+      --target &lt;name&gt;
+          Target encoded in a workflow name
+
+      --attempt-id &lt;id&gt;
+          Attempt encoded in a workflow name
+
+      --topic &lt;id&gt;
+          Direct topic membership of the pointed-to commit
+
+      --existing
+          First emit current matches (labeled 'existing')
+
+      --once
+          Exit after the first match is emitted or its callback succeeds
+
+      --poll-interval &lt;d&gt;
+          Observation interval
+          
+          [default: 1s]
+
+  -h, --help
+          Print help
+</pre>
+</body>
+</html>

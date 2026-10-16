@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>git-mora-wait</title>
+</head>
+<body>
+<h1>git-mora-wait</h1>
+<pre>Wait for matching tags or branches to exist or disappear
+
+Usage: git mora wait [OPTIONS]
+
+Options:
+      --tag &lt;pattern&gt;
+          Ordinary tag name pattern, e.g. 'pending/main/*'
+
+      --branch &lt;pattern&gt;
+          Ordinary branch name pattern, e.g. 'agent/alice/*'
+
+      --agent-id &lt;id&gt;
+          Parsed agent, or the current branch association for a tag
+
+      --target &lt;name&gt;
+          Target encoded in a workflow name
+
+      --attempt-id &lt;id&gt;
+          Attempt encoded in a workflow name
+
+      --topic &lt;id&gt;
+          Direct topic membership of the pointed-to commit
+
+      --absent
+          Wait until no names satisfy the filters
+
+      --timeout &lt;d&gt;
+          Stop after this duration (exit 3)
+
+  -h, --help
+          Print help
+</pre>
+</body>
+</html>

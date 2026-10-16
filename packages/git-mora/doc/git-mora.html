@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>git-mora</title>
+</head>
+<body>
+<h1>git-mora</h1>
+<pre>Small helpers for agent branches, workflow tags, and informational topics.
+
+Names: agent branch   agent/&lt;agent-id&gt;/&lt;target&gt;/&lt;attempt-id&gt; workflow tags  pending|merge|discard/&lt;target&gt;/&lt;attempt-id&gt; topic index    refs/topics/&lt;topic-id&gt;
+
+Mora never moves an existing tag to different code, runs reviews, chooses integrations, or publishes. Only requested branches/tags, topic blobs/refs, and optional worktree-local topic context are persisted.
+
+Exit status: 0 success (including no-op or empty list), 1 operation failed, 2 invalid arguments, 3 wait timed out.
+
+Usage: git mora &lt;COMMAND&gt;
+
+Commands:
+  branch  Create a uniquely named agent branch and print its name
+  tag     Tag the current attempt as pending, merge, or discard
+  list    List matching local branches and tags, then exit
+  listen  Watch for matching tags and branches being created
+  wait    Wait for matching tags or branches to exist or disappear
+  hook    Run a topic-tracking adapter from an existing Git hook
+  topic   Create, inspect, and update informational topic associations
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+</pre>
+</body>
+</html>

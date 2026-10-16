@@ -1,0 +1,35 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-mora-topic 1  "topic " 
+.SH NAME
+git\-mora\-topic \- Create, inspect, and update informational topic associations
+.SH SYNOPSIS
+\fBgit mora topic\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Create, inspect, and update informational topic associations
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+git\-mora\-topic\-create(1)
+Create an empty topic (an existing valid topic is unchanged)
+.TP
+git\-mora\-topic\-list(1)
+List topic ids
+.TP
+git\-mora\-topic\-show(1)
+Show the commits associated with a topic
+.TP
+git\-mora\-topic\-of(1)
+List topics directly containing a commit
+.TP
+git\-mora\-topic\-add(1)
+Union commits into a topic, creating it if needed
+.TP
+git\-mora\-topic\-context(1)
+Manage this worktree\*(Aqs future\-commit topic context
+.TP
+git\-mora\-topic\-exec(1)
+Run a command with command\-scoped topic context

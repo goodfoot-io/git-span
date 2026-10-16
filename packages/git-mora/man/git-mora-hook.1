@@ -1,0 +1,23 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-mora-hook 1  "hook " 
+.SH NAME
+git\-mora\-hook \- Run a topic\-tracking adapter from an existing Git hook
+.SH SYNOPSIS
+\fBgit mora hook\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Run a topic\-tracking adapter from an existing Git hook
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+git\-mora\-hook\-post\-commit(1)
+Add the new HEAD to the effective topic context
+.TP
+git\-mora\-hook\-post\-rewrite(1)
+Carry topic membership onto rewritten commits (reads old/new pairs on stdin)
+.TP
+git\-mora\-hook\-post\-merge(1)
+Annotate a newly created merge commit

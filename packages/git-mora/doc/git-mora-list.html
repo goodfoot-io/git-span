@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>git-mora-list</title>
+</head>
+<body>
+<h1>git-mora-list</h1>
+<pre>List matching local branches and tags, then exit
+
+Usage: git mora list [OPTIONS]
+
+Options:
+      --tag &lt;pattern&gt;
+          Ordinary tag name pattern, e.g. 'pending/main/*'
+
+      --branch &lt;pattern&gt;
+          Ordinary branch name pattern, e.g. 'agent/alice/*'
+
+      --agent-id &lt;id&gt;
+          Parsed agent, or the current branch association for a tag
+
+      --target &lt;name&gt;
+          Target encoded in a workflow name
+
+      --attempt-id &lt;id&gt;
+          Attempt encoded in a workflow name
+
+      --topic &lt;id&gt;
+          Direct topic membership of the pointed-to commit
+
+      --json
+          One JSON object per line
+
+      --names-only
+          One ordinary name per line
+
+  -h, --help
+          Print help
+</pre>
+</body>
+</html>
