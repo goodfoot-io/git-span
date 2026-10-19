@@ -1,0 +1,2 @@
+# Package task logs must stay local; Turbo's root content cache remains shared.
+packages/**/.turbo/

@@ -4,6 +4,18 @@
     "enabled": false
   },
   "envMode": "strict",
+  "globalEnv": [
+    "AGENT_SKILLS_REPO",
+    "AGENT_SKILLS_REGISTRY",
+    "AGENT_SKILLS_CLI",
+    "AGENT_HOOKS_WORKSPACE",
+    "REFUSAL_COVERAGE_ROOT",
+    "REFUSAL_COVERAGE_MAP"
+  ],
+  "globalPassThroughEnv": [
+    "CDP_HOST",
+    "CDP_PORT"
+  ],
   "globalDependencies": [
     "package.json",
     "tsconfig.json",
