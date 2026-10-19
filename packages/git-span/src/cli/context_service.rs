@@ -1394,6 +1394,51 @@ mod unix {
         use std::os::unix::fs::PermissionsExt;
 
         #[test]
+        fn replaced_directories_remain_observable() -> Result<()> {
+            let temp = tempfile::tempdir()?;
+            let child = temp.path().join("child");
+            std::fs::create_dir(&child)?;
+            let mut watcher = super::FailClosedWatcher::new(vec![temp.path().to_path_buf()], vec![])?;
+            std::fs::remove_dir(&child)?;
+            std::fs::create_dir(&child)?;
+            watcher.drain()?;
+            std::fs::write(child.join("dependency"), b"changed")?;
+            let drain = watcher.drain()?;
+            assert!(drain.paths.contains(&child.join("dependency")), "replacement directory lost dependency events");
+            Ok(())
+        }
+
+        #[test]
+        fn excluded_runtime_activity_preserves_a_reusable_generation() -> Result<()> {
+            let temp = tempfile::tempdir()?;
+            gix::init(temp.path())?;
+            std::fs::create_dir(temp.path().join(".span"))?;
+            std::fs::write(temp.path().join("file.txt"), "source")?;
+            let runtime = temp.path().join(".runtime");
+            std::fs::create_dir_all(&runtime)?;
+            let mut watcher = super::FailClosedWatcher::new(
+                vec![temp.path().to_path_buf()], vec![runtime.clone()])?;
+            let status = std::process::Command::new("git").current_dir(temp.path())
+                .args(["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "seed"]).output()?;
+            assert!(status.status.success());
+            let repo = gix::open(temp.path())?;
+            let (generation, _) = super::Generation::build(&repo, ".span")?;
+            watcher.drain()?;
+            let state = std::sync::Arc::new(std::sync::Mutex::new(super::ServiceState {
+                repo_path: temp.path().to_path_buf(), span_root: ".span".into(),
+                service_dir: runtime.clone(), runtime_dirs: vec![runtime.clone()],
+                base_watch_roots: vec![temp.path().to_path_buf()], watcher,
+                generation: std::sync::Arc::new(generation), epoch: 0, dirty: false,
+            }));
+            std::fs::remove_dir(&runtime)?;
+            std::fs::create_dir(&runtime)?;
+            let (_, counters) = super::query_state(&state, &["file.txt".into()])?;
+            assert_eq!(counters.generation_hits, 1, "runtime churn discarded a reusable generation");
+            assert_eq!(counters.corpus_loads, 0);
+            Ok(())
+        }
+
+        #[test]
         fn client_query_propagates_runtime_authority_permission_failures() -> Result<()> {
             let temp = tempfile::tempdir()?;
             let repo = gix::init(temp.path())?;
