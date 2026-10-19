@@ -110,11 +110,17 @@ pub struct ContextAnchor {
     pub anchored: ContextLocation,
     /// Always emitted; `null` when the anchor cannot be located in the
     /// current worktree or index.
-    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<ContextLocation>")]
+    #[schemars(
+        required,
+        schema_with = "crate::schemas::nullable_schema::<ContextLocation>"
+    )]
     pub current: Option<ContextLocation>,
     pub status: ContextStatus,
     /// Always emitted; `null` when the anchor has no recorded source layer.
-    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<ContextSource>")]
+    #[schemars(
+        required,
+        schema_with = "crate::schemas::nullable_schema::<ContextSource>"
+    )]
     pub source: Option<ContextSource>,
     pub sources: Vec<ContextSource>,
 }
@@ -862,13 +868,54 @@ pub(super) fn run_context_read_only(
     Err(last_error.expect("two-attempt loop records its first error"))
 }
 
+/// Bounds the complete CLI request, including blocking filters and repository
+/// locks that cannot be interrupted by the optional service's socket budget.
+/// Repairs are already crash-safe; an interrupted mutation remains replayable
+/// under its original operation ID instead of being reported as a no-op.
+struct RequestDeadline(std::sync::mpsc::Sender<()>);
+
+impl RequestDeadline {
+    fn start(operation_id: Option<uuid::Uuid>) -> Result<Self> {
+        let (cancel, cancelled) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("context-request-deadline".into())
+            .spawn(move || {
+                if matches!(
+                    cancelled.recv_timeout(std::time::Duration::from_millis(4500)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    if let Some(operation_id) = operation_id {
+                        eprintln!(
+                            "error: context request deadline exceeded (4500ms); mutation outcome unknown; retry with --operation-id {operation_id}"
+                        );
+                    } else {
+                        eprintln!("error: context request deadline exceeded (4500ms); no validated result available");
+                    }
+                    std::process::exit(1);
+                }
+            })
+            .context("start context request deadline")?;
+        Ok(Self(cancel))
+    }
+}
+
+impl Drop for RequestDeadline {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
 pub fn run_context(repo: &gix::Repository, args: ContextArgs, span_root: &str) -> Result<i32> {
+    let operation_id = args
+        .fix
+        .then(|| args.operation_id.unwrap_or_else(uuid::Uuid::new_v4));
+    let _deadline = RequestDeadline::start(operation_id)?;
     if args.warm {
         let _ = super::context_service::query(repo, span_root, &[])?;
         return Ok(0);
     }
     if args.fix {
-        let operation_id = args.operation_id.unwrap_or_else(uuid::Uuid::new_v4);
+        let operation_id = operation_id.expect("repair requests allocate an operation ID");
         if args.operation_id.is_none() {
             let mut stderr = std::io::stderr().lock();
             writeln!(stderr, "git-span context operation: {operation_id}")?;

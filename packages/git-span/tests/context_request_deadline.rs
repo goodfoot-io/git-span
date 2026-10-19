@@ -15,7 +15,8 @@ fn contended_context(repair: bool) -> Result<()> {
     held.lock_exclusive()?;
     let operation = "17da6120-cc9b-40ac-adb5-79ce575b8c80";
     let mut command = Command::new(env!("CARGO_BIN_EXE_git-span"));
-    command.current_dir(temp.path())
+    command
+        .current_dir(temp.path())
         .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
         .env("GIT_SPAN_LOCK_WAIT_SECS", "6")
         .args(["context", "file.txt", "--format", "json"]);
@@ -27,12 +28,21 @@ fn contended_context(repair: bool) -> Result<()> {
     let elapsed = started.elapsed();
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert!(elapsed < Duration::from_millis(4900), "context exceeded hook deadline: {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_millis(4900),
+        "context exceeded hook deadline: {elapsed:?}"
+    );
     let diagnostic = String::from_utf8(output.stderr)?;
-    assert!(diagnostic.contains("context request deadline exceeded"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("context request deadline exceeded"),
+        "{diagnostic}"
+    );
     if repair {
         assert!(diagnostic.contains(operation), "{diagnostic}");
-        assert!(diagnostic.contains("mutation outcome unknown"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("mutation outcome unknown"),
+            "{diagnostic}"
+        );
     }
     Ok(())
 }
