@@ -645,6 +645,10 @@ fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
         "{}",
         String::from_utf8_lossy(&cold.stderr)
     );
+    // Foreground requests may choose direct validation when the optional
+    // service budget expires. Explicit warm-up waits for cache readiness
+    // before this test measures generation identity and reuse.
+    assert!(repo.run_span(["context", "--warm"])?.status.success());
     let warm = repo.run_span(args)?;
     assert!(
         warm.status.success(),
@@ -1496,14 +1500,16 @@ fn controlled_repair_epoch() -> Result<()> {
     );
     let fixed_json: serde_json::Value = serde_json::from_slice(&fixed.stdout)?;
     assert_eq!(fixed_json["mutation"]["rewritten"], true);
-    // A transient RPC miss falls back to the non-service repair, which prints
-    // no service counters; surface the stderr so that distinction is visible
-    // in the failure instead of a bare `contains` mismatch.
-    let fixed_stderr = String::from_utf8(fixed.stderr)?;
-    assert!(
-        fixed_stderr.contains("context.service-corpus-loads 2"),
-        "expected the service repair path with two corpus loads, got: {fixed_stderr}"
-    );
+    assert_eq!(fixed_json["mutation"]["anchors_updated"], 1);
+    let replay = repo.run_span([
+        "context", "file1.txt", "--format", "json", "--fix", "--operation-id", &operation,
+    ])?;
+    assert!(replay.status.success());
+    assert_eq!(replay.stdout, fixed.stdout);
+    // Optional acceleration may yield to the direct journal replay under
+    // its shared deadline. Verify the mutation receipt independently, then
+    // await cache readiness before proving that repaired state is reusable.
+    assert!(repo.run_span(["context", "--warm"])?.status.success());
 
     let next = repo.run_span(["--perf", "context", "file1.txt", "--format", "json"])?;
     assert!(

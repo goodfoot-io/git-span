@@ -872,11 +872,16 @@ pub(super) fn run_context_read_only(
 /// locks that cannot be interrupted by the optional service's socket budget.
 /// Repairs are already crash-safe; an interrupted mutation remains replayable
 /// under its original operation ID instead of being reported as a no-op.
-struct RequestDeadline(std::sync::mpsc::Sender<()>);
+struct RequestDeadline {
+    cancel: std::sync::mpsc::Sender<()>,
+    delivered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl RequestDeadline {
     fn start(operation_id: Option<uuid::Uuid>) -> Result<Self> {
         let (cancel, cancelled) = std::sync::mpsc::channel();
+        let delivered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let response_delivered = delivered.clone();
         std::thread::Builder::new()
             .name("context-request-deadline".into())
             .spawn(move || {
@@ -884,6 +889,11 @@ impl RequestDeadline {
                     cancelled.recv_timeout(std::time::Duration::from_millis(4500)),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                 ) {
+                    // Acknowledgement follows flushed output and is best effort.
+                    // It must not turn an already delivered result into failure.
+                    if response_delivered.load(std::sync::atomic::Ordering::Acquire) {
+                        std::process::exit(0);
+                    }
                     if let Some(operation_id) = operation_id {
                         eprintln!(
                             "error: context request deadline exceeded (4500ms); mutation outcome unknown; retry with --operation-id {operation_id}"
@@ -895,13 +905,18 @@ impl RequestDeadline {
                 }
             })
             .context("start context request deadline")?;
-        Ok(Self(cancel))
+        Ok(Self { cancel, delivered })
+    }
+
+    fn response_delivered(&self) {
+        self.delivered
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
 impl Drop for RequestDeadline {
     fn drop(&mut self) {
-        let _ = self.0.send(());
+        let _ = self.cancel.send(());
     }
 }
 
@@ -909,7 +924,7 @@ pub fn run_context(repo: &gix::Repository, args: ContextArgs, span_root: &str) -
     let operation_id = args
         .fix
         .then(|| args.operation_id.unwrap_or_else(uuid::Uuid::new_v4));
-    let _deadline = RequestDeadline::start(operation_id)?;
+    let deadline = RequestDeadline::start(operation_id)?;
     if args.warm {
         let _ = super::context_service::query(repo, span_root, &[])?;
         return Ok(0);
@@ -927,6 +942,7 @@ pub fn run_context(repo: &gix::Repository, args: ContextArgs, span_root: &str) -
         let bytes = render_document(&document)?;
         std::io::stdout().lock().write_all(&bytes)?;
         std::io::stdout().lock().flush()?;
+        deadline.response_delivered();
         let _ = super::context_service::acknowledge_repair(
             repo,
             span_root,

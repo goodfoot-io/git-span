@@ -15,7 +15,10 @@ use std::time::Duration;
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: usize = MAX_CONTEXT_JSON_BYTES + 128 * 1024;
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+// The service is optional acceleration inside a five-second hook subprocess.
+// Share this allowance across election, startup and all RPCs, leaving most
+// of the hook budget for directly validated computation when it is unavailable.
+const SERVICE_BUDGET: Duration = Duration::from_millis(750);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_WORKERS: usize = 16;
@@ -92,6 +95,7 @@ struct Generation {
 }
 
 impl Generation {
+    #[cfg(test)]
     fn build(repo: &gix::Repository, span_root: &str) -> Result<(Self, BTreeSet<PathBuf>)> {
         let _recovery = super::recovery_domain::acquire_reader(repo, span_root)?;
         Self::build_locked(repo, span_root)
@@ -204,8 +208,8 @@ impl Generation {
 
 #[cfg(target_os = "linux")]
 mod unix {
-    use super::*;
     use super::super::context::normalize_service_scopes;
+    use super::*;
     use anyhow::ensure;
     use fs4::fs_std::FileExt;
     use std::ffi::CString;
@@ -227,6 +231,7 @@ mod unix {
         events: u64,
         overflow: bool,
         elapsed_us: u64,
+        #[cfg(test)]
         paths: BTreeSet<PathBuf>,
     }
 
@@ -238,6 +243,7 @@ mod unix {
         roots: Vec<PathBuf>,
         excluded: Vec<PathBuf>,
         watched: BTreeMap<PathBuf, i32>,
+        coverage_valid: bool,
     }
 
     /// Size of the fixed `struct inotify_event` header that precedes each
@@ -301,6 +307,7 @@ mod unix {
                 roots,
                 excluded,
                 watched: BTreeMap::new(),
+                coverage_valid: true,
             };
             watcher.refresh()?;
             ensure!(!watcher.watched.is_empty(), "watcher installed no watches");
@@ -308,21 +315,43 @@ mod unix {
         }
 
         fn refresh(&mut self) -> Result<()> {
+            self.coverage_valid = false;
             ensure!(
                 !injected_watcher_failure("replacement"),
                 "injected watcher replacement failure"
             );
             for root in self.roots.clone() {
-                if root.exists() {
-                    self.add_tree(&root)?;
-                }
+                ensure!(
+                    root.exists(),
+                    "required context watch root {} is missing",
+                    root.display()
+                );
+                self.add_tree(&root)?;
+                let watch_path = if root.is_dir() {
+                    root.as_path()
+                } else {
+                    root.parent()
+                        .ok_or_else(|| anyhow!("context watch root has no parent"))?
+                };
+                ensure!(
+                    self.watched.contains_key(watch_path),
+                    "context watch root {} lost coverage",
+                    root.display()
+                );
             }
+            self.coverage_valid = true;
             Ok(())
         }
 
         fn add_tree(&mut self, path: &Path) -> Result<()> {
-            let metadata = std::fs::symlink_metadata(path)
-                .with_context(|| format!("stat watcher root {}", path.display()))?;
+            let metadata = match std::fs::symlink_metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("stat watcher root {}", path.display()));
+                }
+            };
             ensure!(
                 !metadata.file_type().is_symlink(),
                 "watcher root is a symlink"
@@ -358,7 +387,11 @@ mod unix {
                 {
                     continue;
                 }
-                let kind = entry.file_type()?;
+                let kind = match entry.file_type() {
+                    Ok(kind) => kind,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error.into()),
+                };
                 if kind.is_dir() && !kind.is_symlink() {
                     self.add_tree(&child)?;
                 }
@@ -397,6 +430,24 @@ mod unix {
         }
 
         fn drain(&mut self) -> Result<WatchDrain> {
+            if !self.coverage_valid {
+                *self = Self::new(self.roots.clone(), self.excluded.clone())?;
+                return Ok(WatchDrain {
+                    events: 1,
+                    overflow: true,
+                    elapsed_us: 0,
+                    #[cfg(test)]
+                    paths: BTreeSet::new(),
+                });
+            }
+            let result = self.drain_inner();
+            if result.is_err() {
+                self.coverage_valid = false;
+            }
+            result
+        }
+
+        fn drain_inner(&mut self) -> Result<WatchDrain> {
             let started = Instant::now();
             ensure!(
                 !injected_watcher_failure("read") && !injected_watcher_failure("malformed"),
@@ -407,12 +458,14 @@ mod unix {
                     events: 1,
                     overflow: true,
                     elapsed_us: started.elapsed().as_micros() as u64,
+                    #[cfg(test)]
                     paths: BTreeSet::new(),
                 });
             }
             let mut buffer = [0_u8; 64 * 1024];
             let mut events = 0;
             let mut overflow = false;
+            #[cfg(test)]
             let mut paths = BTreeSet::new();
             loop {
                 let count = match (&self.fd).read(&mut buffer) {
@@ -431,32 +484,63 @@ mod unix {
                         name_end <= count,
                         "inotify event overruns the bytes the kernel returned"
                     );
-                    events += 1;
-                    overflow |= event.mask & libc::IN_Q_OVERFLOW != 0;
-                    if let Some((root, _)) = self
+                    let root = self
                         .watched
                         .iter()
                         .find(|(_, descriptor)| **descriptor == event.wd)
-                    {
+                        .map(|(path, _)| path.clone());
+                    let path = root.map(|root| {
                         if event.len == 0 {
-                            paths.insert(root.clone());
+                            root
                         } else {
-                            use std::os::unix::ffi::OsStrExt;
                             let raw = &buffer[name_start..name_end];
                             let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
-                            paths.insert(root.join(std::ffi::OsStr::from_bytes(&raw[..end])));
+                            root.join(std::ffi::OsStr::from_bytes(&raw[..end]))
+                        }
+                    });
+                    let excluded = path.as_ref().is_some_and(|path| {
+                        self.excluded
+                            .iter()
+                            .any(|excluded| path.starts_with(excluded))
+                    });
+                    if !excluded {
+                        events += 1;
+                        overflow |= event.mask
+                            & (libc::IN_Q_OVERFLOW
+                                | libc::IN_IGNORED
+                                | libc::IN_UNMOUNT
+                                | libc::IN_DELETE_SELF
+                                | libc::IN_MOVE_SELF)
+                            != 0
+                            || path.is_none();
+                        #[cfg(test)]
+                        if let Some(path) = path {
+                            paths.insert(path);
                         }
                     }
                     offset = name_end;
                 }
+                // A continuously replenished queue must not monopolize a
+                // worker or the state mutex. Treat an incomplete drain as
+                // lost trust and rebuild coverage before another capture.
+                if started.elapsed() >= Duration::from_millis(20) {
+                    overflow = true;
+                    break;
+                }
             }
-            if events > 0 {
+            if overflow {
+                // Reusing a path-to-descriptor map after watch loss can hide
+                // writes beneath a recreated directory. Reestablish complete
+                // coverage before any subsequent capture may become trusted.
+                *self = Self::new(self.roots.clone(), self.excluded.clone())?;
+            } else if events > 0 {
                 self.refresh()?;
             }
             Ok(WatchDrain {
                 events,
                 overflow,
                 elapsed_us: started.elapsed().as_micros() as u64,
+                #[cfg(test)]
                 paths,
             })
         }
@@ -465,8 +549,6 @@ mod unix {
     struct ServiceState {
         repo_path: PathBuf,
         span_root: String,
-        service_dir: PathBuf,
-        runtime_dirs: Vec<PathBuf>,
         base_watch_roots: Vec<PathBuf>,
         watcher: FailClosedWatcher,
         generation: Arc<Generation>,
@@ -476,7 +558,22 @@ mod unix {
 
     impl ServiceState {
         fn drain(&mut self, counters: &mut ServiceCounters) -> Result<()> {
-            let drain = self.watcher.drain()?;
+            let drain = match self.watcher.drain() {
+                Ok(drain) => drain,
+                Err(_) => {
+                    // Rediscover the current closure under base coverage. A
+                    // removed historical dependency must not poison reuse
+                    // forever, while no old generation survives this reset.
+                    self.dirty = true;
+                    self.epoch = self.epoch.saturating_add(1);
+                    self.watcher = FailClosedWatcher::new(
+                        self.base_watch_roots.clone(),
+                        self.watcher.excluded.clone(),
+                    )?;
+                    counters.watcher_overflows += 1;
+                    return Ok(());
+                }
+            };
             counters.watcher_drain_us += drain.elapsed_us;
             counters.invalidations += drain.events;
             counters.watcher_overflows += u64::from(drain.overflow);
@@ -495,23 +592,36 @@ mod unix {
             repo: &gix::Repository,
             counters: &mut ServiceCounters,
         ) -> Result<()> {
-            let (generation, external_roots) = Generation::build_locked(repo, &self.span_root)?;
-            let mut roots = self.base_watch_roots.clone();
-            roots.extend(external_roots);
-            let mut excluded = self.runtime_dirs.clone();
-            excluded.push(self.service_dir.clone());
-            let mut watcher = FailClosedWatcher::new(roots, excluded)?;
-            let drain = watcher.drain()?;
-            ensure!(
-                drain.events == 0 && !drain.overflow,
-                "dependencies changed while publishing a context generation"
-            );
-            self.generation = Arc::new(generation);
-            self.watcher = watcher;
-            self.dirty = false;
-            counters.corpus_loads += 1;
-            counters.resolver_passes += 2;
-            Ok(())
+            // Keep coverage alive through capture. New external dependencies
+            // discovered by the resolver require watches and a second capture;
+            // the first capture predates coverage and cannot be published.
+            self.dirty = true;
+            self.drain(counters)?;
+            for attempt in 0..2 {
+                let (generation, external_roots) = Generation::build_locked(repo, &self.span_root)?;
+                let new_roots = external_roots
+                    .into_iter()
+                    .filter(|root| !self.watcher.roots.contains(root))
+                    .collect::<Vec<_>>();
+                if !new_roots.is_empty() {
+                    self.watcher.roots.extend(new_roots);
+                    self.watcher.refresh()?;
+                    ensure!(
+                        attempt == 0,
+                        "context watch coverage changed repeatedly during capture"
+                    );
+                    continue;
+                }
+                service_test_checkpoint("generation-before-publication")?;
+                let epoch = self.epoch;
+                self.drain(counters)?;
+                self.generation = Arc::new(generation);
+                self.dirty = self.epoch != epoch;
+                counters.corpus_loads += 1;
+                counters.resolver_passes += 2;
+                return Ok(());
+            }
+            unreachable!("capture either publishes or expands coverage once")
         }
     }
 
@@ -540,6 +650,10 @@ mod unix {
                 state.drain(&mut counters)?;
                 if state.dirty {
                     state.rebuild_locked(&repo, &mut counters)?;
+                    ensure!(
+                        !state.dirty,
+                        "context dependencies changed during capture; direct validation required"
+                    );
                 } else {
                     counters.generation_hits = 1;
                 }
@@ -685,9 +799,9 @@ mod unix {
                             | "GIT_CONFIG_NOSYSTEM"
                             | "GIT_CONFIG_COUNT"
                     )
-                ) || name
-                    .to_str()
-                    .is_some_and(|name| name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
+                ) || name.to_str().is_some_and(|name| {
+                    name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_")
+                })
             })
             .collect::<Vec<_>>();
         environment.sort();
@@ -716,19 +830,118 @@ mod unix {
         Ok(Some(paths))
     }
 
-    fn rpc(paths: &ServicePaths, nonce: &str, op: Operation) -> Result<(Response, u64)> {
+    fn remaining(deadline: Instant) -> Result<Duration> {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "context service budget exhausted",
+                )
+                .into()
+            })
+    }
+
+    fn connect_before(path: &Path, deadline: Instant) -> Result<UnixStream> {
+        remaining(deadline)?;
+        let bytes = path.as_os_str().as_bytes();
+        let mut address = libc::sockaddr_un {
+            sun_family: libc::AF_UNIX as libc::sa_family_t,
+            sun_path: [0; 108],
+        };
+        ensure!(
+            bytes.len() < address.sun_path.len(),
+            "context service socket path is too long"
+        );
+        for (target, byte) in address.sun_path.iter_mut().zip(bytes) {
+            *target = *byte as libc::c_char;
+        }
+        // SAFETY: socket(2) takes only scalar flags; a successful result is a
+        // fresh descriptor transferred exactly once to UnixStream below.
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+                0,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        // SAFETY: fd is a newly allocated socket descriptor, and this stream
+        // becomes its sole owner even if connecting subsequently fails.
+        let stream = unsafe { UnixStream::from_raw_fd(fd) };
+        loop {
+            remaining(deadline)?;
+            // SAFETY: address is an initialized sockaddr_un containing a
+            // NUL-terminated path; connect reads it only for this call.
+            let status = unsafe {
+                libc::connect(
+                    fd,
+                    (&address as *const libc::sockaddr_un).cast(),
+                    std::mem::size_of_val(&address) as libc::socklen_t,
+                )
+            };
+            if status == 0 {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::EISCONN) => break,
+                Some(libc::EAGAIN | libc::EINPROGRESS | libc::EALREADY | libc::EINTR) => {
+                    thread::sleep(remaining(deadline)?.min(Duration::from_millis(5)));
+                }
+                _ => return Err(error.into()),
+            }
+        }
+        stream.set_nonblocking(false)?;
+        Ok(stream)
+    }
+
+    fn read_before(stream: &mut UnixStream, mut bytes: &mut [u8], deadline: Instant) -> Result<()> {
+        while !bytes.is_empty() {
+            stream.set_read_timeout(Some(remaining(deadline)?))?;
+            match stream.read(bytes) {
+                Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into()),
+                Ok(count) => bytes = &mut bytes[count..],
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn write_before(stream: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> Result<()> {
+        while !bytes.is_empty() {
+            stream.set_write_timeout(Some(remaining(deadline)?))?;
+            match stream.write(bytes) {
+                Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into()),
+                Ok(count) => bytes = &bytes[count..],
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn rpc(
+        paths: &ServicePaths,
+        nonce: &str,
+        op: Operation,
+        deadline: Instant,
+    ) -> Result<(Response, u64)> {
+        remaining(deadline)?;
         paths
             .directory
             .validate_owned_socket(std::ffi::OsStr::new("service.sock"), 0o600)?;
         let started = Instant::now();
-        let mut stream = UnixStream::connect(&paths.socket)?;
+        let mut stream = connect_before(&paths.socket, deadline)?;
         let connect_us = started.elapsed().as_micros() as u64;
         ensure!(
             peer_uid(&stream)? == crate::descriptor_authority::effective_uid(),
             "service peer has another owner"
         );
-        stream.set_read_timeout(Some(IO_TIMEOUT))?;
-        stream.set_write_timeout(Some(IO_TIMEOUT))?;
         let request = Request {
             protocol: PROTOCOL_VERSION,
             service_key: paths.key.clone(),
@@ -736,13 +949,27 @@ mod unix {
             request_id: uuid::Uuid::new_v4().to_string(),
             op,
         };
-        write_frame(
+        let request = serde_json::to_vec(&request)?;
+        ensure!(
+            !request.is_empty() && request.len() <= MAX_REQUEST_BYTES,
+            "RPC frame exceeds byte limit"
+        );
+        write_before(
             &mut stream,
-            &serde_json::to_vec(&request)?,
-            MAX_REQUEST_BYTES,
+            &u32::try_from(request.len())?.to_be_bytes(),
+            deadline,
         )?;
-        let response: Response =
-            serde_json::from_slice(&read_frame(&mut stream, MAX_RESPONSE_BYTES)?)?;
+        write_before(&mut stream, &request, deadline)?;
+        let mut prefix = [0; 4];
+        read_before(&mut stream, &mut prefix, deadline)?;
+        let length = u32::from_be_bytes(prefix) as usize;
+        ensure!(
+            length > 0 && length <= MAX_RESPONSE_BYTES,
+            "RPC frame exceeds byte limit"
+        );
+        let mut payload = vec![0; length];
+        read_before(&mut stream, &mut payload, deadline)?;
+        let response: Response = serde_json::from_slice(&payload)?;
         ensure!(
             response.protocol == PROTOCOL_VERSION,
             "context service protocol mismatch"
@@ -758,9 +985,9 @@ mod unix {
         Ok(String::from_utf8(bytes)?.trim().to_owned())
     }
 
-    fn health(paths: &ServicePaths) -> Result<String> {
+    fn health(paths: &ServicePaths, deadline: Instant) -> Result<String> {
         let nonce = read_nonce(paths)?;
-        let (response, _) = rpc(paths, &nonce, Operation::Health)?;
+        let (response, _) = rpc(paths, &nonce, Operation::Health, deadline)?;
         ensure!(response.ok, "context service health check failed");
         Ok(nonce)
     }
@@ -773,18 +1000,21 @@ mod unix {
         )
     }
 
-    fn start_service(paths: &ServicePaths, span_root: &str) -> Result<String> {
+    fn start_service(paths: &ServicePaths, span_root: &str, deadline: Instant) -> Result<String> {
         if paths
             .directory
             .entry_exists(std::ffi::OsStr::new("service.sock"))?
         {
-            match health(paths) {
+            match health(paths, deadline) {
                 Ok(nonce) => return Ok(nonce),
                 Err(error) => {
                     let timed_out = error.chain().any(|cause| {
-                        cause
-                            .downcast_ref::<std::io::Error>()
-                            .is_some_and(|io| io.kind() == std::io::ErrorKind::TimedOut)
+                        cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
+                            matches!(
+                                io.kind(),
+                                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                            )
+                        })
                     });
                     ensure!(
                         !timed_out,
@@ -800,6 +1030,7 @@ mod unix {
                 }
             }
         }
+        remaining(deadline)?;
         let nonce = uuid::Uuid::new_v4().to_string();
         write_nonce(paths, &nonce)?;
         let mut log = paths
@@ -842,24 +1073,22 @@ mod unix {
             command.pre_exec(detach);
         }
         let mut child = command.spawn()?;
-        let deadline = Instant::now() + STARTUP_TIMEOUT;
         let mut last = None;
         while Instant::now() < deadline {
             if let Some(status) = child.try_wait()? {
                 bail!("context service exited before readiness: {status}");
             }
-            match rpc(paths, &nonce, Operation::Health) {
+            match rpc(paths, &nonce, Operation::Health, deadline) {
                 Ok((response, _)) if response.ok => return Ok(nonce),
                 Ok(_) => last = Some(anyhow!("service rejected readiness handshake")),
                 Err(error) => last = Some(error),
             }
-            thread::sleep(Duration::from_millis(20));
+            thread::sleep(remaining(deadline)?.min(Duration::from_millis(20)));
         }
         Err(last.unwrap_or_else(|| anyhow!("context service startup timed out")))
     }
 
-    fn acquire_supervisor(file: &File) -> Result<()> {
-        let deadline = Instant::now() + STARTUP_TIMEOUT;
+    fn acquire_supervisor(file: &File, deadline: Instant) -> Result<()> {
         loop {
             match file.try_lock_exclusive() {
                 Ok(true) => return Ok(()),
@@ -868,7 +1097,7 @@ mod unix {
                         Instant::now() < deadline,
                         "context supervisor election timed out"
                     );
-                    thread::sleep(Duration::from_millis(20));
+                    thread::sleep(remaining(deadline)?.min(Duration::from_millis(20)));
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -880,6 +1109,13 @@ mod unix {
         span_root: &str,
         addresses: &[String],
     ) -> Result<Option<(ContextDocument, ServiceCounters)>> {
+        // Warm-up has no foreground direct computation to reserve time for.
+        let budget = if addresses.is_empty() {
+            Duration::from_secs(4)
+        } else {
+            SERVICE_BUDGET
+        };
+        let deadline = Instant::now() + budget;
         if std::env::var_os("GIT_SPAN_CONTEXT_DISABLE_SERVICE").is_some() {
             return Ok(None);
         }
@@ -893,6 +1129,7 @@ mod unix {
                 Operation::Query {
                     addresses: addresses.to_vec(),
                 },
+                deadline,
             )
         {
             if response.ok {
@@ -910,19 +1147,21 @@ mod unix {
                 response.error.unwrap_or_default()
             ));
         }
+        if remaining(deadline).is_err() {
+            return Ok(None);
+        }
         let lock = paths
             .directory
             .open_or_create_file(std::ffi::OsStr::new("supervisor.lock"), 0o600)?;
-        acquire_supervisor(&lock)?;
-        let nonce = match health(&paths) {
+        if acquire_supervisor(&lock, deadline).is_err() {
+            return Ok(None);
+        }
+        let nonce = match start_service(&paths, span_root, deadline) {
             Ok(nonce) => nonce,
-            Err(_) => match start_service(&paths, span_root) {
-                Ok(nonce) => nonce,
-                Err(_) => {
-                    fs4::fs_std::FileExt::unlock(&lock)?;
-                    return Ok(None);
-                }
-            },
+            Err(_) => {
+                fs4::fs_std::FileExt::unlock(&lock)?;
+                return Ok(None);
+            }
         };
         fs4::fs_std::FileExt::unlock(&lock)?;
         match rpc(
@@ -931,6 +1170,7 @@ mod unix {
             Operation::Query {
                 addresses: addresses.to_vec(),
             },
+            deadline,
         ) {
             Ok((mut response, connect_us)) if response.ok => {
                 response.counters.rpc_connect_us = connect_us;
@@ -954,6 +1194,7 @@ mod unix {
         addresses: &[String],
         operation_id: uuid::Uuid,
     ) -> Result<Option<(ContextDocument, ServiceCounters)>> {
+        let deadline = Instant::now() + SERVICE_BUDGET;
         if std::env::var_os("GIT_SPAN_CONTEXT_DISABLE_SERVICE").is_some() {
             return Ok(None);
         }
@@ -968,6 +1209,7 @@ mod unix {
                     addresses: addresses.to_vec(),
                     operation_id: operation_id.to_string(),
                 },
+                deadline,
             )
         {
             if response.ok {
@@ -987,19 +1229,21 @@ mod unix {
                 response.error.unwrap_or_default()
             ));
         }
+        if remaining(deadline).is_err() {
+            return Ok(None);
+        }
         let lock = paths
             .directory
             .open_or_create_file(std::ffi::OsStr::new("supervisor.lock"), 0o600)?;
-        acquire_supervisor(&lock)?;
-        let nonce = match health(&paths) {
+        if acquire_supervisor(&lock, deadline).is_err() {
+            return Ok(None);
+        }
+        let nonce = match start_service(&paths, span_root, deadline) {
             Ok(nonce) => nonce,
-            Err(_) => match start_service(&paths, span_root) {
-                Ok(nonce) => nonce,
-                Err(_) => {
-                    fs4::fs_std::FileExt::unlock(&lock)?;
-                    return Ok(None);
-                }
-            },
+            Err(_) => {
+                fs4::fs_std::FileExt::unlock(&lock)?;
+                return Ok(None);
+            }
         };
         fs4::fs_std::FileExt::unlock(&lock)?;
         match rpc(
@@ -1009,6 +1253,7 @@ mod unix {
                 addresses: addresses.to_vec(),
                 operation_id: operation_id.to_string(),
             },
+            deadline,
         ) {
             Ok((mut response, connect_us)) if response.ok => {
                 response.counters.rpc_connect_us = connect_us;
@@ -1046,102 +1291,29 @@ mod unix {
         };
         let repo = gix::open(&repo_path).context("reopen context service repository for repair")?;
         let mut counters = ServiceCounters::default();
-        // A repair follows a caller's worktree write immediately. inotify is
-        // an invalidation hint, not a publication barrier: the notification
-        // is allowed to arrive after this worker accepts the RPC. Rebuild
-        // synchronously before planning so repair never starts from the
-        // resident generation merely because its event has not queued yet.
-        {
-            let _recovery = crate::cli::recovery_domain::acquire_reader(&repo, &span_root)?;
-            let mut state = shared
-                .lock()
-                .map_err(|_| anyhow!("context service state was poisoned"))?;
-            state.drain(&mut counters)?;
-            state.rebuild_locked(&repo, &mut counters)?;
-        }
         let document = super::super::context_repair::execute(
             &repo,
             &span_root,
             addresses,
             operation_id,
             Some(runtime),
-            |prepared| {
-                let (generation, external_roots) = Generation::build_locked(&repo, &span_root)?;
-                let (mut proved, rows) = generation.query(prepared.scopes.clone())?;
-                proved.mutation = prepared.mutation.clone();
-                counters.rows_decoded += rows;
-                ensure!(
-                    proved == *prepared,
-                    "published context generation differs from prepared repair response"
-                );
+            |_| {
                 let mut state = shared
                     .lock()
                     .map_err(|_| anyhow!("context service state was poisoned"))?;
-                let drain = state.watcher.drain()?;
-                counters.watcher_drain_us += drain.elapsed_us;
-                counters.invalidations += drain.events;
-                counters.watcher_overflows += u64::from(drain.overflow);
-                // Every event, expected or external, takes the conservative
-                // full-generation path. Nothing is ignored during repair.
-                let mut roots = state.base_watch_roots.clone();
-                roots.extend(external_roots);
-                let mut excluded = state.runtime_dirs.clone();
-                excluded.push(state.service_dir.clone());
-                let mut watcher = FailClosedWatcher::new(roots, excluded)?;
-                let clean = watcher.drain()?;
-                ensure!(
-                    clean.events == 0 && !clean.overflow,
-                    "dependency changed while publishing repaired generation"
-                );
-                state.generation = Arc::new(generation);
-                state.watcher = watcher;
-                state.epoch = state.epoch.saturating_add(1);
-                state.dirty = false;
-                counters.corpus_loads += 1;
-                counters.resolver_passes += 2;
+                // The transaction has its own validated prepared response.
+                // Cache publication is optional: churn or watcher faults leave
+                // it dirty without turning a committed repair into failure.
+                if state.rebuild_locked(&repo, &mut counters).is_err() {
+                    state.dirty = true;
+                }
                 Ok(())
             },
         )?;
-        let _recovery = crate::cli::recovery_domain::acquire_reader(&repo, &span_root)?;
-        {
-            let expected = document
-                .spans
-                .iter()
-                .map(|span| repo_path.join(&span_root).join(&span.name))
-                .collect::<BTreeSet<_>>();
-            let mut state = shared
-                .lock()
-                .map_err(|_| anyhow!("context service state was poisoned"))?;
-            let drain = state.watcher.drain()?;
-            counters.watcher_drain_us += drain.elapsed_us;
-            counters.invalidations += drain.events;
-            counters.watcher_overflows += u64::from(drain.overflow);
-            let expected_only = !drain.overflow
-                && drain.paths.iter().all(|path| {
-                    expected.iter().any(|definition| {
-                        path == definition
-                            || (path.parent() == definition.parent()
-                                && path.file_name().is_some_and(|leaf| {
-                                    // Repair's own temp-file staging pattern
-                                    // (`.context-<operation_id>-<index>.tmp`,
-                                    // see context_repair.rs) is the only
-                                    // sibling churn expected alongside a
-                                    // watched definition file; per-entry
-                                    // `.context.lock` files were deleted in
-                                    // favor of the single repository-wide
-                                    // recovery-domain lock, so that suffix
-                                    // no longer appears here.
-                                    leaf.to_string_lossy().starts_with(".context-")
-                                }))
-                    })
-                });
-            if drain.events > 0 {
-                state.epoch = state.epoch.saturating_add(1);
-                if !expected_only {
-                    state.dirty = true;
-                    state.rebuild_locked(&repo, &mut counters)?;
-                }
-            }
+        // Late notifications must invalidate the optional generation, but
+        // cannot change the journaled mutation outcome already returned.
+        if let Ok(mut state) = shared.lock() {
+            let _ = state.drain(&mut counters);
         }
         counters.total_latency_us = started.elapsed().as_micros() as u64;
         Ok((document, counters))
@@ -1299,31 +1471,33 @@ mod unix {
             common_dir,
             workdir.join(&args.span_root),
         ];
-        let (generation, external) = Generation::build(repo, &args.span_root)?;
-        let mut roots = base_roots.clone();
-        roots.extend(external);
         let runtime_dirs = vec![
             crate::git::git_dir(repo).join("span"),
             crate::git::common_dir(repo).join("span"),
         ];
         let mut excluded = runtime_dirs.clone();
         excluded.push(service_dir.clone());
-        let mut watcher = FailClosedWatcher::new(roots, excluded)?;
-        let drain = watcher.drain()?;
-        ensure!(
-            drain.events == 0 && !drain.overflow,
-            "dependencies changed during service startup"
-        );
+        // Git's read-only probes may stage an optional index refresh. The
+        // lockfile is never a resolver input; publication to index itself is
+        // still watched and invalidates the generation.
+        excluded.push(crate::git::git_dir(repo).join("index.lock"));
+        excluded.push(crate::git::common_dir(repo).join("index.lock"));
+        let watcher = FailClosedWatcher::new(base_roots.clone(), excluded)?;
+        // Readiness belongs to the service. A reusable generation is built
+        // under live watch coverage by the first request, never before it.
+        let generation = Generation {
+            rows: Vec::new(),
+            index: BTreeMap::new(),
+            known_paths: BTreeSet::new(),
+        };
         let state = Arc::new(Mutex::new(ServiceState {
             repo_path: workdir,
             span_root: args.span_root,
-            service_dir,
-            runtime_dirs,
             base_watch_roots: base_roots,
             watcher,
             generation: Arc::new(generation),
             epoch: 0,
-            dirty: false,
+            dirty: true,
         }));
         listener.set_nonblocking(true)?;
         let active = Arc::new(AtomicUsize::new(0));
@@ -1394,17 +1568,111 @@ mod unix {
         use std::os::unix::fs::PermissionsExt;
 
         #[test]
+        fn failed_rescan_is_retried_before_dependency_events_are_trusted() -> Result<()> {
+            let temp = tempfile::tempdir()?;
+            let mut watcher =
+                super::FailClosedWatcher::new(vec![temp.path().to_path_buf()], vec![])?;
+            let child = temp.path().join("new-dependency");
+            std::fs::create_dir(&child)?;
+            std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o0))?;
+            let failed = watcher.drain();
+            std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o700))?;
+            assert!(failed.is_err(), "unreadable new subtree was accepted");
+            watcher.drain()?;
+            std::fs::write(child.join("source"), "changed")?;
+            assert!(
+                watcher.drain()?.paths.contains(&child.join("source")),
+                "failed rescan permanently lost subtree coverage"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn missing_external_root_cannot_silently_restore_watch_trust() -> Result<()> {
+            let temp = tempfile::tempdir()?;
+            let external = temp.path().join("external");
+            std::fs::create_dir(&external)?;
+            let mut watcher = super::FailClosedWatcher::new(vec![external.clone()], vec![])?;
+            std::fs::remove_dir(&external)?;
+            assert!(
+                watcher.drain().is_err(),
+                "missing dependency root retained watch trust"
+            );
+            std::fs::create_dir(&external)?;
+            watcher.drain()?;
+            std::fs::write(external.join("source"), "changed")?;
+            assert!(watcher.drain()?.paths.contains(&external.join("source")));
+            Ok(())
+        }
+
+        #[test]
         fn replaced_directories_remain_observable() -> Result<()> {
             let temp = tempfile::tempdir()?;
             let child = temp.path().join("child");
             std::fs::create_dir(&child)?;
-            let mut watcher = super::FailClosedWatcher::new(vec![temp.path().to_path_buf()], vec![])?;
+            let mut watcher =
+                super::FailClosedWatcher::new(vec![temp.path().to_path_buf()], vec![])?;
             std::fs::remove_dir(&child)?;
             std::fs::create_dir(&child)?;
             watcher.drain()?;
             std::fs::write(child.join("dependency"), b"changed")?;
             let drain = watcher.drain()?;
-            assert!(drain.paths.contains(&child.join("dependency")), "replacement directory lost dependency events");
+            assert!(
+                drain.paths.contains(&child.join("dependency")),
+                "replacement directory lost dependency events"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn removed_historical_external_root_does_not_prevent_generation_reuse() -> Result<()> {
+            let temp = tempfile::tempdir()?;
+            let repo_root = temp.path().join("repo");
+            std::fs::create_dir(&repo_root)?;
+            gix::init(&repo_root)?;
+            std::fs::create_dir(repo_root.join(".span"))?;
+            std::fs::write(repo_root.join("source"), "content")?;
+            let status = std::process::Command::new("git")
+                .current_dir(&repo_root)
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "seed",
+                ])
+                .output()?;
+            assert!(status.status.success());
+            let repo = gix::open(&repo_root)?;
+            let (generation, _) = super::Generation::build(&repo, ".span")?;
+            let external = temp.path().join("old-external");
+            std::fs::create_dir(&external)?;
+            let watcher = super::FailClosedWatcher::new(
+                vec![repo_root.clone(), external.clone()],
+                vec![
+                    repo_root.join(".git/span"),
+                    repo_root.join(".git/index.lock"),
+                ],
+            )?;
+            let state = std::sync::Arc::new(std::sync::Mutex::new(super::ServiceState {
+                repo_path: repo_root.clone(),
+                span_root: ".span".into(),
+                base_watch_roots: vec![repo_root],
+                watcher,
+                generation: std::sync::Arc::new(generation),
+                epoch: 0,
+                dirty: false,
+            }));
+            std::fs::remove_dir(external)?;
+            super::query_state(&state, &["source".into()])?;
+            let (_, counters) = super::query_state(&state, &["source".into()])?;
+            assert_eq!(
+                counters.generation_hits, 1,
+                "historical missing root permanently disabled generation reuse"
+            );
             Ok(())
         }
 
@@ -1417,23 +1685,42 @@ mod unix {
             let runtime = temp.path().join(".runtime");
             std::fs::create_dir_all(&runtime)?;
             let mut watcher = super::FailClosedWatcher::new(
-                vec![temp.path().to_path_buf()], vec![runtime.clone()])?;
-            let status = std::process::Command::new("git").current_dir(temp.path())
-                .args(["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "seed"]).output()?;
+                vec![temp.path().to_path_buf()],
+                vec![runtime.clone()],
+            )?;
+            let status = std::process::Command::new("git")
+                .current_dir(temp.path())
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "seed",
+                ])
+                .output()?;
             assert!(status.status.success());
             let repo = gix::open(temp.path())?;
             let (generation, _) = super::Generation::build(&repo, ".span")?;
             watcher.drain()?;
             let state = std::sync::Arc::new(std::sync::Mutex::new(super::ServiceState {
-                repo_path: temp.path().to_path_buf(), span_root: ".span".into(),
-                service_dir: runtime.clone(), runtime_dirs: vec![runtime.clone()],
-                base_watch_roots: vec![temp.path().to_path_buf()], watcher,
-                generation: std::sync::Arc::new(generation), epoch: 0, dirty: false,
+                repo_path: temp.path().to_path_buf(),
+                span_root: ".span".into(),
+                base_watch_roots: vec![temp.path().to_path_buf()],
+                watcher,
+                generation: std::sync::Arc::new(generation),
+                epoch: 0,
+                dirty: false,
             }));
             std::fs::remove_dir(&runtime)?;
             std::fs::create_dir(&runtime)?;
             let (_, counters) = super::query_state(&state, &["file.txt".into()])?;
-            assert_eq!(counters.generation_hits, 1, "runtime churn discarded a reusable generation");
+            assert_eq!(
+                counters.generation_hits, 1,
+                "runtime churn discarded a reusable generation"
+            );
             assert_eq!(counters.corpus_loads, 0);
             Ok(())
         }
