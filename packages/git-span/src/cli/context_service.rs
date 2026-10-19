@@ -244,6 +244,8 @@ mod unix {
         excluded: Vec<PathBuf>,
         watched: BTreeMap<PathBuf, i32>,
         coverage_valid: bool,
+        #[cfg(test)]
+        drain_batch_delay: Duration,
     }
 
     /// Size of the fixed `struct inotify_event` header that precedes each
@@ -308,6 +310,8 @@ mod unix {
                 excluded,
                 watched: BTreeMap::new(),
                 coverage_valid: true,
+                #[cfg(test)]
+                drain_batch_delay: Duration::ZERO,
             };
             watcher.refresh()?;
             ensure!(!watcher.watched.is_empty(), "watcher installed no watches");
@@ -520,6 +524,8 @@ mod unix {
                     }
                     offset = name_end;
                 }
+                #[cfg(test)]
+                thread::sleep(self.drain_batch_delay);
                 // A continuously replenished queue must not monopolize a
                 // worker or the state mutex. Treat an incomplete drain as
                 // lost trust and rebuild coverage before another capture.
@@ -1566,6 +1572,19 @@ mod unix {
         use super::{client_query, identity_paths};
         use anyhow::Result;
         use std::os::unix::fs::PermissionsExt;
+
+        #[test]
+        fn delayed_complete_runtime_batch_does_not_invalidate_watch_trust() -> Result<()> {
+            let temp = tempfile::tempdir()?;
+            let runtime = temp.path().join("runtime");
+            let mut watcher = super::FailClosedWatcher::new(vec![temp.path().to_path_buf()], vec![runtime.clone()])?;
+            watcher.drain_batch_delay = std::time::Duration::from_millis(25);
+            std::fs::create_dir(runtime)?;
+            let drain = watcher.drain()?;
+            assert_eq!(drain.events, 0);
+            assert!(!drain.overflow, "a complete excluded batch discarded trusted coverage merely because its worker was delayed");
+            Ok(())
+        }
 
         #[test]
         fn failed_rescan_is_retried_before_dependency_events_are_trusted() -> Result<()> {
