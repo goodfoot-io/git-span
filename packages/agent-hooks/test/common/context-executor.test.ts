@@ -36,7 +36,7 @@ function emptyDocument(requested: boolean): ContextDocument {
 }
 
 describe('default context executor', () => {
-  it('leaves recovery time inside the outer hook deadline and bounds repository lock waits', async () => {
+  it('bounds the complete subprocess while inheriting repository lock settings', async () => {
     const executors = createDefaultTouchExecutors();
     if (!('context' in executors)) throw new Error('default executors must expose context');
     capture.stdout = JSON.stringify(emptyDocument(false));
@@ -47,11 +47,12 @@ describe('default context executor', () => {
       options: {
         cwd: '/repo',
         timeout: 5_000,
-        env: expect.objectContaining({ GIT_SPAN_LOCK_WAIT_SECS: '1' }),
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe']
       }
     });
+
+    expect(capture.calls[0]?.options.env).toBeUndefined();
 
     capture.stdout = JSON.stringify(emptyDocument(true));
     const operationId = '1d88b029-66a0-55cc-bcff-16082c41392a';

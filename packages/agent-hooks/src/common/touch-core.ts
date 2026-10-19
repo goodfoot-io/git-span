@@ -1364,14 +1364,11 @@ export async function runTouchHook(
 // ---------------------------------------------------------------------------
 
 /**
- * Subprocess ceiling for one touch/probe child. 2s sat right on the edge of
- * `git span context --fix` on slow filesystems, where the repair walk's
- * repeated `git status` calls each cost 100–250ms — the portability matrix
- * timed out flakily there, so the ceiling gets real headroom under the
- * hooks' own 10s budgets.
+ * The CLI bounds the complete context request at 4.5s. Keep a five-second
+ * subprocess ceiling and inherit repository lock settings so a repair replay
+ * can wait for its service worker within that shared request budget.
  */
 const DEFAULT_TIMEOUT_MS = 5_000;
-const HOOK_CONTEXT_LOCK_WAIT_SECS = '1';
 
 /**
  * The production execution surface: one strict subprocess-backed context
@@ -1387,7 +1384,6 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
       try {
         stdout = execFileSync('git', args, {
           cwd: request.repoRoot,
-          env: { ...process.env, GIT_SPAN_LOCK_WAIT_SECS: HOOK_CONTEXT_LOCK_WAIT_SECS },
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: timeoutMs,

@@ -6,6 +6,7 @@ import {
   createRealityProbeCache,
   runTouchHook,
   runTouchHooks,
+  type TouchExecutors,
   type TouchInput
 } from '../../src/common/touch-core.js';
 import { itemAt } from '../helpers.js';
@@ -103,12 +104,24 @@ async function withRepoEnv<T>(repo: RealBundleRepo, fn: () => Promise<T>): Promi
   }
 }
 
+/** Require successful real CLI execution before comparing rendered output. */
+function checkedExecutors(): TouchExecutors {
+  const base = createDefaultTouchExecutors(SUBPROCESS_TIMEOUT_MS);
+  const executors = base.forInvocation?.() ?? base;
+  return {
+    ...executors,
+    context: async (request) => {
+      const result = await executors.context(request);
+      expect(result.ok, JSON.stringify({ request, result })).toBe(true);
+      return result;
+    }
+  };
+}
+
 /** Run a batch of touches through the singleton compatibility path. */
 async function runPerFile(repo: RealBundleRepo, touches: TouchInput[]): Promise<(string | null)[]> {
   return withRepoEnv(repo, async () => {
-    const executors =
-      createDefaultTouchExecutors(SUBPROCESS_TIMEOUT_MS).forInvocation?.() ??
-      createDefaultTouchExecutors(SUBPROCESS_TIMEOUT_MS);
+    const executors = checkedExecutors();
     const memo = createMemoStore();
     const probe = createRealityProbeCache([]);
     const out: (string | null)[] = [];
@@ -122,8 +135,7 @@ async function runPerFile(repo: RealBundleRepo, touches: TouchInput[]): Promise<
 /** Run the same batch through the plural context-query path. */
 async function runBatched(repo: RealBundleRepo, touches: TouchInput[]): Promise<(string | null)[]> {
   return withRepoEnv(repo, async () => {
-    const base = createDefaultTouchExecutors(SUBPROCESS_TIMEOUT_MS);
-    const executors = base.forInvocation?.() ?? base;
+    const executors = checkedExecutors();
     const memo = createMemoStore();
     const probe = createRealityProbeCache([]);
     const batch = await runTouchHooks(touches, executors, memo, SESSION, probe);

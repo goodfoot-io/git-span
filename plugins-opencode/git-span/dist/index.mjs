@@ -7013,7 +7013,6 @@ async function runTouchHook(input, executors, memo, probeCache, logger) {
   return output;
 }
 var DEFAULT_TIMEOUT_MS = 5e3;
-var HOOK_CONTEXT_LOCK_WAIT_SECS = "1";
 function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
   const executors = {
     context: async (request) => {
@@ -7024,7 +7023,6 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
       try {
         stdout = execFileSync4("git", args, {
           cwd: request.repoRoot,
-          env: { ...process.env, GIT_SPAN_LOCK_WAIT_SECS: HOOK_CONTEXT_LOCK_WAIT_SECS },
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
           timeout: timeoutMs,
