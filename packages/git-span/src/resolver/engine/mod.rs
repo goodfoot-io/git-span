@@ -514,6 +514,8 @@ fn resolve_loaded_span_with_state(
         for (id, r) in span.anchors {
             let anchor_t0 = std::time::Instant::now();
             let trace_path = r.path.clone();
+            #[cfg(test)]
+            loaded_parallel_tests::observe_worker();
             let mut resolved = resolve_anchor_inner(
                 AnchorCtx {
                     repo,
@@ -633,12 +635,9 @@ fn drift_reporting_class(status: &AnchorStatus) -> DriftReportingClass {
 /// span that is only pending-commit no longer needs a standing "nothing to do
 /// here" notice on every scan.
 pub(crate) fn span_is_reportable_in_drift_discovery(m: &SpanResolved) -> bool {
-    m.anchors.iter().any(|a| {
-        !matches!(
-            drift_reporting_class(&a.status),
-            DriftReportingClass::Fresh
-        )
-    })
+    m.anchors
+        .iter()
+        .any(|a| !matches!(drift_reporting_class(&a.status), DriftReportingClass::Fresh))
 }
 
 /// Whether an anchor contributes actionable drift.
@@ -696,13 +695,105 @@ pub(crate) fn resolve_loaded_spans(
         options.needs_all_layers,
         options.fuzzy_threshold,
     )?;
-    let mut resolved = Vec::with_capacity(spans.len());
-    for (_, span) in spans {
-        resolved.push(resolve_loaded_span_with_state(
-            repo,
-            &mut state,
-            span.clone(),
-        )?);
+    use rayon::prelude::*;
+
+    struct WorkItem {
+        span_index: usize,
+        anchor_id: String,
+        anchor: crate::types::Anchor,
+    }
+    struct ResolvedItem {
+        span_index: usize,
+        anchor_id: String,
+        path: String,
+        wall_us: u128,
+        result: Result<AnchorResolved>,
+    }
+    // Resolve the caller's captured definitions directly. Reloading by name
+    // would substitute a different snapshot inside context's capture guards.
+    let work: Vec<_> = spans
+        .iter()
+        .enumerate()
+        .flat_map(|(span_index, (_, span))| {
+            span.anchors
+                .iter()
+                .map(move |(anchor_id, anchor)| WorkItem {
+                    span_index,
+                    anchor_id: anchor_id.clone(),
+                    anchor: anchor.clone(),
+                })
+        })
+        .collect();
+    let shared = &state.shared;
+    let concurrent = &state.concurrent;
+    let repo_sync = repo.clone().into_sync();
+    let collected: Vec<ResolvedItem> = work
+        .into_par_iter()
+        .with_min_len(COLD_DRIFT_MIN_ANCHORS_PER_TASK)
+        .map_init(
+            || {
+                (
+                    EngineLocal::new(options.layers, options.needs_all_layers),
+                    repo_sync.to_thread_local(),
+                )
+            },
+            |(local, repo_local), item| {
+                #[cfg(test)]
+                loaded_parallel_tests::observe_worker();
+                let started = std::time::Instant::now();
+                let path = item.anchor.path.clone();
+                let result = resolve_anchor_inner(
+                    AnchorCtx {
+                        repo: repo_local,
+                        shared,
+                        concurrent,
+                    },
+                    local,
+                    &spans[item.span_index].1.config,
+                    &item.anchor_id,
+                    item.anchor,
+                );
+                let wall_us = started.elapsed().as_micros();
+                let result = result.map(|mut resolved| {
+                    populate_drift_locus(repo_local, &mut resolved, concurrent);
+                    resolved
+                });
+                ResolvedItem {
+                    span_index: item.span_index,
+                    anchor_id: item.anchor_id,
+                    path,
+                    wall_us,
+                    result,
+                }
+            },
+        )
+        .collect();
+    let mut resolved: Vec<_> = spans
+        .iter()
+        .map(|(_, span)| SpanResolved {
+            name: span.name.clone(),
+            why: span.why.clone(),
+            anchors: Vec::with_capacity(span.anchors.len()),
+            follow_moves: span.config.follow_moves,
+        })
+        .collect();
+    // Ordered collection preserves anchor order, duplicate definitions and
+    // empty spans, and recovers the same first-input error as the serial loop.
+    // Mutable diagnostic tallies remain outside the parallel workers.
+    for item in collected {
+        let anchor = item.result?;
+        state.concurrent.per_anchor_us.push(item.wall_us);
+        tally_anchor_status(&mut state.concurrent, &anchor.status);
+        if let Some(trace) = state.concurrent.per_anchor_trace.as_mut() {
+            trace.push(crate::perf::TraceRow {
+                span: resolved[item.span_index].name.clone(),
+                anchor_id: item.anchor_id,
+                path: item.path,
+                wall_us: item.wall_us,
+                status: status_label(&anchor.status),
+            });
+        }
+        resolved[item.span_index].anchors.push(anchor);
     }
     emit_session_counters(&state.concurrent);
     if state.finish(repo) {
@@ -1131,7 +1222,10 @@ fn drift_spans_inner(
     );
     crate::perf::counter(
         "session.index-snapshot-loads",
-        state.concurrent.index_snapshot_loads.load(Ordering::Relaxed),
+        state
+            .concurrent
+            .index_snapshot_loads
+            .load(Ordering::Relaxed),
     );
     let filter_attr_hits = state.concurrent.filter_attr_hits.load(Ordering::Relaxed);
     let filter_attr_misses = state.concurrent.filter_attr_misses.load(Ordering::Relaxed);
@@ -1868,12 +1962,12 @@ mod tests {
         // retryable condition exactly as drift defines it — distinct from 0
         // (clean) and 1 (drift / check error).
         let exit = crate::cli::commit::reconcile_exit_code(&check);
-        assert_eq!(
-            exit, 2,
-            "indeterminate must map to exit 2, never 0 or 1"
-        );
+        assert_eq!(exit, 2, "indeterminate must map to exit 2, never 0 or 1");
     }
 }
 
 #[cfg(test)]
 mod immutable_perf_tests;
+
+#[cfg(test)]
+mod loaded_parallel_tests;
