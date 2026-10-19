@@ -134,7 +134,11 @@ pub(crate) fn read_worktree_layer_for_paths(
 /// worktree layer. Complex status records fall back to the full gix readers.
 pub(crate) fn read_layer_status(repo: &gix::Repository) -> Result<LayerStatus> {
     let workdir = git::work_dir(repo)?;
+    // Observing the worktree must not refresh the on-disk index. A refresh
+    // produces real dependency events and makes a watched capture dirty
+    // even though the tracked contents did not change.
     let out = Command::new("git")
+        .arg("--no-optional-locks")
         .arg("status")
         .arg("--porcelain=v1")
         .arg("-z")

@@ -469,6 +469,7 @@ mod unix {
             let mut buffer = [0_u8; 64 * 1024];
             let mut events = 0;
             let mut overflow = false;
+            let mut batches = 0;
             #[cfg(test)]
             let mut paths = BTreeSet::new();
             loop {
@@ -478,6 +479,14 @@ mod unix {
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(error) => return Err(error).context("drain inotify events"),
                 };
+                // Confirm that another batch exists before treating the drain
+                // as incomplete. A descheduled worker with one fully consumed
+                // (possibly excluded) batch has not lost any notifications.
+                if batches > 0 && started.elapsed() >= Duration::from_millis(20) {
+                    overflow = true;
+                    break;
+                }
+                batches += 1;
                 let mut offset = 0;
                 while offset + INOTIFY_EVENT_HEADER <= count {
                     let event =
@@ -526,13 +535,6 @@ mod unix {
                 }
                 #[cfg(test)]
                 thread::sleep(self.drain_batch_delay);
-                // A continuously replenished queue must not monopolize a
-                // worker or the state mutex. Treat an incomplete drain as
-                // lost trust and rebuild coverage before another capture.
-                if started.elapsed() >= Duration::from_millis(20) {
-                    overflow = true;
-                    break;
-                }
             }
             if overflow {
                 // Reusing a path-to-descriptor map after watch loss can hide
@@ -1577,12 +1579,18 @@ mod unix {
         fn delayed_complete_runtime_batch_does_not_invalidate_watch_trust() -> Result<()> {
             let temp = tempfile::tempdir()?;
             let runtime = temp.path().join("runtime");
-            let mut watcher = super::FailClosedWatcher::new(vec![temp.path().to_path_buf()], vec![runtime.clone()])?;
+            let mut watcher = super::FailClosedWatcher::new(
+                vec![temp.path().to_path_buf()],
+                vec![runtime.clone()],
+            )?;
             watcher.drain_batch_delay = std::time::Duration::from_millis(25);
             std::fs::create_dir(runtime)?;
             let drain = watcher.drain()?;
             assert_eq!(drain.events, 0);
-            assert!(!drain.overflow, "a complete excluded batch discarded trusted coverage merely because its worker was delayed");
+            assert!(
+                !drain.overflow,
+                "a complete excluded batch discarded trusted coverage merely because its worker was delayed"
+            );
             Ok(())
         }
 
