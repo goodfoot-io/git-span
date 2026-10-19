@@ -1570,6 +1570,11 @@ mod unix {
     }
 
     #[cfg(test)]
+    mod watcher_scaling_tests {
+        include!("context_service_watcher_scaling_tests.rs");
+    }
+
+    #[cfg(test)]
     mod tests {
         use super::{client_query, identity_paths};
         use anyhow::Result;
