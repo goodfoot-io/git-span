@@ -498,6 +498,50 @@ pub fn terminating_signal(_status: &std::process::ExitStatus) -> Option<i32> {
     None
 }
 
+/// Find a Linux context listener whose peer process belongs to `worktree`.
+/// Matching the peer's working directory avoids selecting another test's
+/// concurrently created service from the shared runtime directory.
+#[cfg(target_os = "linux")]
+pub fn service_socket_for_worktree(
+    candidates: &[std::path::PathBuf],
+    worktree: &Path,
+) -> io::Result<Option<std::path::PathBuf>> {
+    use std::os::fd::AsRawFd;
+    let expected = std::fs::canonicalize(worktree)?;
+    for socket in candidates {
+        let Ok(stream) = std::os::unix::net::UnixStream::connect(socket) else {
+            continue;
+        };
+        let mut peer = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: the connected stream's fd stays live, `peer` is writable
+        // storage of `length` bytes, and `length` is a writable socklen_t.
+        let result = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut peer as *mut libc::ucred).cast(),
+                &mut length,
+            )
+        };
+        if result != 0 {
+            continue;
+        }
+        let Ok(cwd) = std::fs::read_link(format!("/proc/{}/cwd", peer.pid)) else {
+            continue;
+        };
+        if cwd == expected {
+            return Ok(Some(socket.clone()));
+        }
+    }
+    Ok(None)
+}
+
 /// Create a `.span/<name>` file with the given anchors and why, then
 /// commit it with ordinary git (file-backed model).
 ///

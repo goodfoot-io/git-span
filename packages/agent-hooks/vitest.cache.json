@@ -1,5 +1,9 @@
 {
   "files": {
+    "packages/agent-hooks/test/antigravity/lifecycle.test.ts": [],
+    "packages/agent-hooks/test/common/context-executor.test.ts": [],
+    "packages/agent-hooks/test/common/git-span-path-precedence.test.ts": [],
+    "packages/agent-hooks/test/common/context-warmup.test.ts": [],
     "packages/agent-hooks/test/common/commit-association.test.ts": [],
     "packages/agent-hooks/test/common/commit-contracts.test.ts": [],
     "packages/agent-hooks/test/common/commit-lifecycle.test.ts": [],

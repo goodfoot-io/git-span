@@ -1,4 +1,4 @@
-//! A service instance must retain exclusive ownership for its entire lifetime.
+//! Raw RPC fixture for requests arriving while a capture holds shared state.
 
 #![cfg(target_os = "linux")]
 

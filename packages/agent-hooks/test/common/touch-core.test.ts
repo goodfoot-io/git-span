@@ -24,7 +24,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import { runBashTouches as runBashTouchesImpl } from '../../src/common/bash-touch.js';
@@ -761,6 +761,8 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           execFileSync: (...args: Parameters<typeof actual.execFileSync>): ReturnType<typeof actual.execFileSync> => {
             const [file, cmdArgs] = args;
             if (file === 'git' && Array.isArray(cmdArgs)) gitCalls.push(cmdArgs);
+            else if (typeof file === 'string' && basename(file) === 'git-span' && Array.isArray(cmdArgs))
+              gitCalls.push(['span', ...cmdArgs]);
             return actual.execFileSync(...args);
           }
         };

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node --enable-source-maps
 // packages/agent-hooks/src/codex/stop.ts
-import { dirname as dirname4, join as join5 } from "node:path";
+import { dirname as dirname5, join as join5 } from "node:path";
 
 // node_modules/@goodfoot/agent-hooks/dist/core/logger.js
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
@@ -453,14 +453,14 @@ function stopHook(config, handler) {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve5, reject2) => {
+  return new Promise((resolve6, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve5(chunks.join(""));
+      resolve6(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -522,8 +522,8 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve5, reject2) => {
-    stream.write(content, (error) => error ? reject2(error) : resolve5());
+  return new Promise((resolve6, reject2) => {
+    stream.write(content, (error) => error ? reject2(error) : resolve6());
   });
 }
 async function writeUnexpectedErrorStderr(error) {
@@ -817,7 +817,7 @@ function cleanupSessionState(layout, sessionId, now = Date.now()) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync5, lstatSync as lstatSync3, realpathSync as realpathSync3, rmSync as rmSync3 } from "node:fs";
+import { existsSync as existsSync5, lstatSync as lstatSync2, realpathSync as realpathSync3, rmSync as rmSync3 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join4 } from "node:path";
 
@@ -1022,13 +1022,24 @@ import {
   constants,
   existsSync as existsSync3,
   fstatSync,
-  lstatSync,
   openSync as openSync2,
   readSync,
-  realpathSync as realpathSync2
+  realpathSync as realpathSync2,
+  statSync as statSync2
 } from "node:fs";
 import { delimiter, isAbsolute as isAbsolute2, join as join2, resolve as resolve2 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+function executableOnPath(name, cwd = process.cwd()) {
+  const candidates = isAbsolute2(name) ? [name] : (process.env.PATH ?? "").split(delimiter).map((directory) => resolve2(cwd, directory, name));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync2(candidate).isFile()) return realpathSync2(candidate);
+    } catch {
+    }
+  }
+  throw new Error(`${name} executable is unavailable`);
+}
 async function executeCommitNotes(executable, command) {
   return new Promise((resolveResult) => {
     let stdout = "";
@@ -1061,6 +1072,7 @@ async function executeCommitNotes(executable, command) {
         if (grouped && child.pid !== void 0) process.kill(-child.pid, "SIGKILL");
         else child.kill("SIGKILL");
       } catch {
+        return finish(null, "SIGKILL");
       }
       finish(null, "SIGKILL");
     };
@@ -1100,7 +1112,7 @@ import { createHash as createHash4, randomBytes } from "node:crypto";
 import {
   existsSync as existsSync4,
   linkSync,
-  lstatSync as lstatSync2,
+  lstatSync,
   mkdirSync as mkdirSync3,
   opendirSync,
   readFileSync,
@@ -1114,13 +1126,13 @@ import { setTimeout as delay } from "node:timers/promises";
 function privateDirectory(path) {
   if (!isAbsolute4(path)) throw new Error("receipt state root must be absolute");
   mkdirSync3(path, { recursive: true, mode: 448 });
-  const stat = lstatSync2(path);
+  const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 63) !== 0 || process.getuid && stat.uid !== process.getuid()) {
     throw new Error("receipt directory is not private");
   }
 }
 function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {
-  const stat = lstatSync2(path);
+  const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
     throw new Error("invalid bounded receipt file");
   const parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -1240,6 +1252,35 @@ async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline
     return true;
   } finally {
     claim.release();
+  }
+}
+
+// packages/agent-hooks/src/common/git-span-command.ts
+import { dirname as dirname4, resolve as resolve5 } from "node:path";
+function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git", platform = process.platform) {
+  if (platform === "win32") {
+    const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    for (const directory of (process.env.PATH ?? "").split(";")) {
+      for (const extension of extensions) {
+        const candidate = resolve5(cwd, directory, `git-span${extension.toLowerCase()}`);
+        try {
+          const executable = executableOnPath(candidate, cwd);
+          if (extension.toLowerCase() === ".exe" || extension.toLowerCase() === ".com")
+            return { executable, argv: [...argv] };
+          return { executable: gitExecutable, argv: [`--exec-path=${dirname4(candidate)}`, "span", ...argv] };
+        } catch {
+        }
+      }
+    }
+    return { executable: gitExecutable, argv: ["span", ...argv] };
+  }
+  try {
+    return {
+      executable: executableOnPath("git-span", cwd),
+      argv: [...argv]
+    };
+  } catch {
+    return { executable: gitExecutable, argv: ["span", ...argv] };
   }
 }
 
@@ -1379,7 +1420,7 @@ async function drainDirectory(root, directory, enrollment, options, started, log
         }
         if (performance.now() >= deadline) throw new Error("receipt drain deadline exhausted before acknowledgment");
         const usage = readUsage(directory);
-        const bytes = lstatSync3(join4(directory, "receipts", name)).size;
+        const bytes = lstatSync2(join4(directory, "receipts", name)).size;
         rmSync3(join4(directory, "receipts", name));
         atomicJson(join4(directory, "usage.json"), {
           bytes: usage.bytes - bytes,
@@ -1408,14 +1449,15 @@ async function drainDirectory(root, directory, enrollment, options, started, log
 async function invokeNotes(enrollment, receipt, options, args, stdin, started) {
   const timeoutMs = commitCliBudgetMs(started, performance.now());
   if (timeoutMs <= 0) throw new Error("receipt drain deadline exhausted");
+  const resolved = options.notesExecutable === void 0 ? resolveGitSpanCommand(["notes", ...args], receipt.repository.commonDirectory, enrollment.gitExecutable) : { executable: options.notesExecutable, argv: ["notes", ...args] };
   const command = {
     cwd: receipt.repository.commonDirectory,
-    argv: options.notesExecutable === void 0 ? ["span", "notes", ...args] : ["notes", ...args],
+    argv: resolved.argv,
     ...stdin === void 0 ? {} : { stdin },
     timeoutMs,
     maxOutputBytes: 1048576
   };
-  const result = await (options.notesIO?.execute(command) ?? executeCommitNotes(options.notesExecutable ?? enrollment.gitExecutable, command));
+  const result = await (options.notesIO?.execute(command) ?? executeCommitNotes(resolved.executable, command));
   if (result.exitCode !== 0 || result.signal !== null || result.timedOut || result.outputExceeded)
     throw new Error(
       result.timedOut ? "notes CLI timed out; receipt retained" : "notes CLI unavailable or failed; receipt retained"
@@ -1435,7 +1477,7 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) {
       await cleanupCommitInvocations(
         "codex",
         input.session_id,
-        { stateRoot: join5(dirname4(layout.base), "commit-receipts"), ...runtimeOptions },
+        { stateRoot: join5(dirname5(layout.base), "commit-receipts"), ...runtimeOptions },
         ctx.logger
       );
     } catch (err) {

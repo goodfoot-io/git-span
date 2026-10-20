@@ -12,8 +12,8 @@ import {
   writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { delimiter, join } from 'node:path';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommitReceipt } from '../../src/common/commit-contracts.js';
 import { COMMIT_RECEIPT_LIMITS } from '../../src/common/commit-limits.js';
 import { executeCommitNotes } from '../../src/common/commit-native-io.js';
@@ -89,9 +89,31 @@ beforeEach(() => {
   options = { stateRoot: join(scratch, 'private receipts'), notesExecutable: binary };
   warnings = [];
 });
-afterEach(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(scratch, { recursive: true, force: true });
+});
 
 describe('commit observation without command modification', () => {
+  it('uses the PATH notes CLI before the Git executable directory', async () => {
+    const pathDirectory = join(scratch, 'selected-path');
+    const gitDirectory = join(scratch, 'git-exec');
+    mkdirSync(pathDirectory);
+    mkdirSync(gitDirectory);
+    symlinkSync(binary, join(pathDirectory, 'git-span'));
+    writeFileSync(join(gitDirectory, 'git-span'), '#!/bin/sh\nexit 17\n', { mode: 0o755 });
+    vi.stubEnv('PATH', `${pathDirectory}${delimiter}${process.env.PATH ?? ''}`);
+    vi.stubEnv('GIT_EXEC_PATH', gitDirectory);
+    options = { stateRoot: options.stateRoot };
+
+    const input = request('git commit -q --allow-empty -m path-precedence');
+    await enroll(input);
+    expect(shell(input).status).toBe(0);
+    expect(await terminal(input)).toMatchObject({ acknowledged: 1, pending: 0 });
+    expect(notes().notes).toHaveLength(1);
+    expect(warnings).toEqual([]);
+  });
+
   it.each(['claude', 'codex'] as const)(
     'records an initial quiet %s commit with frozen identity and idempotent posts',
     async (host) => {

@@ -162,12 +162,14 @@ pub(super) struct ContextSnapshot {
 }
 
 pub(super) struct ClosedContextCapture {
+    pub(super) resolver_passes: u64,
     pub(super) resolved: Vec<SpanResolved>,
     pub(super) paths: BTreeSet<String>,
     pub(super) token: crate::resolver::core::token::StateToken,
 }
 
 pub(crate) struct ContextServiceSeed {
+    pub(crate) resolver_passes: u64,
     pub(crate) spans: Vec<ContextSpan>,
     pub(crate) known_paths: BTreeSet<String>,
     pub(crate) external_watch_roots: BTreeSet<std::path::PathBuf>,
@@ -220,51 +222,69 @@ pub(super) fn close_context_capture(
     authority: &crate::descriptor_authority::SpanRootAuthority,
     query_paths: impl IntoIterator<Item = String>,
 ) -> Result<ClosedContextCapture> {
-    let discovery = resolve_snapshot(repo, snapshot)?;
-    let mut paths = resolved_paths(&discovery);
+    // Definitions already identify every anchored path. Capture them and the
+    // requested paths before resolving; only newly discovered destinations
+    // require another capture and resolution under expanded coverage.
+    let mut paths: BTreeSet<String> = snapshot
+        .definitions
+        .iter()
+        .flat_map(|(_, span)| {
+            span.anchors
+                .iter()
+                .map(|(_, anchor)| anchor.path.replace('\\', "/"))
+        })
+        .collect();
     paths.extend(query_paths);
     context_test_checkpoint(repo, "after-discovery")?;
 
-    let token = crate::resolver::core::capture::capture_state_token_with_extra_paths(
-        repo,
-        span_root,
-        EngineOptions::full(),
-        &paths,
-        None,
-    )?;
-    let closed_snapshot = capture_snapshot(repo, span_root, authority)?;
-    anyhow::ensure!(
-        closed_snapshot == *snapshot,
-        "span definitions changed while resolving context"
-    );
-    context_test_checkpoint(repo, "after-capture")?;
+    for attempt in 0..2 {
+        let token = crate::resolver::core::capture::capture_state_token_with_extra_paths(
+            repo,
+            span_root,
+            EngineOptions::full(),
+            &paths,
+            None,
+        )?;
+        let closed_snapshot = capture_snapshot(repo, span_root, authority)?;
+        anyhow::ensure!(
+            closed_snapshot == *snapshot,
+            "span definitions changed while resolving context"
+        );
+        context_test_checkpoint(repo, "after-capture")?;
 
-    let resolved = resolve_snapshot(repo, &closed_snapshot)?;
-    let final_paths = resolved_paths(&resolved);
-    let new_paths = final_paths.difference(&paths).cloned().collect::<Vec<_>>();
-    anyhow::ensure!(
-        new_paths.is_empty(),
-        "resolver discovered uncaptured current destination(s) while resolving context: {}",
-        new_paths.join(", ")
-    );
-    context_test_checkpoint(repo, "after-render")?;
-    match crate::resolver::core::capture::revalidate_with_extra_paths(
-        repo,
-        span_root,
-        EngineOptions::full(),
-        &paths,
-        &token,
-    )? {
-        crate::resolver::core::capture::Revalidation::Unchanged => {}
-        crate::resolver::core::capture::Revalidation::Changed { field } => {
-            anyhow::bail!("repository {field} changed while resolving context")
+        let resolved = resolve_snapshot(repo, &closed_snapshot)?;
+        let final_paths = resolved_paths(&resolved);
+        let new_paths = final_paths.difference(&paths).cloned().collect::<Vec<_>>();
+        if !new_paths.is_empty() {
+            anyhow::ensure!(
+                attempt == 0,
+                "resolver destination closure changed repeatedly while resolving context: {}",
+                new_paths.join(", ")
+            );
+            paths.extend(new_paths);
+            continue;
         }
+        context_test_checkpoint(repo, "after-render")?;
+        match crate::resolver::core::capture::revalidate_with_extra_paths(
+            repo,
+            span_root,
+            EngineOptions::full(),
+            &paths,
+            &token,
+        )? {
+            crate::resolver::core::capture::Revalidation::Unchanged => {}
+            crate::resolver::core::capture::Revalidation::Changed { field } => {
+                anyhow::bail!("repository {field} changed while resolving context")
+            }
+        }
+        return Ok(ClosedContextCapture {
+            resolver_passes: attempt + 1,
+            resolved,
+            paths,
+            token,
+        });
     }
-    Ok(ClosedContextCapture {
-        resolved,
-        paths,
-        token,
-    })
+    unreachable!("capture either closes destination coverage or rejects repeated expansion")
 }
 
 pub(super) fn parse_context_address(address: &str) -> Result<(String, ContextExtent)> {
@@ -704,6 +724,7 @@ pub(crate) fn build_service_seed(
         .map(|span| context_span_from_resolved(span, Vec::new()))
         .collect();
     Ok(ContextServiceSeed {
+        resolver_passes: capture.resolver_passes,
         spans,
         known_paths,
         external_watch_roots,

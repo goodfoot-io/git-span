@@ -7,10 +7,10 @@ import {
   constants,
   existsSync,
   fstatSync,
-  lstatSync,
   openSync,
   readSync,
-  realpathSync
+  realpathSync,
+  statSync
 } from 'node:fs';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -18,20 +18,15 @@ import type { CommitRepository, CommitValidation } from './commit-contracts.js';
 import type { CommitReflogAppend, CommitReflogCheckpoint } from './commit-git.js';
 import type { CommitNotesCommand, CommitNotesResult } from './commit-io.js';
 
-export function executableOnPath(name: string): string {
+export function executableOnPath(name: string, cwd = process.cwd()): string {
   const candidates = isAbsolute(name)
     ? [name]
-    : (process.env.PATH ?? '')
-        .split(delimiter)
-        .filter(Boolean)
-        .map((directory) => resolve(directory, name));
+    : (process.env.PATH ?? '').split(delimiter).map((directory) => resolve(cwd, directory, name));
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants.X_OK);
-      if (lstatSync(candidate).isFile() || lstatSync(candidate).isSymbolicLink()) return realpathSync(candidate);
-    } catch {
-      /* Try the next executable candidate. */
-    }
+      if (statSync(candidate).isFile()) return realpathSync(candidate);
+    } catch {}
   }
   throw new Error(`${name} executable is unavailable`);
 }
@@ -211,6 +206,7 @@ export async function executeCommitNotes(executable: string, command: CommitNote
         else child.kill('SIGKILL');
       } catch {
         /* The owned group may have already exited. */
+        return finish(null, 'SIGKILL');
       }
       finish(null, 'SIGKILL');
     };

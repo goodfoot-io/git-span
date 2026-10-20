@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const capture = vi.hoisted(() => ({
   calls: [] as { file: string; args: string[]; options: Record<string, unknown> }[],
@@ -36,6 +36,13 @@ function emptyDocument(requested: boolean): ContextDocument {
 }
 
 describe('default context executor', () => {
+  beforeEach(() => {
+    vi.stubEnv('PATH', '');
+    capture.calls = [];
+    capture.stdout = '';
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
   it('bounds the complete subprocess while inheriting repository lock settings', async () => {
     const executors = createDefaultTouchExecutors();
     if (!('context' in executors)) throw new Error('default executors must expose context');

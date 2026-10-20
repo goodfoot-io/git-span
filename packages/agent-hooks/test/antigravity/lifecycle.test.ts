@@ -11,7 +11,7 @@
 import { EventEmitter } from 'node:events';
 import { existsSync, writeFileSync } from 'node:fs';
 import { Logger } from '@goodfoot/agent-hooks';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import preInvocationHookEntry, {
   createHandler as createPreInvocationHandler
 } from '../../src/antigravity/pre-invocation.js';
@@ -42,6 +42,9 @@ function base(conversationId: string, workspacePaths: string[]): Record<string, 
 }
 
 describe('antigravity pre-invocation warm-up', () => {
+  beforeEach(() => vi.stubEnv('PATH', ''));
+  afterEach(() => vi.unstubAllEnvs());
+
   it('registers PreInvocation', () => {
     expect(preInvocationHookEntry.eventName).toBe('PreInvocation');
   });

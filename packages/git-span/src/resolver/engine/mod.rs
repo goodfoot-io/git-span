@@ -1971,3 +1971,6 @@ mod immutable_perf_tests;
 
 #[cfg(test)]
 mod loaded_parallel_tests;
+
+#[cfg(test)]
+mod loaded_equivalence_tests;

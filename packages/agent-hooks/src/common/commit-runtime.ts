@@ -41,6 +41,7 @@ import {
   readJson,
   reserveReceiptCapacity
 } from './commit-storage.js';
+import { resolveGitSpanCommand } from './git-span-command.js';
 import { isOneOf, isRecord } from './guards.js';
 import { splitTopLevel } from './shell-split.js';
 
@@ -521,15 +522,18 @@ async function invokeNotes(
 ): Promise<string> {
   const timeoutMs = commitCliBudgetMs(started, performance.now());
   if (timeoutMs <= 0) throw new Error('receipt drain deadline exhausted');
+  const resolved =
+    options.notesExecutable === undefined
+      ? resolveGitSpanCommand(['notes', ...args], receipt.repository.commonDirectory, enrollment.gitExecutable)
+      : { executable: options.notesExecutable, argv: ['notes', ...args] };
   const command = {
     cwd: receipt.repository.commonDirectory,
-    argv: options.notesExecutable === undefined ? ['span', 'notes', ...args] : ['notes', ...args],
+    argv: resolved.argv,
     ...(stdin === undefined ? {} : { stdin }),
     timeoutMs,
     maxOutputBytes: 1_048_576
   };
-  const result = await (options.notesIO?.execute(command) ??
-    executeCommitNotes(options.notesExecutable ?? enrollment.gitExecutable, command));
+  const result = await (options.notesIO?.execute(command) ?? executeCommitNotes(resolved.executable, command));
   if (result.exitCode !== 0 || result.signal !== null || result.timedOut || result.outputExceeded)
     throw new Error(
       result.timedOut ? 'notes CLI timed out; receipt retained' : 'notes CLI unavailable or failed; receipt retained'

@@ -33,6 +33,7 @@ import {
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
 import { flushFailOpen, reportFailOpen } from './fail-open.js';
+import { resolveGitSpanCommand } from './git-span-command.js';
 import { caughtProperty, errnoCode, isOneOf, isRecord } from './guards.js';
 import type { CoreLogger, MemoStore } from './span-surface.js';
 
@@ -327,7 +328,9 @@ function realPaths(cache: RealityProbeCache, cwd: string): Set<string> {
       const rels = cache.paths.map((p) => relativeToRepo(repoRoot, p));
       const capture = (args: string[]): string | null => {
         try {
-          return execFileSync('git', args, {
+          const command =
+            args[0] === 'span' ? resolveGitSpanCommand(args.slice(1), repoRoot) : { executable: 'git', argv: args };
+          return execFileSync(command.executable, command.argv, {
             cwd: repoRoot,
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1378,11 +1381,12 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
   const executors: TouchExecutors = {
     context: async (request) => {
       const started = performance.now();
-      const args = ['span', 'context', ...request.addresses, '--format', 'json'];
+      const args = ['context', ...request.addresses, '--format', 'json'];
       if (request.repair) args.push('--fix', '--operation-id', request.operationId);
       let stdout: string;
       try {
-        stdout = execFileSync('git', args, {
+        const command = resolveGitSpanCommand(args, request.repoRoot);
+        stdout = execFileSync(command.executable, command.argv, {
           cwd: request.repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],

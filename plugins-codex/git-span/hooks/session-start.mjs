@@ -450,14 +450,14 @@ function sessionStartHook(config, handler) {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve3, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve(chunks.join(""));
+      resolve3(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject(error);
@@ -519,8 +519,8 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve, reject) => {
-    stream.write(content, (error) => error ? reject(error) : resolve());
+  return new Promise((resolve3, reject) => {
+    stream.write(content, (error) => error ? reject(error) : resolve3());
   });
 }
 async function writeUnexpectedErrorStderr(error) {
@@ -736,9 +736,71 @@ async function execute(hookFn) {
 }
 
 // packages/agent-hooks/src/common/context-warmup.ts
-import { spawn } from "node:child_process";
-function startContextWarmup(cwd, onError, spawnProcess = spawn) {
-  const child = spawnProcess("git", ["span", "context", "--warm"], {
+import { spawn as spawn2 } from "node:child_process";
+
+// packages/agent-hooks/src/common/git-span-command.ts
+import { dirname as dirname2, resolve as resolve2 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-native-io.ts
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  accessSync,
+  closeSync as closeSync2,
+  constants,
+  existsSync as existsSync2,
+  fstatSync,
+  openSync as openSync2,
+  readSync,
+  realpathSync,
+  statSync
+} from "node:fs";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+function executableOnPath(name, cwd = process.cwd()) {
+  const candidates = isAbsolute(name) ? [name] : (process.env.PATH ?? "").split(delimiter).map((directory) => resolve(cwd, directory, name));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return realpathSync(candidate);
+    } catch {
+    }
+  }
+  throw new Error(`${name} executable is unavailable`);
+}
+
+// packages/agent-hooks/src/common/git-span-command.ts
+function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git", platform = process.platform) {
+  if (platform === "win32") {
+    const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    for (const directory of (process.env.PATH ?? "").split(";")) {
+      for (const extension of extensions) {
+        const candidate = resolve2(cwd, directory, `git-span${extension.toLowerCase()}`);
+        try {
+          const executable = executableOnPath(candidate, cwd);
+          if (extension.toLowerCase() === ".exe" || extension.toLowerCase() === ".com")
+            return { executable, argv: [...argv] };
+          return { executable: gitExecutable, argv: [`--exec-path=${dirname2(candidate)}`, "span", ...argv] };
+        } catch {
+        }
+      }
+    }
+    return { executable: gitExecutable, argv: ["span", ...argv] };
+  }
+  try {
+    return {
+      executable: executableOnPath("git-span", cwd),
+      argv: [...argv]
+    };
+  } catch {
+    return { executable: gitExecutable, argv: ["span", ...argv] };
+  }
+}
+
+// packages/agent-hooks/src/common/context-warmup.ts
+function startContextWarmup(cwd, onError, spawnProcess = spawn2) {
+  const command = resolveGitSpanCommand(["context", "--warm"], cwd);
+  const child = spawnProcess(command.executable, command.argv, {
     cwd,
     detached: true,
     env: {

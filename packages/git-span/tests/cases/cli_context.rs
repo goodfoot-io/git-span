@@ -848,13 +848,42 @@ fn watch_closure_liveness_and_backpressure() -> Result<()> {
         &format!("{}\n", alternate_objects.display()),
     )?;
     let query = ["--perf", "context", "file1.txt#L1-L2", "--format", "json"];
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "linux")))]
     let sockets_before_query = runtime_service_sockets()?
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
-    assert!(repo.run_span(query)?.status.success());
-    assert!(repo.run_span(query)?.status.success());
-    #[cfg(unix)]
+    let warm = repo.run_span(["context", "--warm"])?;
+    assert!(
+        warm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    // A successful foreground request may have used direct fallback while
+    // the daemon was still expanding external-watch coverage. Confirm a
+    // resident generation before attributing the next event to one request.
+    let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let ready = repo.run_span(query)?;
+        assert!(
+            ready.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ready.stderr)
+        );
+        let diagnostics = String::from_utf8(ready.stderr)?;
+        if perf_counter(&diagnostics, "context.service-generation-hits") == 1 {
+            break;
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < ready_deadline,
+            "context service never established a reusable generation: {diagnostics}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    #[cfg(target_os = "linux")]
+    let service_socket =
+        crate::support::service_socket_for_worktree(&runtime_service_sockets()?, repo.path())?
+            .expect("context service did not expose a socket belonging to this worktree");
+    #[cfg(all(unix, not(target_os = "linux")))]
     let service_socket = runtime_service_sockets()?
         .into_iter()
         .find(|socket| !sockets_before_query.contains(socket))

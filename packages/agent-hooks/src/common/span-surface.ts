@@ -32,6 +32,7 @@ import {
   type SessionLayout,
   toPosix
 } from './agent-hooks-common.js';
+import { resolveGitSpanCommand } from './git-span-command.js';
 import { caughtProperty, isRecord } from './guards.js';
 import { type HookIgnoreLoader, isSpanSuppressed } from './span-ignore.js';
 
@@ -60,7 +61,8 @@ export type SpanExecutor = (args: string[], cwd: string) => string;
 
 export function createDefaultSpanExecutor(timeoutMs = 10_000): SpanExecutor {
   return (args, cwd) => {
-    return execFileSync('git', ['span', 'list', ...args], {
+    const command = resolveGitSpanCommand(['list', ...args], cwd);
+    return execFileSync(command.executable, command.argv, {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -81,7 +83,8 @@ export type DriftExecutor = (slugs: string[], cwd: string) => string;
 export function createDefaultDriftExecutor(timeoutMs = 10_000): DriftExecutor {
   return (slugs, cwd) => {
     try {
-      return execFileSync('git', ['span', 'drift', '--format', 'porcelain', ...slugs], {
+      const command = resolveGitSpanCommand(['drift', '--format', 'porcelain', ...slugs], cwd);
+      return execFileSync(command.executable, command.argv, {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],

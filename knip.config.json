@@ -4,6 +4,7 @@
     "cards-extension",
     "cloudflared",
     "dbus-daemon",
+    "flock",
     "magick",
     "pgrep",
     "strace",

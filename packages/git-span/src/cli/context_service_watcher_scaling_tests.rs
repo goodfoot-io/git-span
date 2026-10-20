@@ -17,9 +17,8 @@ fn observe_directory_opens(path: &Path) -> Result<File> {
     let observer = unsafe { File::from_raw_fd(descriptor) };
     let path = CString::new(path.as_os_str().as_bytes())?;
     // SAFETY: the borrowed fd and NUL-terminated path remain alive for the call.
-    let watch = unsafe {
-        libc::inotify_add_watch(observer.as_raw_fd(), path.as_ptr(), libc::IN_OPEN)
-    };
+    let watch =
+        unsafe { libc::inotify_add_watch(observer.as_raw_fd(), path.as_ptr(), libc::IN_OPEN) };
     anyhow::ensure!(watch >= 0, "{}", std::io::Error::last_os_error());
     Ok(observer)
 }
@@ -68,5 +67,21 @@ fn new_subtrees_gain_coverage_without_rescanning_unrelated_directories() -> Resu
         watcher.drain()?.paths.contains(&source),
         "new descendants must be covered before watcher trust is restored"
     );
+    Ok(())
+}
+
+#[test]
+fn shared_descriptors_preserve_events_for_every_root_spelling() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    std::fs::create_dir(temp.path().join("child"))?;
+    let alias = temp.path().join("child/..");
+    let mut watcher =
+        FailClosedWatcher::new(vec![temp.path().to_path_buf(), alias.clone()], vec![])?;
+
+    let source = temp.path().join("source");
+    std::fs::write(&source, "changed")?;
+    let paths = watcher.drain()?.paths;
+    assert!(paths.contains(&source));
+    assert!(paths.contains(&alias.join("source")));
     Ok(())
 }

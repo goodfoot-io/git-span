@@ -89,6 +89,7 @@ struct LocationIndexEntry {
 
 #[derive(Debug)]
 struct Generation {
+    resolver_passes: u64,
     rows: Vec<Vec<u8>>,
     index: BTreeMap<String, Vec<LocationIndexEntry>>,
     known_paths: BTreeSet<String>,
@@ -141,6 +142,7 @@ impl Generation {
         }
         Ok((
             Self {
+                resolver_passes: seed.resolver_passes,
                 rows,
                 index,
                 known_paths: seed.known_paths,
@@ -235,6 +237,12 @@ mod unix {
         paths: BTreeSet<PathBuf>,
     }
 
+    #[derive(Clone, Debug)]
+    struct WorktreeWatchScope {
+        root: PathBuf,
+        active: PathBuf,
+    }
+
     #[derive(Debug)]
     struct FailClosedWatcher {
         /// The inotify instance, held as a `File` so events drain through
@@ -242,7 +250,9 @@ mod unix {
         fd: File,
         roots: Vec<PathBuf>,
         excluded: Vec<PathBuf>,
+        worktree_scope: Option<WorktreeWatchScope>,
         watched: BTreeMap<PathBuf, i32>,
+        watch_paths: BTreeMap<i32, BTreeSet<PathBuf>>,
         coverage_valid: bool,
         #[cfg(test)]
         drain_batch_delay: Duration,
@@ -289,7 +299,16 @@ mod unix {
     }
 
     impl FailClosedWatcher {
+        #[cfg(test)]
         fn new(roots: Vec<PathBuf>, excluded: Vec<PathBuf>) -> Result<Self> {
+            Self::new_scoped(roots, excluded, None)
+        }
+
+        fn new_scoped(
+            roots: Vec<PathBuf>,
+            excluded: Vec<PathBuf>,
+            worktree_scope: Option<WorktreeWatchScope>,
+        ) -> Result<Self> {
             ensure!(
                 !injected_watcher_failure("backend") && !injected_watcher_failure("limit"),
                 "injected watcher setup failure"
@@ -308,7 +327,9 @@ mod unix {
                 fd,
                 roots,
                 excluded,
+                worktree_scope,
                 watched: BTreeMap::new(),
+                watch_paths: BTreeMap::new(),
                 coverage_valid: true,
                 #[cfg(test)]
                 drain_batch_delay: Duration::ZERO,
@@ -347,6 +368,24 @@ mod unix {
             Ok(())
         }
 
+        fn is_excluded(&self, path: &Path) -> bool {
+            if self
+                .excluded
+                .iter()
+                .any(|excluded| path.starts_with(excluded))
+            {
+                return true;
+            }
+            self.worktree_scope.as_ref().is_some_and(|scope| {
+                // Only this metadata subtree has an exception for the active
+                // Git directory and its ancestors. Ordinary exclusions remain
+                // unconditional, including this worktree's runtime caches.
+                path.starts_with(&scope.root)
+                    && !(scope.active.starts_with(&scope.root)
+                        && (path.starts_with(&scope.active) || scope.active.starts_with(path)))
+            })
+        }
+
         fn add_tree(&mut self, path: &Path) -> Result<()> {
             let metadata = match std::fs::symlink_metadata(path) {
                 Ok(metadata) => metadata,
@@ -367,11 +406,7 @@ mod unix {
                     .ok_or_else(|| anyhow!("watch path has no parent"))?
                     .to_path_buf()
             };
-            if self
-                .excluded
-                .iter()
-                .any(|excluded| watch_path.starts_with(excluded))
-            {
+            if self.is_excluded(&watch_path) {
                 return Ok(());
             }
             self.add_watch(&watch_path)?;
@@ -384,11 +419,7 @@ mod unix {
             entries.sort_by_key(|entry| entry.file_name());
             for entry in entries {
                 let child = entry.path();
-                if self
-                    .excluded
-                    .iter()
-                    .any(|excluded| child.starts_with(excluded))
-                {
+                if self.is_excluded(&child) {
                     continue;
                 }
                 let kind = match entry.file_type() {
@@ -430,12 +461,23 @@ mod unix {
                     .with_context(|| format!("install watch for {}", path.display()));
             }
             self.watched.insert(path.to_path_buf(), descriptor);
+            // inotify returns the same descriptor when two paths name the
+            // same directory. Preserve every spelling so exclusions and new
+            // descendant coverage remain correct for overlapping roots.
+            self.watch_paths
+                .entry(descriptor)
+                .or_default()
+                .insert(path.to_path_buf());
             Ok(())
         }
 
         fn drain(&mut self) -> Result<WatchDrain> {
             if !self.coverage_valid {
-                *self = Self::new(self.roots.clone(), self.excluded.clone())?;
+                *self = Self::new_scoped(
+                    self.roots.clone(),
+                    self.excluded.clone(),
+                    self.worktree_scope.clone(),
+                )?;
                 return Ok(WatchDrain {
                     events: 1,
                     overflow: true,
@@ -470,6 +512,7 @@ mod unix {
             let mut events = 0;
             let mut overflow = false;
             let mut batches = 0;
+            let mut new_subtrees = BTreeSet::new();
             #[cfg(test)]
             let mut paths = BTreeSet::new();
             loop {
@@ -497,26 +540,22 @@ mod unix {
                         name_end <= count,
                         "inotify event overruns the bytes the kernel returned"
                     );
-                    let root = self
-                        .watched
-                        .iter()
-                        .find(|(_, descriptor)| **descriptor == event.wd)
-                        .map(|(path, _)| path.clone());
-                    let path = root.map(|root| {
-                        if event.len == 0 {
-                            root
+                    let roots = self.watch_paths.get(&event.wd);
+                    if roots.is_none() {
+                        events += 1;
+                        overflow = true;
+                    }
+                    for root in roots.into_iter().flatten() {
+                        let path = if event.len == 0 {
+                            root.clone()
                         } else {
                             let raw = &buffer[name_start..name_end];
                             let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
                             root.join(std::ffi::OsStr::from_bytes(&raw[..end]))
+                        };
+                        if self.is_excluded(&path) {
+                            continue;
                         }
-                    });
-                    let excluded = path.as_ref().is_some_and(|path| {
-                        self.excluded
-                            .iter()
-                            .any(|excluded| path.starts_with(excluded))
-                    });
-                    if !excluded {
                         events += 1;
                         overflow |= event.mask
                             & (libc::IN_Q_OVERFLOW
@@ -524,12 +563,14 @@ mod unix {
                                 | libc::IN_UNMOUNT
                                 | libc::IN_DELETE_SELF
                                 | libc::IN_MOVE_SELF)
-                            != 0
-                            || path.is_none();
-                        #[cfg(test)]
-                        if let Some(path) = path {
-                            paths.insert(path);
+                            != 0;
+                        if event.mask & libc::IN_ISDIR != 0
+                            && event.mask & (libc::IN_CREATE | libc::IN_MOVED_TO) != 0
+                        {
+                            new_subtrees.insert(path.clone());
                         }
+                        #[cfg(test)]
+                        paths.insert(path);
                     }
                     offset = name_end;
                 }
@@ -540,9 +581,24 @@ mod unix {
                 // Reusing a path-to-descriptor map after watch loss can hide
                 // writes beneath a recreated directory. Reestablish complete
                 // coverage before any subsequent capture may become trusted.
-                *self = Self::new(self.roots.clone(), self.excluded.clone())?;
-            } else if events > 0 {
-                self.refresh()?;
+                *self = Self::new_scoped(
+                    self.roots.clone(),
+                    self.excluded.clone(),
+                    self.worktree_scope.clone(),
+                )?;
+            } else if !new_subtrees.is_empty() {
+                // Existing watches already cover ordinary writes and deletes.
+                // Only incoming directories can introduce unwatched children;
+                // enumerate those subtrees rather than every watched root.
+                self.coverage_valid = false;
+                ensure!(
+                    !injected_watcher_failure("replacement"),
+                    "injected watcher replacement failure"
+                );
+                for path in new_subtrees {
+                    self.add_tree(&path)?;
+                }
+                self.coverage_valid = true;
             }
             Ok(WatchDrain {
                 events,
@@ -574,9 +630,10 @@ mod unix {
                     // forever, while no old generation survives this reset.
                     self.dirty = true;
                     self.epoch = self.epoch.saturating_add(1);
-                    self.watcher = FailClosedWatcher::new(
+                    self.watcher = FailClosedWatcher::new_scoped(
                         self.base_watch_roots.clone(),
                         self.watcher.excluded.clone(),
+                        self.watcher.worktree_scope.clone(),
                     )?;
                     counters.watcher_overflows += 1;
                     return Ok(());
@@ -607,6 +664,7 @@ mod unix {
             self.drain(counters)?;
             for attempt in 0..2 {
                 let (generation, external_roots) = Generation::build_locked(repo, &self.span_root)?;
+                counters.resolver_passes += generation.resolver_passes;
                 let new_roots = external_roots
                     .into_iter()
                     .filter(|root| !self.watcher.roots.contains(root))
@@ -626,7 +684,6 @@ mod unix {
                 self.generation = Arc::new(generation);
                 self.dirty = self.epoch != epoch;
                 counters.corpus_loads += 1;
-                counters.resolver_passes += 2;
                 return Ok(());
             }
             unreachable!("capture either publishes or expands coverage once")
@@ -639,22 +696,35 @@ mod unix {
     ) -> Result<(ContextDocument, ServiceCounters)> {
         let started = Instant::now();
         let mut counters = ServiceCounters::default();
+        // Foreground clients have a short RPC budget and may already have
+        // fallen back by the time a capture finishes. Never queue readers
+        // behind that capture and spend worker slots on abandoned requests.
         for attempt in 0..=1 {
             // Extract immutable identity without retaining the state mutex.
             // Every subsequent state access is ordered after the repository
             // recovery domain, matching repair publication's lock order.
             let (repo_path, span_root) = {
-                let state = shared
-                    .lock()
-                    .map_err(|_| anyhow!("context service state was poisoned"))?;
+                let state = shared.try_lock().map_err(|error| match error {
+                    std::sync::TryLockError::WouldBlock => {
+                        anyhow!("context service state is busy; strict fallback required")
+                    }
+                    std::sync::TryLockError::Poisoned(_) => {
+                        anyhow!("context service state was poisoned")
+                    }
+                })?;
                 (state.repo_path.clone(), state.span_root.clone())
             };
             let repo = gix::open(&repo_path).context("reopen context service repository")?;
             let _recovery = crate::cli::recovery_domain::acquire_reader(&repo, &span_root)?;
             let (generation, scopes, epoch) = {
-                let mut state = shared
-                    .lock()
-                    .map_err(|_| anyhow!("context service state was poisoned"))?;
+                let mut state = shared.try_lock().map_err(|error| match error {
+                    std::sync::TryLockError::WouldBlock => {
+                        anyhow!("context service state is busy; strict fallback required")
+                    }
+                    std::sync::TryLockError::Poisoned(_) => {
+                        anyhow!("context service state was poisoned")
+                    }
+                })?;
                 state.drain(&mut counters)?;
                 if state.dirty {
                     state.rebuild_locked(&repo, &mut counters)?;
@@ -677,9 +747,14 @@ mod unix {
             counters.rows_decoded += rows;
             service_test_checkpoint("query-shared-before-stability")?;
             let stable = {
-                let mut state = shared
-                    .lock()
-                    .map_err(|_| anyhow!("context service state was poisoned"))?;
+                let mut state = shared.try_lock().map_err(|error| match error {
+                    std::sync::TryLockError::WouldBlock => {
+                        anyhow!("context service state is busy; strict fallback required")
+                    }
+                    std::sync::TryLockError::Poisoned(_) => {
+                        anyhow!("context service state was poisoned")
+                    }
+                })?;
                 state.drain(&mut counters)?;
                 counters.epoch_checks += 1;
                 state.epoch == epoch
@@ -1000,14 +1075,6 @@ mod unix {
         Ok(nonce)
     }
 
-    fn write_nonce(paths: &ServicePaths, nonce: &str) -> Result<()> {
-        paths.directory.atomic_write(
-            std::ffi::OsStr::new("instance.nonce"),
-            nonce.as_bytes(),
-            0o600,
-        )
-    }
-
     fn start_service(paths: &ServicePaths, span_root: &str, deadline: Instant) -> Result<String> {
         if paths
             .directory
@@ -1028,19 +1095,21 @@ mod unix {
                         !timed_out,
                         "ambiguous context service timeout; strict fallback required"
                     );
-                    paths
-                        .directory
-                        .validate_owned_socket(std::ffi::OsStr::new("service.sock"), 0o600)?;
-                    paths
-                        .directory
-                        .unlink(std::ffi::OsStr::new("service.sock"))?;
-                    paths.directory.sync()?;
                 }
             }
         }
+        // A failed health exchange cannot prove that the listener is dead.
+        // Only a released lifetime lock permits a replacement to start.
+        let ownership = paths
+            .directory
+            .open_or_create_file(std::ffi::OsStr::new("service.lock"), 0o600)?;
+        ensure!(
+            ownership.try_lock_exclusive()?,
+            "context service still owns its runtime; strict fallback required"
+        );
+        fs4::fs_std::FileExt::unlock(&ownership)?;
         remaining(deadline)?;
         let nonce = uuid::Uuid::new_v4().to_string();
-        write_nonce(paths, &nonce)?;
         let mut log = paths
             .directory
             .open_or_create_file(std::ffi::OsStr::new("service.log"), 0o600)?;
@@ -1462,6 +1531,14 @@ mod unix {
         let runtime = crate::descriptor_authority::RuntimeAuthority::open(&args.service_key)?;
         let runtime_directory = runtime.directory()?;
         let service_dir = runtime_directory.display_path().to_path_buf();
+        // Keep this independent from the client-held supervisor election:
+        // the owner must outlive startup and retain authority through cleanup.
+        let ownership =
+            runtime_directory.open_or_create_file(std::ffi::OsStr::new("service.lock"), 0o600)?;
+        ensure!(
+            ownership.try_lock_exclusive()?,
+            "another context service owns this runtime"
+        );
         let socket_name = std::ffi::OsStr::new("service.sock");
         let socket_path = runtime_directory.descriptor_path(socket_name)?;
         if runtime_directory.entry_exists(socket_name)? {
@@ -1475,8 +1552,8 @@ mod unix {
 
         let base_roots = vec![
             workdir.clone(),
-            git_dir,
-            common_dir,
+            git_dir.clone(),
+            common_dir.clone(),
             workdir.join(&args.span_root),
         ];
         let runtime_dirs = vec![
@@ -1490,10 +1567,18 @@ mod unix {
         // still watched and invalidates the generation.
         excluded.push(crate::git::git_dir(repo).join("index.lock"));
         excluded.push(crate::git::common_dir(repo).join("index.lock"));
-        let watcher = FailClosedWatcher::new(base_roots.clone(), excluded)?;
+        let watcher = FailClosedWatcher::new_scoped(
+            base_roots.clone(),
+            excluded,
+            Some(WorktreeWatchScope {
+                root: common_dir.join("worktrees"),
+                active: git_dir,
+            }),
+        )?;
         // Readiness belongs to the service. A reusable generation is built
         // under live watch coverage by the first request, never before it.
         let generation = Generation {
+            resolver_passes: 0,
             rows: Vec::new(),
             index: BTreeMap::new(),
             known_paths: BTreeSet::new(),
@@ -1507,6 +1592,13 @@ mod unix {
             epoch: 0,
             dirty: true,
         }));
+        // Only the lifetime owner may publish the authentication nonce. A
+        // rejected replacement must leave the current instance usable.
+        runtime_directory.atomic_write(
+            std::ffi::OsStr::new("instance.nonce"),
+            args.nonce.as_bytes(),
+            0o600,
+        )?;
         listener.set_nonblocking(true)?;
         let active = Arc::new(AtomicUsize::new(0));
         let shutdown = Arc::new(AtomicUsize::new(0));

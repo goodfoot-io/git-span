@@ -1,9 +1,12 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startContextWarmup, type WarmupSpawner } from '../../src/common/context-warmup.js';
 
 describe('context service session-start warm-up', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   it('detaches a silent context client with stable service-affecting environment', () => {
+    vi.stubEnv('PATH', '');
     const child = new EventEmitter() as EventEmitter & { unref: ReturnType<typeof vi.fn> };
     child.unref = vi.fn();
     const spawnProcess = vi.fn(() => child) as unknown as WarmupSpawner;

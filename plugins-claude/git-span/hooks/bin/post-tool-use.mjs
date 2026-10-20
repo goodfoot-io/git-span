@@ -7,7 +7,7 @@ const __filename = __fileURLToPath(import.meta.url);
 const __dirname = __pathDirname(__filename);
 
 // packages/agent-hooks/src/claude/post-tool-use.ts
-import { dirname as dirname9, join as join11 } from "node:path";
+import { dirname as dirname10, join as join11 } from "node:path";
 
 // node_modules/@goodfoot/agent-hooks/dist/core/logger.js
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
@@ -534,14 +534,14 @@ var postToolUseOutput = /* @__PURE__ */ createHookSpecificOutputBuilder("PostToo
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve6, reject2) => {
+  return new Promise((resolve7, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve6(chunks.join(""));
+      resolve7(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -603,8 +603,8 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve6, reject2) => {
-    stream.write(content, (error) => error ? reject2(error) : resolve6());
+  return new Promise((resolve7, reject2) => {
+    stream.write(content, (error) => error ? reject2(error) : resolve7());
   });
 }
 async function writeUnexpectedErrorStderr(error) {
@@ -1073,7 +1073,7 @@ function pruneStaleSessionsThrottled(layout, now = Date.now()) {
 }
 
 // packages/agent-hooks/src/common/bash-attribution.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import * as fs7 from "node:fs";
 import * as nodePath5 from "node:path";
 
@@ -1081,6 +1081,246 @@ import * as nodePath5 from "node:path";
 import { execFileSync as execFileSync2 } from "node:child_process";
 import * as fs4 from "node:fs";
 import * as nodePath3 from "node:path";
+
+// packages/agent-hooks/src/common/git-span-command.ts
+import { dirname as dirname3, resolve as resolve3 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-native-io.ts
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  accessSync,
+  closeSync as closeSync2,
+  constants,
+  existsSync as existsSync3,
+  fstatSync,
+  openSync as openSync2,
+  readSync,
+  realpathSync as realpathSync2,
+  statSync as statSync2
+} from "node:fs";
+import { delimiter, isAbsolute, join as join2, resolve as resolve2 } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+function executableOnPath(name, cwd = process.cwd()) {
+  const candidates = isAbsolute(name) ? [name] : (process.env.PATH ?? "").split(delimiter).map((directory) => resolve2(cwd, directory, name));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync2(candidate).isFile()) return realpathSync2(candidate);
+    } catch {
+    }
+  }
+  throw new Error(`${name} executable is unavailable`);
+}
+function probe(executable, argv, cwd) {
+  const result = spawnSync(executable, [...argv], {
+    cwd,
+    encoding: "utf8",
+    timeout: 1e3,
+    maxBuffer: 65536,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (result.error || result.status !== 0) throw new Error("Git repository probe failed");
+  return result.stdout.trimEnd();
+}
+function resolveCommitRepository(executable, globalArguments, originalCwd) {
+  const fields = probe(
+    executable,
+    [
+      ...globalArguments,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-dir",
+      "--git-common-dir",
+      "--show-object-format"
+    ],
+    originalCwd
+  ).split("\n");
+  const [gitDirectoryField, commonDirectoryField, objectFormat, ...extraFields] = fields;
+  if (gitDirectoryField === void 0 || commonDirectoryField === void 0 || extraFields.length > 0 || objectFormat !== "sha1" && objectFormat !== "sha256")
+    throw new Error("unsupported Git repository format");
+  const cwd = realpathSync2(probe(executable, [...globalArguments, "rev-parse", "--show-toplevel"], originalCwd));
+  const gitDirectory = realpathSync2(gitDirectoryField);
+  const commonDirectory = realpathSync2(commonDirectoryField);
+  if (gitRefBackend(executable, globalArguments, originalCwd) !== "files")
+    throw new Error("unsupported Git ref backend");
+  return {
+    cwd,
+    gitDirectory,
+    commonDirectory,
+    headReflog: join2(gitDirectory, "logs", "HEAD"),
+    objectFormat
+  };
+}
+function gitRefBackend(executable, globalArguments, cwd) {
+  const result = spawnSync(executable, [...globalArguments, "config", "--get", "extensions.refStorage"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 1e3,
+    maxBuffer: 4096
+  });
+  if (result.error || result.status !== 0 && result.status !== 1) throw new Error("Git ref backend probe failed");
+  return result.status === 1 ? "files" : result.stdout.trim();
+}
+function prefixDigest(descriptor, length) {
+  const bytes = Buffer.alloc(Math.min(length, 4096));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(descriptor, bytes, offset, bytes.length - offset, length - bytes.length + offset);
+    if (count === 0) throw new Error("reflog prefix truncated");
+    offset += count;
+  }
+  return createHash("sha256").update(bytes).digest("hex");
+}
+function checkpointCommitReflog(path) {
+  if (!existsSync3(path)) return { existed: false, offset: 0 };
+  const descriptor = openSync2(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error("unsupported HEAD reflog");
+    return {
+      existed: true,
+      device: String(stat.dev),
+      inode: String(stat.ino),
+      offset: stat.size,
+      prefixDigest: prefixDigest(descriptor, stat.size)
+    };
+  } finally {
+    closeSync2(descriptor);
+  }
+}
+function readCommitReflogAppend(path, checkpoint, maxBytes) {
+  if (!existsSync3(path)) return null;
+  const descriptor = openSync2(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error("HEAD reflog is not a file");
+    if (checkpoint.existed && prefixDigest(descriptor, checkpoint.offset) !== checkpoint.prefixDigest)
+      throw new Error("observed reflog prefix changed");
+    const length = stat.size - checkpoint.offset;
+    const exceededBudget = length > maxBytes;
+    const bytes = Buffer.alloc(Math.max(0, Math.min(length, maxBytes)));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, checkpoint.offset + offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return {
+      device: String(stat.dev),
+      inode: String(stat.ino),
+      fileSize: stat.size,
+      bytes: bytes.subarray(0, offset),
+      exceededBudget
+    };
+  } finally {
+    closeSync2(descriptor);
+  }
+}
+function verifyCommitObject(executable, repository, sha) {
+  try {
+    const format = probe(
+      executable,
+      ["--git-dir", repository.gitDirectory, "rev-parse", "--show-object-format"],
+      repository.commonDirectory
+    );
+    const type = probe(
+      executable,
+      ["--git-dir", repository.gitDirectory, "cat-file", "-t", sha],
+      repository.commonDirectory
+    );
+    return format === repository.objectFormat && type === "commit" ? { ok: true, value: sha } : { ok: false, reason: "witness is not a commit object in the actual object format" };
+  } catch {
+    return { ok: false, reason: "commit object verification failed" };
+  }
+}
+async function executeCommitNotes(executable, command) {
+  return new Promise((resolveResult) => {
+    let stdout = "";
+    let stderr = "";
+    let bytes = 0;
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    let timedOut = false;
+    let outputExceeded = false;
+    let finished = false;
+    const grouped = process.platform !== "win32";
+    const child = spawn(executable, [...command.argv], {
+      cwd: command.cwd,
+      detached: grouped,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    const finish = (exitCode, signal) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolveResult({ exitCode, signal, stdout, stderr, timedOut, outputExceeded });
+    };
+    const terminate = () => {
+      try {
+        if (grouped && child.pid !== void 0) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        return finish(null, "SIGKILL");
+      }
+      finish(null, "SIGKILL");
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, command.timeoutMs);
+    const append = (kind, chunk) => {
+      bytes += chunk.length;
+      if (bytes > command.maxOutputBytes) {
+        outputExceeded = true;
+        terminate();
+        return;
+      }
+      if (kind === "stdout") stdout += stdoutDecoder.write(chunk);
+      else stderr += stderrDecoder.write(chunk);
+    };
+    child.stdout.on("data", (chunk) => append("stdout", chunk));
+    child.stderr.on("data", (chunk) => append("stderr", chunk));
+    child.stdin.on("error", () => {
+    });
+    child.stdin.end(command.stdin ?? "");
+    child.once("error", () => finish(127, null));
+    child.once("close", (exitCode, signal) => finish(exitCode, signal));
+  });
+}
+
+// packages/agent-hooks/src/common/git-span-command.ts
+function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git", platform = process.platform) {
+  if (platform === "win32") {
+    const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    for (const directory of (process.env.PATH ?? "").split(";")) {
+      for (const extension of extensions) {
+        const candidate = resolve3(cwd, directory, `git-span${extension.toLowerCase()}`);
+        try {
+          const executable = executableOnPath(candidate, cwd);
+          if (extension.toLowerCase() === ".exe" || extension.toLowerCase() === ".com")
+            return { executable, argv: [...argv] };
+          return { executable: gitExecutable, argv: [`--exec-path=${dirname3(candidate)}`, "span", ...argv] };
+        } catch {
+        }
+      }
+    }
+    return { executable: gitExecutable, argv: ["span", ...argv] };
+  }
+  try {
+    return {
+      executable: executableOnPath("git-span", cwd),
+      argv: [...argv]
+    };
+  } catch {
+    return { executable: gitExecutable, argv: ["span", ...argv] };
+  }
+}
 
 // packages/agent-hooks/src/common/span-ignore.ts
 import * as fs3 from "node:fs";
@@ -1141,15 +1381,15 @@ import * as fs5 from "node:fs";
 import * as nodePath4 from "node:path";
 
 // packages/agent-hooks/src/common/parse-command.ts
-import { readFileSync as readFileSync4, statSync as statSync3 } from "node:fs";
-import { basename as basename2, isAbsolute, join as joinPath, resolve as resolvePath } from "node:path";
+import { readFileSync as readFileSync4, statSync as statSync4 } from "node:fs";
+import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
 // packages/agent-hooks/src/common/command-resolve.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
-import { readFileSync as readFileSync3, statSync as statSync2 } from "node:fs";
+import { readFileSync as readFileSync3, statSync as statSync3 } from "node:fs";
 function countFileLines(absolutePath) {
   try {
-    if (!statSync2(absolutePath).isFile()) return null;
+    if (!statSync3(absolutePath).isFile()) return null;
     const content = readFileSync3(absolutePath, "utf8");
     if (content.length === 0) return 0;
     const withoutTrailingNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
@@ -2845,7 +3085,7 @@ function pushUnresolved(results, idiom, fileArg, reason) {
 }
 function isExistingDirectory(absolutePath) {
   try {
-    return statSync3(absolutePath).isDirectory();
+    return statSync4(absolutePath).isDirectory();
   } catch {
     return false;
   }
@@ -3985,7 +4225,7 @@ function parseCommandDetailed(command, opts = {}) {
   };
   const gitDirOf = (c, frame) => {
     if (c.dirOverride === void 0) return frame.certain ? frame.dir : void 0;
-    if (isAbsolute(c.dirOverride)) return c.dirOverride;
+    if (isAbsolute2(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
   const emitCandidate = (c, frame, simpleCommandIndex, join12) => {
@@ -4000,7 +4240,7 @@ function parseCommandDetailed(command, opts = {}) {
     }
     let resolutionDir;
     if (c.resolverKind === "fs") {
-      if (!frame.certain && !isAbsolute(c.fileArg)) {
+      if (!frame.certain && !isAbsolute2(c.fileArg)) {
         results.push({
           status: "unresolved",
           idiom: c.idiom,
@@ -4009,7 +4249,7 @@ function parseCommandDetailed(command, opts = {}) {
         });
         return;
       }
-      resolutionDir = c.dirOverride === void 0 ? frame.dir : isAbsolute(c.dirOverride) ? c.dirOverride : resolvePath(frame.dir, c.dirOverride);
+      resolutionDir = c.dirOverride === void 0 ? frame.dir : isAbsolute2(c.dirOverride) ? c.dirOverride : resolvePath(frame.dir, c.dirOverride);
     } else {
       const gitDir = gitDirOf(c, frame);
       if (gitDir === void 0) {
@@ -6742,9 +6982,9 @@ function filterTrackedEligibility(candidates, options) {
 
 // packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import * as fs6 from "node:fs";
-import { basename as basename4, dirname as dirname5, join as join4 } from "node:path";
+import { basename as basename4, dirname as dirname6, join as join5 } from "node:path";
 
 // packages/agent-hooks/src/common/anchor-tree.ts
 function collapseByPath(rows) {
@@ -7020,7 +7260,8 @@ function realPaths(cache, cwd) {
       const rels = cache.paths.map((p) => relativeToRepo(repoRoot, p));
       const capture = (args) => {
         try {
-          return execFileSync5("git", args, {
+          const command = args[0] === "span" ? resolveGitSpanCommand(args.slice(1), repoRoot) : { executable: "git", argv: args };
+          return execFileSync5(command.executable, command.argv, {
             cwd: repoRoot,
             encoding: "utf8",
             stdio: ["ignore", "pipe", "pipe"],
@@ -7035,12 +7276,12 @@ function realPaths(cache, cwd) {
       if (lsFiles !== null) {
         for (const line of lsFiles.split("\n")) {
           const rel = line.trim();
-          if (rel.length > 0) real.add(join4(repoRoot, rel));
+          if (rel.length > 0) real.add(join5(repoRoot, rel));
         }
       }
       const spanList = capture(["span", "list", "--porcelain", ...rels]);
       if (spanList !== null) {
-        for (const row of parsePorcelain(spanList)) real.add(join4(repoRoot, row.path));
+        for (const row of parsePorcelain(spanList)) real.add(join5(repoRoot, row.path));
       }
     }
   }
@@ -7069,7 +7310,7 @@ function changedOnDisk(cache, cwd) {
           if (indexStatus === "?" || indexStatus === "!" || worktreeStatus === "?" || worktreeStatus === "!") {
             continue;
           }
-          changed.add(join4(repoRoot, entry.slice(3)));
+          changed.add(join5(repoRoot, entry.slice(3)));
         }
       } catch (err) {
       }
@@ -7501,7 +7742,7 @@ function normalizedAddressIdentity(touches) {
   return identity;
 }
 function deterministicOperationId(invocationId, repoRoot, addresses) {
-  const bytes = createHash("sha256").update(invocationId).update("\0").update(repoRoot).update("\0").update(addresses.join("\0")).digest();
+  const bytes = createHash2("sha256").update(invocationId).update("\0").update(repoRoot).update("\0").update(addresses.join("\0")).digest();
   bytes.writeUInt8(bytes.readUInt8(6) & 15 | 80, 6);
   bytes.writeUInt8(bytes.readUInt8(8) & 63 | 128, 8);
   const hex = bytes.subarray(0, 16).toString("hex");
@@ -7516,7 +7757,7 @@ async function runTouchHooks(inputs, executors, memo, invocationId, probeCache, 
       const outcome = evaluateWriteGate(input, probe2);
       if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") continue;
     }
-    const repoRoot = resolveRepoRoot(dirname5(input.filePath));
+    const repoRoot = resolveRepoRoot(dirname6(input.filePath));
     if (repoRoot === null) continue;
     prepared.push({
       input,
@@ -7625,11 +7866,12 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
   const executors = {
     context: async (request) => {
       const started = performance.now();
-      const args = ["span", "context", ...request.addresses, "--format", "json"];
+      const args = ["context", ...request.addresses, "--format", "json"];
       if (request.repair) args.push("--fix", "--operation-id", request.operationId);
       let stdout;
       try {
-        stdout = execFileSync5("git", args, {
+        const command = resolveGitSpanCommand(args, request.repoRoot);
+        stdout = execFileSync5(command.executable, command.argv, {
           cwd: request.repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -8021,8 +8263,8 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
 }
 
 // packages/agent-hooks/src/common/parse-response.ts
-import { existsSync as existsSync4, statSync as statSync5 } from "node:fs";
-import { dirname as dirname6, join as join5, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { existsSync as existsSync5, statSync as statSync6 } from "node:fs";
+import { dirname as dirname7, join as join6, resolve as resolvePath2, sep as sep2 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
 var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
 var VALUE_SHORT_FLAGS = /* @__PURE__ */ new Set(["A", "B", "C", "e", "f", "m", "g", "t", "T"]);
@@ -8186,7 +8428,7 @@ function hasDiffRevPathArg(argv, start, cwd) {
       if (!a.includes("=") && valueFlags.has(a)) i += 1;
       continue;
     }
-    if (a.includes(":") && !existsSync4(resolvePath2(cwd, a))) return true;
+    if (a.includes(":") && !existsSync5(resolvePath2(cwd, a))) return true;
   }
   return false;
 }
@@ -8448,7 +8690,7 @@ function insideRoot(abs, roots) {
 }
 function isFile(abs) {
   try {
-    return statSync5(abs).isFile();
+    return statSync6(abs).isFile();
   } catch {
     return false;
   }
@@ -8456,8 +8698,8 @@ function isFile(abs) {
 function findGitRoot(startDir) {
   let dir = startDir;
   for (; ; ) {
-    if (existsSync4(join5(dir, ".git"))) return dir;
-    const parent = dirname6(dir);
+    if (existsSync5(join6(dir, ".git"))) return dir;
+    const parent = dirname7(dir);
     if (parent === dir) return null;
     dir = parent;
   }
@@ -8820,7 +9062,7 @@ function planEvidence(matches, requirements) {
     return {
       kind: "content-digest",
       algorithm: "sha256",
-      digest: createHash2("sha256").update(expectedContent).digest("hex"),
+      digest: createHash3("sha256").update(expectedContent).digest("hex"),
       range: unionRange(ranges)
     };
   }
@@ -8938,7 +9180,7 @@ function plannedSpans(record2, cwd, logger2) {
     let expectedContent;
     if (touch.evidence?.kind === "content-digest") {
       const content = readText(absolutePath);
-      const digest = content === null ? null : createHash2("sha256").update(content).digest("hex");
+      const digest = content === null ? null : createHash3("sha256").update(content).digest("hex");
       if (digest !== touch.evidence.digest) {
         logger2.warn("git-span static attribution discarded unverifiable planned evidence", {
           path: touch.repoRelativePath,
@@ -9106,7 +9348,7 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
     sessionId,
     executors,
     memo,
-    `${sessionId}:${toolUseId ?? createHash2("sha256").update(command).digest("hex")}:response`,
+    `${sessionId}:${toolUseId ?? createHash3("sha256").update(command).digest("hex")}:response`,
     logger2
   );
   const blocks = [...commandBlocks, ...responseBatch.blocks];
@@ -9139,12 +9381,12 @@ function postTrackedValue(absolutePath, value, cwd) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync7, lstatSync as lstatSync3, realpathSync as realpathSync3, rmSync as rmSync4 } from "node:fs";
+import { existsSync as existsSync7, lstatSync as lstatSync2, realpathSync as realpathSync3, rmSync as rmSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join9 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-association.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 function noteDocument(value) {
   if (!isRecord(value) || value.schemaVersion !== 1 || value.host !== "claude" && value.host !== "codex") return null;
@@ -9162,7 +9404,7 @@ function noteDocument(value) {
   };
 }
 function commitAssociationKey(receipt, document) {
-  return createHash3("sha256").update(JSON.stringify([receipt.repository.commonDirectory, document.host, document.sessionId, receipt.sha])).digest("hex");
+  return createHash4("sha256").update(JSON.stringify([receipt.repository.commonDirectory, document.host, document.sessionId, receipt.sha])).digest("hex");
 }
 function selectCommitAssociation(document, existing) {
   if (!noteDocument(document)) return { kind: "reject", reason: "invalid association document" };
@@ -9210,7 +9452,7 @@ function validateCommitNotesAdd(value, sha, document) {
 }
 
 // packages/agent-hooks/src/common/commit-contracts.ts
-import { isAbsolute as isAbsolute4 } from "node:path";
+import { isAbsolute as isAbsolute5 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-limits.ts
 var COMMIT_RECEIPT_LIMITS = {
@@ -9231,7 +9473,7 @@ function text(value, max = 4096) {
   return typeof value === "string" && value.length > 0 && value.length <= max && !value.includes("\0");
 }
 function absolute(value) {
-  return text(value) && isAbsolute4(value);
+  return text(value) && isAbsolute5(value);
 }
 function key(value) {
   return text(value, COMMIT_RECEIPT_LIMITS.identityKeyBytes) && /^[a-zA-Z0-9_-]+$/.test(value);
@@ -9344,220 +9586,12 @@ function commitCliBudgetMs(phaseStartedMs, nowMs) {
   );
 }
 
-// packages/agent-hooks/src/common/commit-native-io.ts
-import { spawn, spawnSync } from "node:child_process";
-import { createHash as createHash4 } from "node:crypto";
-import {
-  accessSync,
-  closeSync as closeSync2,
-  constants,
-  existsSync as existsSync5,
-  fstatSync,
-  lstatSync,
-  openSync as openSync2,
-  readSync,
-  realpathSync as realpathSync2
-} from "node:fs";
-import { delimiter, isAbsolute as isAbsolute5, join as join7, resolve as resolve3 } from "node:path";
-import { StringDecoder } from "node:string_decoder";
-function executableOnPath(name) {
-  const candidates = isAbsolute5(name) ? [name] : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((directory) => resolve3(directory, name));
-  for (const candidate of candidates) {
-    try {
-      accessSync(candidate, constants.X_OK);
-      if (lstatSync(candidate).isFile() || lstatSync(candidate).isSymbolicLink()) return realpathSync2(candidate);
-    } catch {
-    }
-  }
-  throw new Error(`${name} executable is unavailable`);
-}
-function probe(executable, argv, cwd) {
-  const result = spawnSync(executable, [...argv], {
-    cwd,
-    encoding: "utf8",
-    timeout: 1e3,
-    maxBuffer: 65536,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  if (result.error || result.status !== 0) throw new Error("Git repository probe failed");
-  return result.stdout.trimEnd();
-}
-function resolveCommitRepository(executable, globalArguments, originalCwd) {
-  const fields = probe(
-    executable,
-    [
-      ...globalArguments,
-      "rev-parse",
-      "--path-format=absolute",
-      "--git-dir",
-      "--git-common-dir",
-      "--show-object-format"
-    ],
-    originalCwd
-  ).split("\n");
-  const [gitDirectoryField, commonDirectoryField, objectFormat, ...extraFields] = fields;
-  if (gitDirectoryField === void 0 || commonDirectoryField === void 0 || extraFields.length > 0 || objectFormat !== "sha1" && objectFormat !== "sha256")
-    throw new Error("unsupported Git repository format");
-  const cwd = realpathSync2(probe(executable, [...globalArguments, "rev-parse", "--show-toplevel"], originalCwd));
-  const gitDirectory = realpathSync2(gitDirectoryField);
-  const commonDirectory = realpathSync2(commonDirectoryField);
-  if (gitRefBackend(executable, globalArguments, originalCwd) !== "files")
-    throw new Error("unsupported Git ref backend");
-  return {
-    cwd,
-    gitDirectory,
-    commonDirectory,
-    headReflog: join7(gitDirectory, "logs", "HEAD"),
-    objectFormat
-  };
-}
-function gitRefBackend(executable, globalArguments, cwd) {
-  const result = spawnSync(executable, [...globalArguments, "config", "--get", "extensions.refStorage"], {
-    cwd,
-    encoding: "utf8",
-    timeout: 1e3,
-    maxBuffer: 4096
-  });
-  if (result.error || result.status !== 0 && result.status !== 1) throw new Error("Git ref backend probe failed");
-  return result.status === 1 ? "files" : result.stdout.trim();
-}
-function prefixDigest(descriptor, length) {
-  const bytes = Buffer.alloc(Math.min(length, 4096));
-  let offset = 0;
-  while (offset < bytes.length) {
-    const count = readSync(descriptor, bytes, offset, bytes.length - offset, length - bytes.length + offset);
-    if (count === 0) throw new Error("reflog prefix truncated");
-    offset += count;
-  }
-  return createHash4("sha256").update(bytes).digest("hex");
-}
-function checkpointCommitReflog(path) {
-  if (!existsSync5(path)) return { existed: false, offset: 0 };
-  const descriptor = openSync2(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = fstatSync(descriptor);
-    if (!stat.isFile()) throw new Error("unsupported HEAD reflog");
-    return {
-      existed: true,
-      device: String(stat.dev),
-      inode: String(stat.ino),
-      offset: stat.size,
-      prefixDigest: prefixDigest(descriptor, stat.size)
-    };
-  } finally {
-    closeSync2(descriptor);
-  }
-}
-function readCommitReflogAppend(path, checkpoint, maxBytes) {
-  if (!existsSync5(path)) return null;
-  const descriptor = openSync2(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = fstatSync(descriptor);
-    if (!stat.isFile()) throw new Error("HEAD reflog is not a file");
-    if (checkpoint.existed && prefixDigest(descriptor, checkpoint.offset) !== checkpoint.prefixDigest)
-      throw new Error("observed reflog prefix changed");
-    const length = stat.size - checkpoint.offset;
-    const exceededBudget = length > maxBytes;
-    const bytes = Buffer.alloc(Math.max(0, Math.min(length, maxBytes)));
-    let offset = 0;
-    while (offset < bytes.length) {
-      const count = readSync(descriptor, bytes, offset, bytes.length - offset, checkpoint.offset + offset);
-      if (count === 0) break;
-      offset += count;
-    }
-    return {
-      device: String(stat.dev),
-      inode: String(stat.ino),
-      fileSize: stat.size,
-      bytes: bytes.subarray(0, offset),
-      exceededBudget
-    };
-  } finally {
-    closeSync2(descriptor);
-  }
-}
-function verifyCommitObject(executable, repository, sha) {
-  try {
-    const format = probe(
-      executable,
-      ["--git-dir", repository.gitDirectory, "rev-parse", "--show-object-format"],
-      repository.commonDirectory
-    );
-    const type = probe(
-      executable,
-      ["--git-dir", repository.gitDirectory, "cat-file", "-t", sha],
-      repository.commonDirectory
-    );
-    return format === repository.objectFormat && type === "commit" ? { ok: true, value: sha } : { ok: false, reason: "witness is not a commit object in the actual object format" };
-  } catch {
-    return { ok: false, reason: "commit object verification failed" };
-  }
-}
-async function executeCommitNotes(executable, command) {
-  return new Promise((resolveResult) => {
-    let stdout = "";
-    let stderr = "";
-    let bytes = 0;
-    const stdoutDecoder = new StringDecoder("utf8");
-    const stderrDecoder = new StringDecoder("utf8");
-    let timedOut = false;
-    let outputExceeded = false;
-    let finished = false;
-    const grouped = process.platform !== "win32";
-    const child = spawn(executable, [...command.argv], {
-      cwd: command.cwd,
-      detached: grouped,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    const finish = (exitCode, signal) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      stdout += stdoutDecoder.end();
-      stderr += stderrDecoder.end();
-      child.stdin.destroy();
-      child.stdout.destroy();
-      child.stderr.destroy();
-      resolveResult({ exitCode, signal, stdout, stderr, timedOut, outputExceeded });
-    };
-    const terminate = () => {
-      try {
-        if (grouped && child.pid !== void 0) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
-      } catch {
-      }
-      finish(null, "SIGKILL");
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      terminate();
-    }, command.timeoutMs);
-    const append = (kind, chunk) => {
-      bytes += chunk.length;
-      if (bytes > command.maxOutputBytes) {
-        outputExceeded = true;
-        terminate();
-        return;
-      }
-      if (kind === "stdout") stdout += stdoutDecoder.write(chunk);
-      else stderr += stderrDecoder.write(chunk);
-    };
-    child.stdout.on("data", (chunk) => append("stdout", chunk));
-    child.stderr.on("data", (chunk) => append("stderr", chunk));
-    child.stdin.on("error", () => {
-    });
-    child.stdin.end(command.stdin ?? "");
-    child.once("error", () => finish(127, null));
-    child.once("close", (exitCode, signal) => finish(exitCode, signal));
-  });
-}
-
 // packages/agent-hooks/src/common/commit-observation.ts
 import { createHash as createHash5 } from "node:crypto";
-import { resolve as resolve5 } from "node:path";
+import { resolve as resolve6 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-git.ts
-import { isAbsolute as isAbsolute6, resolve as resolve4 } from "node:path";
+import { isAbsolute as isAbsolute6, resolve as resolve5 } from "node:path";
 function parseCommitGitInvocation(argv, cwd) {
   const reject2 = (reason) => ({ ok: false, reason });
   if (!isAbsolute6(cwd) || argv.some((arg) => arg.includes("\0"))) return reject2("invalid Git argv or cwd");
@@ -9599,7 +9633,7 @@ function parseCommitGitInvocation(argv, cwd) {
         return reject2("unsupported Git global option");
     }
     if (value === void 0 || value === "" && option !== "-C") return reject2("incomplete Git global option");
-    if (option === "-C" && value !== "") effectiveCwd = resolve4(effectiveCwd, value);
+    if (option === "-C" && value !== "") effectiveCwd = resolve5(effectiveCwd, value);
     if (option === "--git-dir") gitDirectory = value;
     if (option === "--work-tree") workTree = value;
     index++;
@@ -9673,7 +9707,7 @@ function checkpointCommitInvocation(enrollment, deadline) {
     const args = stripWrappers(argvOf(stage.text) ?? []);
     const executable = args[0]?.split("/").at(-1);
     if (executable === "cd" && args.length === 2 && args[1] && !/[`$~*?]/.test(args[1])) {
-      cwd = resolve5(cwd, args[1]);
+      cwd = resolve6(cwd, args[1]);
       add(cwd, []);
     } else if (executable === "git") {
       const parsed = parseCommitGitInvocation(args.slice(1), cwd);
@@ -9756,7 +9790,7 @@ import { createHash as createHash6, randomBytes } from "node:crypto";
 import {
   existsSync as existsSync6,
   linkSync,
-  lstatSync as lstatSync2,
+  lstatSync,
   mkdirSync as mkdirSync5,
   opendirSync,
   readFileSync as readFileSync8,
@@ -9765,7 +9799,7 @@ import {
   unlinkSync,
   writeFileSync as writeFileSync3
 } from "node:fs";
-import { dirname as dirname7, isAbsolute as isAbsolute7, join as join8 } from "node:path";
+import { dirname as dirname8, isAbsolute as isAbsolute7, join as join8 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 function identityKey(identity) {
   return createHash6("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
@@ -9773,20 +9807,20 @@ function identityKey(identity) {
 function privateDirectory(path) {
   if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
   mkdirSync5(path, { recursive: true, mode: 448 });
-  const stat = lstatSync2(path);
+  const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 63) !== 0 || process.getuid && stat.uid !== process.getuid()) {
     throw new Error("receipt directory is not private");
   }
 }
 function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {
-  const stat = lstatSync2(path);
+  const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
     throw new Error("invalid bounded receipt file");
   const parsed = JSON.parse(readFileSync8(path, "utf8"));
   return parsed;
 }
 function atomicJson(path, value, immutable = false) {
-  const temporary = join8(dirname7(path), `.publish-${randomBytes(16).toString("hex")}`);
+  const temporary = join8(dirname8(path), `.publish-${randomBytes(16).toString("hex")}`);
   try {
     writeFileSync3(temporary, JSON.stringify(value), { mode: 384, flag: "wx" });
     if (immutable) linkSync(temporary, path);
@@ -9932,7 +9966,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
           enrollment: existing.value
         };
       }
-      if (!lstatSync3(realpathSync3(request.cwd)).isDirectory())
+      if (!lstatSync2(realpathSync3(request.cwd)).isDirectory())
         throw new Error("effective shell cwd must be a directory");
       const originalInput = JSON.parse(JSON.stringify(request.toolInput));
       if (!isRecord(originalInput)) throw new Error("shell input is not a JSON object");
@@ -10166,7 +10200,7 @@ async function drainDirectory(root, directory, enrollment, options, started, log
         }
         if (performance.now() >= deadline) throw new Error("receipt drain deadline exhausted before acknowledgment");
         const usage = readUsage(directory);
-        const bytes = lstatSync3(join9(directory, "receipts", name)).size;
+        const bytes = lstatSync2(join9(directory, "receipts", name)).size;
         rmSync4(join9(directory, "receipts", name));
         atomicJson(join9(directory, "usage.json"), {
           bytes: usage.bytes - bytes,
@@ -10195,14 +10229,15 @@ async function drainDirectory(root, directory, enrollment, options, started, log
 async function invokeNotes(enrollment, receipt, options, args, stdin, started) {
   const timeoutMs = commitCliBudgetMs(started, performance.now());
   if (timeoutMs <= 0) throw new Error("receipt drain deadline exhausted");
+  const resolved = options.notesExecutable === void 0 ? resolveGitSpanCommand(["notes", ...args], receipt.repository.commonDirectory, enrollment.gitExecutable) : { executable: options.notesExecutable, argv: ["notes", ...args] };
   const command = {
     cwd: receipt.repository.commonDirectory,
-    argv: options.notesExecutable === void 0 ? ["span", "notes", ...args] : ["notes", ...args],
+    argv: resolved.argv,
     ...stdin === void 0 ? {} : { stdin },
     timeoutMs,
     maxOutputBytes: 1048576
   };
-  const result = await (options.notesIO?.execute(command) ?? executeCommitNotes(options.notesExecutable ?? enrollment.gitExecutable, command));
+  const result = await (options.notesIO?.execute(command) ?? executeCommitNotes(resolved.executable, command));
   if (result.exitCode !== 0 || result.signal !== null || result.timedOut || result.outputExceeded)
     throw new Error(
       result.timedOut ? "notes CLI timed out; receipt retained" : "notes CLI unavailable or failed; receipt retained"
@@ -10216,14 +10251,14 @@ function disableUpdateCheck() {
 }
 
 // packages/agent-hooks/src/claude/static-plan.ts
-import { dirname as dirname8, join as join10 } from "node:path";
+import { dirname as dirname9, join as join10 } from "node:path";
 function narrowCommand(toolInput) {
   if (!isRecord(toolInput)) return null;
   const command = toolInput.command;
   return typeof command === "string" && command.length > 0 ? command : null;
 }
 function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) {
-  const options = { stateRoot: join10(dirname8(layout.base), "commit-receipts"), ...runtimeOptions };
+  const options = { stateRoot: join10(dirname9(layout.base), "commit-receipts"), ...runtimeOptions };
   return async (input, ctx) => {
     try {
       if (!input.session_id || !input.tool_use_id) return null;
@@ -10301,7 +10336,7 @@ function toTouchInput(toolName, toolInput, sessionId, cwd, filePath, invocationI
   return null;
 }
 function createHandler2(executors = createDefaultTouchExecutors(), memoFactory = createDiskMemoStore, layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) {
-  const options = { stateRoot: join11(dirname9(layout.base), "commit-receipts"), ...runtimeOptions };
+  const options = { stateRoot: join11(dirname10(layout.base), "commit-receipts"), ...runtimeOptions };
   return async (input, ctx) => {
     let original = null;
     if (input.tool_name === "Bash" && input.session_id && input.tool_use_id) {

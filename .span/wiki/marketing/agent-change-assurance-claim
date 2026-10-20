@@ -1,5 +1,5 @@
 .github/workflows/ci.yml#L231-L234 rk64:b5c27abda9676fb7
 packages/agent-hooks/src/common/touch-core.ts#L3-L16 rk64:702945b1cbe3f42a
-wiki/marketing/use-cases/agent-change-assurance.md#L14-L21 rk64:1e2658b2be00e4da
+wiki/marketing/use-cases/agent-change-assurance.md#L14-L21 rk64:aed3b004ccd206fb
 
 The page describes touch hooks surfacing existing spans after supported events and CI enforcing unresolved drift; the touch implementation and CI check must preserve those claims. Commit, push, and status commands intentionally provide no changeset-wide safety net.
