@@ -1421,6 +1421,7 @@ async function cleanupCommitInvocations(host, sessionId, options = {}, logger2) 
         logger2?.warn(`git-span commit receipts: ${valid.reason}`);
         continue;
       }
+      if (!cleanupMayAffect(directory, valid.value, host, sessionId)) continue;
       const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline, options.lockExecutable);
       if (!claim) {
         logger2?.warn("git-span commit receipts: cleanup invocation ownership unavailable");
@@ -1458,6 +1459,17 @@ async function cleanupCommitInvocations(host, sessionId, options = {}, logger2) 
     logger2?.warn(`git-span commit receipts: ${errorMessage(error)}`);
   }
   return result;
+}
+function cleanupMayAffect(directory, enrollment, host, sessionId) {
+  let state;
+  try {
+    state = readState(directory, enrollment);
+  } catch {
+    return true;
+  }
+  if (Date.now() - state.lastActivityMs >= COMMIT_RECEIPT_LIMITS.abandonedRetentionMs) return true;
+  if (enrollment.host !== host || enrollment.sessionId !== sessionId) return false;
+  return state.status !== "active" && state.status !== "retired";
 }
 function receiptRoot(options) {
   return options.stateRoot ?? join4(homedir2(), ".cache", "git-span", "commit-receipts");

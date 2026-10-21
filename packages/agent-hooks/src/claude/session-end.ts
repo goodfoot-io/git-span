@@ -13,6 +13,12 @@ import { disableUpdateCheck } from '../common/update-check-env.js';
 export const createHandler =
   (layout: SessionLayout = DEFAULT_SESSION_LAYOUT, runtimeOptions: CommitRuntimeOptions = {}) =>
   async (input: SessionEndInput, ctx: HookContext) => {
+    // The host kills SessionEnd hooks on a short budget, so the cheap rename runs before the receipt scan.
+    try {
+      cleanupSessionState(layout, input.session_id);
+    } catch (err) {
+      ctx.logger.warn('git-span session state cleanup failed open on an uncaught error', { err });
+    }
     try {
       await cleanupCommitInvocations(
         'claude',
@@ -23,13 +29,7 @@ export const createHandler =
     } catch (err) {
       ctx.logger.warn('git-span completed commit receipt cleanup failed', { err });
     }
-    try {
-      cleanupSessionState(layout, input.session_id);
-      return null;
-    } catch (err) {
-      ctx.logger.warn('git-span session state cleanup failed open on an uncaught error', { err });
-      return null;
-    }
+    return null;
   };
 
 // Automated git-span caller: suppress the update check before any executor

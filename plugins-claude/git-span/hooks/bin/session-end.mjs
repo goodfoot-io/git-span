@@ -1411,6 +1411,7 @@ async function cleanupCommitInvocations(host, sessionId, options = {}, logger2) 
         logger2?.warn(`git-span commit receipts: ${valid.reason}`);
         continue;
       }
+      if (!cleanupMayAffect(directory, valid.value, host, sessionId)) continue;
       const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline, options.lockExecutable);
       if (!claim) {
         logger2?.warn("git-span commit receipts: cleanup invocation ownership unavailable");
@@ -1448,6 +1449,17 @@ async function cleanupCommitInvocations(host, sessionId, options = {}, logger2) 
     logger2?.warn(`git-span commit receipts: ${errorMessage(error)}`);
   }
   return result;
+}
+function cleanupMayAffect(directory, enrollment, host, sessionId) {
+  let state;
+  try {
+    state = readState(directory, enrollment);
+  } catch {
+    return true;
+  }
+  if (Date.now() - state.lastActivityMs >= COMMIT_RECEIPT_LIMITS.abandonedRetentionMs) return true;
+  if (enrollment.host !== host || enrollment.sessionId !== sessionId) return false;
+  return state.status !== "active" && state.status !== "retired";
 }
 function receiptRoot(options) {
   return options.stateRoot ?? join4(homedir2(), ".cache", "git-span", "commit-receipts");
@@ -1566,6 +1578,11 @@ function disableUpdateCheck() {
 // packages/agent-hooks/src/claude/session-end.ts
 var createHandler = (layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) => async (input, ctx) => {
   try {
+    cleanupSessionState(layout, input.session_id);
+  } catch (err) {
+    ctx.logger.warn("git-span session state cleanup failed open on an uncaught error", { err });
+  }
+  try {
     await cleanupCommitInvocations(
       "claude",
       input.session_id,
@@ -1575,13 +1592,7 @@ var createHandler = (layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) => as
   } catch (err) {
     ctx.logger.warn("git-span completed commit receipt cleanup failed", { err });
   }
-  try {
-    cleanupSessionState(layout, input.session_id);
-    return null;
-  } catch (err) {
-    ctx.logger.warn("git-span session state cleanup failed open on an uncaught error", { err });
-    return null;
-  }
+  return null;
 };
 disableUpdateCheck();
 var session_end_default = sessionEndHook({ timeout: 1e4 }, createHandler());

@@ -303,6 +303,7 @@ export async function cleanupCommitInvocations(
         logger?.warn(`git-span commit receipts: ${valid.reason}`);
         continue;
       }
+      if (!cleanupMayAffect(directory, valid.value, host, sessionId)) continue;
       const claim = await acquireReceiptClaim(root, `invocation-${key}`, deadline, options.lockExecutable);
       if (!claim) {
         logger?.warn('git-span commit receipts: cleanup invocation ownership unavailable');
@@ -340,6 +341,31 @@ export async function cleanupCommitInvocations(
     logger?.warn(`git-span commit receipts: ${errorMessage(error)}`);
   }
   return result;
+}
+
+/**
+ * Decide without the native lock whether cleanup could change an invocation.
+ *
+ * Each lock is a spawned helper process, so locking every stored invocation made SessionEnd scale with the whole
+ * store and outlast the host's kill budget. `state.json` is replaced atomically, so an unlocked read sees a whole
+ * snapshot; it only prunes work, because the locked section re-reads and re-checks everything it acts on. Any
+ * unreadable state falls through to the locked path so its existing failure handling still applies.
+ */
+function cleanupMayAffect(
+  directory: string,
+  enrollment: CommitEnrollment,
+  host: CommitHost,
+  sessionId: string
+): boolean {
+  let state: CommitInvocationState;
+  try {
+    state = readState(directory, enrollment);
+  } catch {
+    return true;
+  }
+  if (Date.now() - state.lastActivityMs >= COMMIT_RECEIPT_LIMITS.abandonedRetentionMs) return true;
+  if (enrollment.host !== host || enrollment.sessionId !== sessionId) return false;
+  return state.status !== 'active' && state.status !== 'retired';
 }
 
 function fitsJsonFile(value: unknown): boolean {

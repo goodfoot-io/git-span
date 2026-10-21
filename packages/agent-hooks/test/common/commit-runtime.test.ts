@@ -296,6 +296,43 @@ describe('commit observation without command modification', () => {
     writeFileSync(join(repo, '.git', 'span', 'notes.db'), 'corrupt storage');
     expect(await terminal(input)).toMatchObject({ acknowledged: 0, pending: 1 });
   });
+  it("locks only the ending session's invocations, not every other session's", async () => {
+    for (const other of ['session-b', 'session-c', 'session-d']) {
+      const foreign = request('printf foreign', { sessionId: other, toolUseId: `tool-${other}`, cwd: scratch });
+      await enroll(foreign);
+      await terminal(foreign);
+    }
+    const own = request('printf own', { cwd: scratch });
+    await enroll(own);
+    await terminal(own);
+    const calls = join(scratch, 'lock-calls');
+    const counting = join(scratch, 'counting-lock');
+    symlinkSync(binary, join(scratch, 'real-git-span'));
+    writeFileSync(
+      counting,
+      '#!/bin/sh\nd=$(dirname "$0")\necho locked >> "$d/lock-calls"\nexec "$d/real-git-span" "$@"\n',
+      {
+        mode: 0o700
+      }
+    );
+
+    expect(
+      await cleanupCommitInvocations('claude', own.sessionId, { ...options, lockExecutable: counting }, logger)
+    ).toMatchObject({ retired: 1 });
+    expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(warnings).toEqual([]);
+  });
+  it('still expires another session abandoned state during cleanup', async () => {
+    const foreign = request('printf foreign', { sessionId: 'session-b', toolUseId: 'tool-b', cwd: scratch });
+    await enroll(foreign);
+    await terminal(foreign);
+    const state = join(directory(foreign), 'state.json');
+    const stored = JSON.parse(readFileSync(state, 'utf8')) as { lastActivityMs: number };
+    atomicJson(state, { ...stored, lastActivityMs: Date.now() - COMMIT_RECEIPT_LIMITS.abandonedRetentionMs - 1 });
+
+    expect(await cleanupCommitInvocations('claude', 'session-a', options, logger)).toMatchObject({ retired: 1 });
+    expect(existsSync(directory(foreign))).toBe(false);
+  });
   it('bounds the notes phase and retries after a stalled CLI', async () => {
     const input = request('git commit -q --allow-empty -m stalled');
     await enroll(input);
