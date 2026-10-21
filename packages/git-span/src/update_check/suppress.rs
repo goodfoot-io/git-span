@@ -16,8 +16,8 @@
 //! * `stdout_is_tty` — false when stdout is not a terminal (extension,
 //!   scripts, git-hook invocations); the fail-closed
 //!   backstop for anything the typed match misses.
-//! * `internal` — hidden/internal subcommands (`__context-service`,
-//!   `__update-check`, `merge-driver`) never engage or remind, so the
+//! * `internal` — `__context-service`, `__update-check`, `__receipt-lock`,
+//!   and `merge-driver` never engage or remind, so the
 //!   detached child cannot recurse.
 
 use crate::cli::{
@@ -78,7 +78,10 @@ fn is_machine_output(command: &Commands) -> bool {
 fn is_internal(command: &Commands) -> bool {
     matches!(
         command,
-        Commands::ContextService(_) | Commands::UpdateCheck | Commands::MergeDriver(_)
+        Commands::ContextService(_)
+            | Commands::UpdateCheck
+            | Commands::MergeDriver(_)
+            | Commands::ReceiptLock(_)
     )
 }
 
@@ -244,6 +247,25 @@ mod tests {
         let child = signals_for_argv(&["git-span", "__update-check"], true);
         assert!(child.internal, "the child must not recurse");
         assert!(child.suppressed());
+
+        let receipt = signals_for_argv(
+            &[
+                "git-span",
+                "__receipt-lock",
+                "--directory",
+                "/private/claims",
+                "--key",
+                "capacity",
+                "--wait-ms",
+                "100",
+            ],
+            true,
+        );
+        assert!(
+            receipt.internal,
+            "receipt protocol cannot engage update checks"
+        );
+        assert!(receipt.suppressed());
     }
 
     #[test]

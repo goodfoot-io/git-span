@@ -38,6 +38,7 @@ import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-s
 import type { TouchInput } from '../../src/common/touch-core.js';
 import { assemblePlugin } from '../../src/opencode/index.js';
 import { makeTempRepo, present } from '../helpers.js';
+import { buildWorkspaceGitSpan } from '../real-bundle-helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 /**
@@ -108,6 +109,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
   const TOTAL = 20;
   let repoA: { root: string; cleanup: () => void };
   let repoB: { root: string; cleanup: () => void };
+  let lockExecutable: string;
   const claudeLogger = new ClaudeLogger();
   const codexLogger = new CodexLogger();
 
@@ -122,6 +124,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
   }
 
   beforeAll(() => {
+    lockExecutable = buildWorkspaceGitSpan().binary;
     const body = `${Array.from({ length: TOTAL }, (_, i) => `line ${i + 1}`).join('\n')}\n`;
     repoA = makeTempRepo();
     initGitRepo(repoA.root);
@@ -138,7 +141,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
     initGitRepo(repoB.root);
     writeFileSync(join(repoB.root, 'f'), body);
     commitAll(repoB.root, 'f');
-  });
+  }, 600_000);
 
   afterAll(() => {
     repoA.cleanup();
@@ -434,14 +437,14 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
       {
         sessionId: 'failed-claude',
         toolUseId: 'failed-claude-tool',
-        plan: createClaudePlanHandler(layout),
-        post: createClaudeFailureHandler(undefined, inMemoryMemoFactory(), layout)
+        plan: createClaudePlanHandler(layout, { lockExecutable }),
+        post: createClaudeFailureHandler(undefined, inMemoryMemoFactory(), layout, { lockExecutable })
       },
       {
         sessionId: 'failed-codex',
         toolUseId: 'failed-codex-tool',
-        plan: createCodexPlanHandler(layout),
-        post: createCodexHandler(undefined, inMemoryMemoFactory(), layout)
+        plan: createCodexPlanHandler(layout, { lockExecutable }),
+        post: createCodexHandler(undefined, inMemoryMemoFactory(), layout, { lockExecutable })
       }
     ];
     for (const fixture of cases) {

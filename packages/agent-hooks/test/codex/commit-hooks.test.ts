@@ -133,7 +133,7 @@ describe('codex deployed commit adapters', () => {
     ]);
     const restored = await terminalCommitInvocation(
       { host: 'codex', sessionId: 'receipt-session', toolUseId: 'success' },
-      { stateRoot: stateRoot(repo), notesExecutable: binary }
+      { stateRoot: stateRoot(repo), notesExecutable: binary, lockExecutable: binary }
     );
     expect(restored.original).toEqual({
       input: input.tool_input,
@@ -160,7 +160,7 @@ describe('codex deployed commit adapters', () => {
     const shell = runRealShell(repo, updated.command as string);
     post(repo, input, updated, shell.stdout);
     expect(notes(repo)[0]?.document).toEqual({ schemaVersion: 1, host: 'codex', sessionId: 'receipt-session' });
-    const handler = createPre(layoutFor(repo), { notesExecutable: binary });
+    const handler = createPre(layoutFor(repo), { notesExecutable: binary, lockExecutable: binary });
     for (const field of ['session_id', 'tool_use_id']) {
       const missing = { ...input, [field]: undefined };
       expect(await handler(missing as never, { logger: new Logger() } as never)).toBe(undefined);
@@ -207,7 +207,10 @@ describe('codex deployed commit adapters', () => {
     const shell = runRealShell(repo, updated.command as string);
     const stalled = join(repo.home, 'stalled-notes');
     writeFileSync(stalled, '#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n', { mode: 0o700 });
-    const handler = createPost(undefined, undefined, layoutFor(repo), { notesExecutable: stalled });
+    const handler = createPost(undefined, undefined, layoutFor(repo), {
+      notesExecutable: stalled,
+      lockExecutable: binary
+    });
     const started = performance.now();
     const result = await handler(
       { ...input, hook_event_name: 'PostToolUse', tool_input: updated, tool_response: shell.stdout } as never,
@@ -218,7 +221,10 @@ describe('codex deployed commit adapters', () => {
       'example/receipt-context'
     );
     expect(notes(repo)).toHaveLength(0);
-    const recovered = createPost(undefined, undefined, layoutFor(repo), { notesExecutable: binary });
+    const recovered = createPost(undefined, undefined, layoutFor(repo), {
+      notesExecutable: binary,
+      lockExecutable: binary
+    });
     expect(
       await recovered(
         {

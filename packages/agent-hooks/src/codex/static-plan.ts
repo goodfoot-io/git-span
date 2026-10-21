@@ -7,17 +7,13 @@ import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-
 import { type CommitRuntimeOptions, enrollCommitInvocation } from '../common/commit-runtime.js';
 import { isRecord } from '../common/guards.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
-import { narrowCodeModeExec, narrowExecCommand } from './post-tool-use.js';
-import { extractShellCommand } from './shell-command.js';
+import { narrowShellExecutions } from './shell-input.js';
 
 /** Extract a shell command and the workdir carried by classic/code-mode envelopes. */
 export function narrowShellPlanInput(toolInput: unknown): { command: string; workdir: string | null } | null {
-  const direct = extractShellCommand(toolInput);
-  if (direct !== null) return { command: direct, workdir: null };
-  const classic = narrowExecCommand(toolInput);
-  if (classic !== null) return { command: classic.cmd, workdir: classic.workdir };
-  const codeMode = narrowCodeModeExec(toolInput);
-  return codeMode.cmd === null ? null : { command: codeMode.cmd, workdir: codeMode.workdir };
+  const result = narrowShellExecutions(toolInput);
+  const only = result.executions.length === 1 ? result.executions[0] : undefined;
+  return only === undefined ? null : { command: only.command, workdir: only.workdir };
 }
 
 export function createHandler(
@@ -28,23 +24,34 @@ export function createHandler(
   return async (input: PreToolUseInput, ctx: HookContext) => {
     try {
       if (!input.session_id || !input.tool_use_id) return undefined;
-      const narrowed = narrowShellPlanInput(input.tool_input);
-      if (narrowed === null) return undefined;
+      if (!['Bash', 'shell', 'exec', 'local_shell', 'exec_command'].includes(input.tool_name)) return undefined;
+      const narrowed = narrowShellExecutions(input.tool_input);
+      if (narrowed.executions.length === 0) {
+        if (narrowed.matched) ctx.logger.warn('Codex code-mode exec envelope is not statically recoverable');
+        return undefined;
+      }
       const cwd = input.cwd ?? '';
-      const effectiveCwd =
-        narrowed.workdir !== null && !/[`$]/.test(narrowed.workdir) ? resolvePath(cwd, narrowed.workdir) : cwd;
-      planBashTouches(
-        narrowed.command,
-        effectiveCwd,
-        input.session_id,
-        input.tool_use_id,
-        ctx.logger,
-        createDefaultPlannedTouchStore(layout)
-      );
-      // Observe normalized Bash execution without replacing its input.
+      const commands = narrowed.executions.map((item) => ({
+        command: item.command,
+        cwd: item.workdir === null ? cwd : resolvePath(cwd, item.workdir)
+      }));
+      const first = commands[0];
+      if (first === undefined) return undefined;
+      // The touch store owns one plan per tool ID. Batch touches are recovered per command post-execution.
+      if (commands.length === 1) {
+        planBashTouches(
+          first.command,
+          first.cwd,
+          input.session_id,
+          input.tool_use_id,
+          ctx.logger,
+          createDefaultPlannedTouchStore(layout)
+        );
+      }
+      // Observe every literal execution context without replacing the original input.
       const toolInput = input.tool_input;
-      if (input.tool_name !== 'Bash' || !isRecord(toolInput) || typeof toolInput.command !== 'string') return undefined;
-      if (toolInput.run_in_background === true || toolInput.background === true || toolInput.delegate === true) {
+      if (!isRecord(toolInput)) return undefined;
+      if (narrowed.executions.some((item) => item.background)) {
         ctx.logger.warn('git-span commit attribution does not support visible background or delegated execution');
         return undefined;
       }
@@ -53,8 +60,10 @@ export function createHandler(
           host: 'codex',
           sessionId: input.session_id,
           toolUseId: input.tool_use_id,
-          cwd: effectiveCwd,
+          cwd: first.cwd,
           toolInput,
+          command: first.command,
+          additionalCommands: commands.slice(1),
           ...(input.transcript_path ? { transcriptLocator: input.transcript_path } : {})
         },
         options,

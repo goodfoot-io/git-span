@@ -141,10 +141,13 @@ verification evidence; it never contains a file body or repository tree.
 `PostToolUse` atomically consumes the record once, verifies the evidence,
 reparses ordinary operations, and applies shell join and post-state gates before
 touching a span. Success, failure, interruption, and duplicate delivery cannot
-reuse a plan. `Stop` asks the agent to dispatch a forked subagent to load
-`git-span:review-notes` and review relevant session notes.
+reuse a plan. Shell hooks record observed Git commits as session notes;
+editing a file alone creates no commit note. Keep the CLI and plugin on the
+same release: receipt coordination uses the CLI's native lock helper.
+When notes exist, `Stop` asks the agent to dispatch a forked subagent to load
+`git-span:review-notes` and review relevant session notes. Empty stops proceed silently.
 Stop continuations proceed without another review request. `SessionEnd` on
-Claude and the stop continuation on Codex retire the session memo and plans;
+Claude and empty stops or stop continuations on Codex retire the session memo and plans;
 opportunistic 30-day cleanup covers crashed sessions.
 
 A failed Bash command can still surface a write only when the supported family

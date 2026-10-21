@@ -13,6 +13,8 @@ End users should install the published plugin for their coding agent rather than
 
 These hooks are advisory coverage, not the enforcement boundary. Human changes, inactive plugins, unsupported tools, and host-level failures can bypass in-session attribution; run `git span drift` in CI before merge.
 
+Claude Code and Codex record observed Git commits as session notes; editing a file alone creates no commit note. Install the CLI and plugin from the same release: receipt coordination uses the CLI's native lock helper, which releases ownership when a hook exits or crashes.
+
 ## Host coverage
 
 ### Claude Code
@@ -27,13 +29,15 @@ Codex observes `apply_patch` and its shell/exec tool family. Installing the plug
 
 OpenCode observes `bash`, `read`, `edit`, `write`, and `apply_patch`; its experimental code-mode `execute` tool is outside the integration. Hooks run in-process. Host-level failures that never reach the after hook receive no attribution. The npm plugin installer materializes five skills and an expert agent on disk.
 
-After user input, `session.status` (idle) sends one synthetic note-review prompt to a root session. Synthetic prompts and child sessions do not trigger another review. OpenCode V2 receives the continuation through `session.synthetic` with `resume: true`.
+After user input, `session.status` (idle) sends one synthetic note-review prompt to a root session when notes exist. Synthetic prompts and child sessions do not trigger another review. OpenCode V2 receives the continuation through `session.synthetic` with `resume: true`.
 
 ### Antigravity
 
 Antigravity observes the pinned `run_command` contract. Dedicated file-edit tools are outside the integration; explicit `git span drift` checks verify their changes. Tool calls are joined through disk-backed state and context is delivered after the invocation as an ephemeral message. The plugin ships five skills and no separate expert-agent artifact.
 
-An idle, successful model stop requests note review once per conversation. Subsequent stops clean up call state and proceed. Error, step-limit, and busy stops proceed without requesting review.
+An idle, successful model stop requests note review once per conversation when notes exist. Subsequent stops clean up call state and proceed. Error, step-limit, and busy stops proceed without requesting review.
+
+All four hosts check `git span notes list --format json` before requesting review. Empty repositories and non-repository sessions proceed silently. The check covers the current repository and supplied workspace paths; a failed lookup preserves the review request. Empty Antigravity stops leave its once-only review guard available for later notes.
 
 ## Development
 

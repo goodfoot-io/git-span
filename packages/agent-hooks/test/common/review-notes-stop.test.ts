@@ -1,13 +1,31 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger, type StopInput } from '@goodfoot/agent-hooks/codex';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHandler as createClaudeHandler } from '../../src/claude/stop.js';
 import { createHandler as createCodexHandler } from '../../src/codex/stop.js';
+import { resolveGitSpanCommand } from '../../src/common/git-span-command.js';
 import { type BuiltRealHookBundles, buildRealHookBundles, invokeRealHook } from '../real-bundle-helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 const temp = makeTempLayout();
+execFileSync('git', ['init', '-q', temp.parent]);
+execFileSync('git', [
+  '-C',
+  temp.parent,
+  '-c',
+  'user.name=Test',
+  '-c',
+  'user.email=test@example.com',
+  'commit',
+  '-q',
+  '--allow-empty',
+  '-m',
+  'fixture'
+]);
+const command = resolveGitSpanCommand(['notes', 'add', 'HEAD', '--format', 'json'], temp.parent);
+execFileSync(command.executable, command.argv, { cwd: temp.parent, input: JSON.stringify('opaque note') });
 const context = { logger: new Logger() };
 const input: StopInput = {
   hook_event_name: 'Stop',
@@ -38,12 +56,12 @@ describe('session-note review at Stop', () => {
     expect((await handler({ ...input, turn_id: 'turn-2' }, context))?.stdout.decision).toBe('block');
   });
 
-  it('allows Claude continuations and requests review again on a later ordinary stop', () => {
+  it('allows Claude continuations and requests review again on a later ordinary stop', async () => {
     const handler = createClaudeHandler();
-    expect(handler(input)?.stdout.decision).toBe('block');
-    expect(handler({ ...input, stop_hook_active: true })).toBeNull();
-    expect(handler({ ...input, stop_hook_active: true })).toBeNull();
-    expect(handler(input)?.stdout.decision).toBe('block');
+    expect((await handler(input, context))?.stdout.decision).toBe('block');
+    expect(await handler({ ...input, stop_hook_active: true }, context)).toBeNull();
+    expect(await handler({ ...input, stop_hook_active: true }, context)).toBeNull();
+    expect((await handler(input, context))?.stdout.decision).toBe('block');
   });
 });
 
@@ -55,6 +73,23 @@ describe('emitted Stop protocol', () => {
   afterAll(() => bundles?.cleanup());
 
   for (const host of ['claude', 'codex'] as const) {
+    it(`${host} emits no review prompt for an empty repository`, () => {
+      const empty = makeTempLayout();
+      try {
+        execFileSync('git', ['init', '-q', empty.parent]);
+        const directory = host === 'claude' ? bundles.claudeHooksDir : bundles.codexHooksDir;
+        const result = invokeRealHook(
+          join(directory, 'stop.mjs'),
+          { ...input, cwd: empty.parent },
+          { ...process.env, HOME: empty.parent }
+        );
+        expect(result.stderr).toBe('');
+        expect(result.output?.decision).not.toBe('block');
+        expect(result.output?.reason).toBeUndefined();
+      } finally {
+        empty.cleanup();
+      }
+    });
     it(`${host} emits a scoped fork prompt and allows continuation without another prompt`, () => {
       const directory = host === 'claude' ? bundles.claudeHooksDir : bundles.codexHooksDir;
       const bundle = join(directory, 'stop.mjs');

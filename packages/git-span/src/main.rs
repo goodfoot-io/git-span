@@ -168,7 +168,10 @@ fn run() -> Result<i32> {
     // stopped `stale` from being routed to `show` in the first place.
     let is_bare_name = first_non_opt.is_some_and(|first| {
         !first.starts_with('-')
-            && !matches!(first.as_str(), "__context-service" | "__update-check")
+            && !matches!(
+                first.as_str(),
+                "__context-service" | "__update-check" | "__receipt-lock"
+            )
             && !is_reserved_span_name(first)
             && !matches!(first.as_str(), "help" | "--help" | "-h")
     });
@@ -200,6 +203,10 @@ fn run() -> Result<i32> {
     // filesystem for repo discovery.
     let cli = Cli::parse();
     git_span::perf::init(cli.perf);
+
+    if let Some(Commands::ReceiptLock(args)) = &cli.command {
+        return cli::receipt_lock::run(args.clone());
+    }
 
     let repo = discover_repo()?;
     match &cli.command {

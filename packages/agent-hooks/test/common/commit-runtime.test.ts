@@ -86,7 +86,7 @@ beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "commit observation 'quoted' "));
   repo = join(scratch, 'repo');
   makeRepo(repo);
-  options = { stateRoot: join(scratch, 'private receipts'), notesExecutable: binary };
+  options = { stateRoot: join(scratch, 'private receipts'), notesExecutable: binary, lockExecutable: binary };
   warnings = [];
 });
 afterEach(() => {

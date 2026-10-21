@@ -1,6 +1,6 @@
 {
   "name": "agent-hooks",
-  "version": "1.1.33",
+  "version": "1.1.34",
   "type": "module",
   "scripts": {
     "build": "yarn build:claude && yarn build:codex && yarn build:opencode && yarn build:antigravity",
@@ -21,7 +21,8 @@
     "test:uncached": "vitest run"
   },
   "dependencies": {
-    "@goodfoot/agent-hooks": "1.0.14"
+    "@goodfoot/agent-hooks": "1.0.14",
+    "acorn": "8.16.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",

@@ -33,6 +33,7 @@ pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
 pub mod notes;
+pub mod receipt_lock;
 pub(crate) mod recovery_domain;
 pub(crate) mod repair_domain;
 pub mod resolve;
@@ -44,9 +45,8 @@ pub(crate) mod update_check;
 pub use drift_label::format_drift_label;
 
 pub use error::{
-    CliError, INTERNAL_ERROR_EXIT_CODE, NextStep, PanicReport, filter_driver_error,
-    from_lib_error, install_panic_hook, render_error, render_internal_error,
-    resolver_read_error,
+    CliError, INTERNAL_ERROR_EXIT_CODE, NextStep, PanicReport, filter_driver_error, from_lib_error,
+    install_panic_hook, render_error, render_internal_error, resolver_read_error,
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -79,6 +79,10 @@ pub struct Cli {
 pub enum Commands {
     /// Attach, inspect, and remove durable arbitrary JSON documents associated with commits.
     Notes(notes::NotesArgs),
+
+    /// Hold a private receipt mutex until the caller closes stdin.
+    #[command(name = "__receipt-lock", hide = true)]
+    ReceiptLock(receipt_lock::ReceiptLockArgs),
 
     /// Show the named span — its anchors, why, and config. The bare
     /// `git span <name>` positional form is equivalent to
@@ -836,7 +840,9 @@ pub fn dispatch(
     if let Commands::Notes(args) = command {
         crate::update_check::maybe_engage(cli);
         let result = notes::run(repo, args);
-        if result.is_ok() { crate::update_check::maybe_remind(cli); }
+        if result.is_ok() {
+            crate::update_check::maybe_remind(cli);
+        }
         return result;
     }
     // Resolve the span root once, here, through the single precedence
@@ -863,6 +869,7 @@ pub fn dispatch(
 
     let result = match command {
         Commands::Notes(_) => unreachable!("notes dispatched before span recovery"),
+        Commands::ReceiptLock(args) => receipt_lock::run(args),
         Commands::Show(args) => {
             let _perf = crate::perf::span("command.show");
             show::run_show(repo, args, span_root)

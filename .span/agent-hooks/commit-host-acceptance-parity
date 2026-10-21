@@ -1,4 +1,4 @@
-packages/agent-hooks/test/claude/commit-hooks.test.ts rk64:4eaf2941c8e51aed
-packages/agent-hooks/test/codex/commit-hooks.test.ts rk64:71673ae594ec6566
+packages/agent-hooks/test/claude/commit-hooks.test.ts rk64:45e6b1c9aa7da289
+packages/agent-hooks/test/codex/commit-hooks.test.ts rk64:feb98e47889a0762
 
 The maintained Claude and Codex acceptance suites preserve equivalent reflog observation, unchanged shell input, overlapping-session attribution, lifecycle and deadline behavior. Claude routes failed shell execution through its failure hook, while Codex uses its post-tool hook.

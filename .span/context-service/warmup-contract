@@ -3,7 +3,7 @@ packages/agent-hooks/src/codex/session-start.ts rk64:188f9bdd66606e0d
 packages/agent-hooks/src/common/context-warmup.ts rk64:74837a56033dccae
 packages/agent-hooks/test/common/context-warmup.test.ts rk64:c9e145dd790f312b
 packages/git-span/src/cli/context.rs#L949-L953 rk64:8eb741b968437a6e
-packages/git-span/src/cli/mod.rs#L465-L472 rk64:e874494ef627518c
+packages/git-span/src/cli/mod.rs#L469-L476 rk64:e874494ef627518c
 packages/git-span/tests/cases/cli_context.rs#L805-L834 rk64:6af8c8a44dd75e0d
 
 The hidden context --warm flag accepts no address and initializes a reusable service generation without rendering a document; the Claude and Codex session-start handlers launch that exact command off-path, while the focused launcher test preserves its detached process and bounded-lock environment contract and the CLI integration case proves generation reuse.

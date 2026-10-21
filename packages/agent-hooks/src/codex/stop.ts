@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { type HookContext, type StopInput, stopHook, stopOutput } from '@goodfoot/agent-hooks/codex';
 import { cleanupSessionState, DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { type CommitRuntimeOptions, cleanupCommitInvocations } from '../common/commit-runtime.js';
-import { reviewNotesStopReason } from '../common/review-notes-stop.js';
+import { type NoteReviewCheck, reviewNotesStopReason } from '../common/review-notes-stop.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /**
@@ -16,10 +16,11 @@ import { disableUpdateCheck } from '../common/update-check-env.js';
  */
 export function createHandler(
   layout: SessionLayout = DEFAULT_SESSION_LAYOUT,
-  runtimeOptions: CommitRuntimeOptions = {}
+  runtimeOptions: CommitRuntimeOptions = {},
+  check?: NoteReviewCheck
 ) {
   return async (input: StopInput, ctx: HookContext) => {
-    const reason = reviewNotesStopReason(input, 'codex');
+    const reason = await reviewNotesStopReason(input, 'codex', ctx.logger, check);
     if (reason !== undefined) return stopOutput({ decision: 'block', reason });
 
     try {

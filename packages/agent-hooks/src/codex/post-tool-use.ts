@@ -26,7 +26,14 @@ import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js
 import type { PlannedTouchRecord } from '../common/static-attribution.js';
 import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
-import { extractShellCommand } from './shell-command.js';
+import {
+  completedExecution,
+  findExecution,
+  polledExecution,
+  retainExecution,
+  yieldedExecution
+} from './commit-exec.js';
+import { narrowShellExecutions } from './shell-input.js';
 
 const APPLY_PATCH_SUCCESS_PREFIX = 'Success. Updated the following files:';
 
@@ -35,87 +42,7 @@ export function narrowApplyPatchCommand(toolInput: unknown): string | null {
   return isRecord(toolInput) && typeof toolInput.command === 'string' ? toolInput.command : null;
 }
 
-/** Narrow the classic exec_command JSON-string arguments envelope. */
-export function narrowExecCommand(toolInput: unknown): { cmd: string; workdir: string | null } | null {
-  if (isRecord(toolInput)) {
-    const args = toolInput.arguments;
-    if (typeof args === 'string') {
-      try {
-        const parsed: unknown = JSON.parse(args);
-        if (isRecord(parsed) && typeof parsed.cmd === 'string') {
-          return { cmd: parsed.cmd, workdir: typeof parsed.workdir === 'string' ? parsed.workdir : null };
-        }
-      } catch {
-        return null;
-      }
-    }
-  }
-  return null;
-}
-
-export interface CodeModeExecNarrow {
-  matched: boolean;
-  cmd: string | null;
-  workdir: string | null;
-}
-
-function quoteObjectKeys(literal: string): string {
-  let out = '';
-  let index = 0;
-  while (index < literal.length) {
-    const character = literal[index];
-    if (character === '"' || character === "'") {
-      const quote = character;
-      const start = index;
-      index += 1;
-      while (index < literal.length) {
-        if (literal[index] === '\\' && index + 1 < literal.length) index += 2;
-        else if (literal[index] === quote) {
-          index += 1;
-          break;
-        } else index += 1;
-      }
-      out += literal.slice(start, index);
-      continue;
-    }
-    const key = literal.slice(index).match(/^(\{|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*:/);
-    if (key !== null) {
-      out += `${key[1]}"${key[2]}":`;
-      index += key[0].length;
-      continue;
-    }
-    out += character;
-    index += 1;
-  }
-  return out;
-}
-
-/** Narrow a literal tools.exec_command call from the Codex code-mode envelope. */
-export function narrowCodeModeExec(toolInput: unknown): CodeModeExecNarrow {
-  if (isRecord(toolInput)) {
-    const input = toolInput.input;
-    if (typeof input === 'string') {
-      const match = input.match(/tools\.exec_command\(\s*(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})\s*\)/);
-      const objectLiteral = match?.[1];
-      if (objectLiteral !== undefined) {
-        try {
-          const parsed: unknown = JSON.parse(quoteObjectKeys(objectLiteral));
-          if (isRecord(parsed) && typeof parsed.cmd === 'string') {
-            return {
-              matched: true,
-              cmd: parsed.cmd,
-              workdir: typeof parsed.workdir === 'string' ? parsed.workdir : null
-            };
-          }
-        } catch {
-          return { matched: true, cmd: null, workdir: null };
-        }
-        return { matched: true, cmd: null, workdir: null };
-      }
-    }
-  }
-  return { matched: false, cmd: null, workdir: null };
-}
+export { narrowCodeModeExec, narrowExecCommand } from './shell-input.js';
 
 /** Classify apply_patch output; only the explicit success summary authorizes attribution. */
 export function classifyApplyPatchResponse(toolResponse: unknown): 'success' | 'failure' | 'unknown' {
@@ -152,55 +79,72 @@ export function createHandler(
   const options = { stateRoot: join(dirname(layout.base), 'commit-receipts'), ...runtimeOptions };
   return async (input: PostToolUseInput, ctx: HookContext) => {
     let original: Awaited<ReturnType<typeof terminalCommitInvocation>>['original'] = null;
-    if (input.tool_name === 'Bash' && input.session_id && input.tool_use_id) {
+    const shellTool = ['Bash', 'shell', 'local_shell', 'exec_command', 'exec'].includes(input.tool_name);
+    const poll = input.tool_name === 'write_stdin';
+    if ((shellTool || poll) && input.session_id && input.tool_use_id) {
       try {
-        original = (
-          await terminalCommitInvocation(
-            {
-              host: 'codex',
-              sessionId: input.session_id,
-              toolUseId: input.tool_use_id
-            },
-            options,
-            ctx.logger
-          )
-        ).original;
+        const executionId = poll ? polledExecution(input.tool_input) : null;
+        const identity = poll
+          ? executionId === null
+            ? null
+            : findExecution(input.session_id, executionId, options)
+          : { host: 'codex' as const, sessionId: input.session_id, toolUseId: input.tool_use_id };
+        if (identity !== null) {
+          const running = yieldedExecution(input.tool_response);
+          if (running !== null) {
+            if (!poll && narrowShellExecutions(input.tool_input).executions.length > 1) {
+              ctx.logger.warn(
+                'Codex raw code-mode batch yielded without per-command completion identities; preserving active observations'
+              );
+              return undefined;
+            }
+            await retainExecution(identity, running, options);
+            return undefined;
+          }
+          if (poll && !completedExecution(input.tool_response)) return undefined;
+          original = (await terminalCommitInvocation(identity, options, ctx.logger)).original;
+        }
       } catch (err) {
         ctx.logger.warn('git-span terminal commit attribution failed', { err });
       }
     }
+    if (poll) return undefined;
     const cwd = original?.cwd ?? input.cwd ?? '';
     const sessionId = input.session_id;
     const memo = memoFactory(ctx.logger, layout);
-    if (['Bash', 'shell', 'local_shell', 'exec_command', 'exec'].includes(input.tool_name)) {
-      let command = original?.command ?? extractShellCommand(input.tool_input);
-      let workdir: string | null = null;
-      if (command === null) {
-        const classic = narrowExecCommand(input.tool_input);
-        command = classic?.cmd ?? null;
-        workdir = classic?.workdir ?? null;
-      }
-      if (command === null && input.tool_name === 'exec') {
-        const codeMode = narrowCodeModeExec(input.tool_input);
-        if (codeMode.matched && codeMode.cmd === null) {
+    if (shellTool) {
+      const recovered = narrowShellExecutions(original?.input ?? input.tool_input);
+      if (recovered.executions.length === 0) {
+        if (recovered.matched)
           ctx.logger.warn('Codex code-mode exec envelope matched but its command is not statically recoverable');
-        }
-        command = codeMode.cmd;
-        workdir = codeMode.workdir;
+        return undefined;
       }
-      if (command === null || command.length === 0) return undefined;
-      const effectiveCwd = resolveFrame(workdir ?? undefined, cwd);
-      const blocks = await runLayeredBashTouches(
-        command,
-        effectiveCwd,
-        sessionId,
-        input.tool_use_id,
-        input.tool_response,
-        executors,
-        memo,
-        ctx.logger,
-        createDefaultPlannedTouchStore(layout)
-      );
+      const blocks: string[] = [];
+      const executions =
+        original?.executions ??
+        recovered.executions.map((execution, index) => ({
+          command: execution.command,
+          cwd:
+            index === 0 && original !== null
+              ? original.cwd
+              : resolveFrame(execution.workdir ?? undefined, input.cwd ?? '')
+        }));
+      for (const execution of executions) {
+        const effectiveCwd = execution.cwd;
+        blocks.push(
+          ...(await runLayeredBashTouches(
+            execution.command,
+            effectiveCwd,
+            sessionId,
+            recovered.executions.length === 1 ? input.tool_use_id : undefined,
+            input.tool_response,
+            executors,
+            memo,
+            ctx.logger,
+            createDefaultPlannedTouchStore(layout)
+          ))
+        );
+      }
       if (blocks.length === 0) return undefined;
       const shellCombined = blocks.join('');
       return postToolUseOutput({ additionalContext: shellCombined, systemMessage: shellCombined });
@@ -235,13 +179,13 @@ export function createHandler(
   };
 }
 
-export const STATIC_POST_MATCHER = 'apply_patch|exec_command|exec|shell|local_shell|Bash';
+export const STATIC_POST_MATCHER = 'apply_patch|exec_command|exec|shell|local_shell|Bash|write_stdin';
 
 // Automated git-span caller: suppress the update check before any executor
 // runs so every `git span` child inherits the env var.
 disableUpdateCheck();
 
 export default postToolUseHook(
-  { matcher: 'apply_patch|exec_command|exec|shell|local_shell|Bash', timeout: 15_000 },
+  { matcher: 'apply_patch|exec_command|exec|shell|local_shell|Bash|write_stdin', timeout: 15_000 },
   createHandler()
 );

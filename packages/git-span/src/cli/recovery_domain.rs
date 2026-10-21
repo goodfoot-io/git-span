@@ -22,6 +22,7 @@ pub(crate) struct Guard {
 pub(crate) fn command_mode(command: &Commands) -> Option<Mode> {
     match command {
         Commands::Notes(_)
+        | Commands::ReceiptLock(_)
         | Commands::Context(_)
         | Commands::ContextService(_)
         | Commands::UpdateCheck => None,

@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { resolveGitSpanCommand } from '../../src/common/git-span-command.js';
 /**
  * Tests for the Antigravity lifecycle hooks
  * (packages/agent-hooks/src/antigravity/{pre-invocation,stop}.ts).
@@ -11,7 +13,7 @@
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Logger } from '@goodfoot/agent-hooks';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import preInvocationHookEntry, {
@@ -98,18 +100,34 @@ describe('antigravity stop cleanup', () => {
       terminationReason: 'model_stop',
       fullyIdle: true
     };
-    const result = await createStopHandler(layout)(input as never, { logger });
+    const result = await createStopHandler(layout, async () => true)(input as never, { logger });
     expect(result?.stdout.decision).toBe('continue');
     expect(result?.stdout.reason).toContain('Load review-notes');
     expect(result?.stdout.reason).toContain('forked subagent');
     expect(existsSync(layout.memoFile(conv))).toBe(true);
 
     // A new handler models the next one-shot hook process; cleanup leaves its guard intact.
-    expect(await createStopHandler(layout)({ ...input, executionNum: 2 } as never, { logger })).toBeUndefined();
+    expect(
+      await createStopHandler(layout, async () => true)({ ...input, executionNum: 2 } as never, { logger })
+    ).toBeUndefined();
     expect(takeToolCall(layout, conv, 2)).toBeNull();
     expect(drainPendingInjections(layout, conv)).toEqual([]);
     expect(existsSync(layout.memoFile(conv))).toBe(true);
-    expect(await createStopHandler(layout)({ ...input, executionNum: 3 } as never, { logger })).toBeUndefined();
+    expect(
+      await createStopHandler(layout, async () => true)({ ...input, executionNum: 3 } as never, { logger })
+    ).toBeUndefined();
+  });
+
+  it('skips empty notes, cleans call state, and leaves the review guard unclaimed', async () => {
+    const conv = 'empty-notes';
+    stashToolCall(layout, conv, 2, { name: 'run_command', args: {} });
+    const input = { ...base(conv, ['/repo']), executionNum: 1, terminationReason: 'model_stop', fullyIdle: true };
+    expect(await createStopHandler(layout, async () => false)(input as never, { logger })).toBeUndefined();
+    expect(takeToolCall(layout, conv, 2)).toBeNull();
+    expect(existsSync(join(layout.dir(conv), 'antigravity-note-review-requested'))).toBe(false);
+    expect((await createStopHandler(layout, async () => true)(input as never, { logger }))?.stdout.decision).toBe(
+      'continue'
+    );
   });
 
   it.each([
@@ -119,16 +137,32 @@ describe('antigravity stop cleanup', () => {
     { terminationReason: 'model_stop', fullyIdle: true, error: 'cancelled' }
   ])('does not resume an abnormal or busy stop: %j', async (state) => {
     const input = { ...base(`skip-${JSON.stringify(state)}`, ['/repo']), executionNum: 1, ...state };
-    expect(await createStopHandler(layout)(input as never, { logger })).toBeUndefined();
+    expect(await createStopHandler(layout, async () => true)(input as never, { logger })).toBeUndefined();
   });
 
   it('the emitted hook guard survives separate processes', () => {
     const input = {
-      ...base('agy-emitted-review', ['/repo']),
+      ...base('agy-emitted-review', [temp.parent]),
       executionNum: 1,
       terminationReason: 'model_stop',
       fullyIdle: true
     };
+    execFileSync('git', ['init', '-q', temp.parent]);
+    execFileSync('git', [
+      '-C',
+      temp.parent,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'fixture'
+    ]);
+    const command = resolveGitSpanCommand(['notes', 'add', 'HEAD', '--format', 'json'], temp.parent);
+    execFileSync(command.executable, command.argv, { cwd: temp.parent, input: '42' });
     const bundle = resolve('../../plugins-antigravity/git-span/bin/stop.mjs');
     const run = () =>
       spawnSync(process.execPath, [bundle], {

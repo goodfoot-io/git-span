@@ -191,7 +191,7 @@ plans between turns, and `session.deleted` — plus a final `dispose()` sweep at
 shutdown — eagerly retire the session memo and any remaining plans;
 opportunistic 30-day cleanup covers crashed sessions.
 
-After user input, `session.status` (idle) sends root sessions one synthetic prompt to
+After user input, when notes exist, `session.status` (idle) sends root sessions one synthetic prompt to
 dispatch a forked subagent using <%= it.skillRef('git-span:review-notes') %>.
 Synthetic prompts and child sessions do not trigger another review. OpenCode V2 resumes the session through `session.synthetic`.
 
@@ -212,7 +212,7 @@ remain a separate pass and share only the session memo, so a later read
 can surface context without duplicating command-derived output.
 <% } else if (host === "antigravity") { %>reuse a plan. Under Antigravity, an idle, successful model `Stop` requests
 a forked subagent using <%= it.skillRef('git-span:review-notes') %> once per
-conversation. Later stops prune the session's call-scoped plans and stashes;
+conversation when notes exist. Empty stops preserve the review guard. Later stops prune the session's call-scoped plans and stashes;
 error and step-limit stops do not request review. The surfaced-span memo is deliberately left to its TTL
 sweep (pruning it at a turn boundary would make identical spans re-inject
 every turn), and opportunistic 30-day cleanup covers crashed sessions.
@@ -223,10 +223,13 @@ the absence of the host's `error` field. A command whose input carries
 no post-state evidence to verify against), and response-derived read
 attribution is unavailable entirely — the degraded-parity caveat one notch
 past OpenCode's. Interrupted calls stay silent.
-<% } else { %>reuse a plan. `Stop` asks the agent to dispatch a forked subagent to load
-<%= it.skillRef('git-span:review-notes') %> and review relevant session notes.
+<% } else { %>reuse a plan. Shell hooks record observed Git commits as session notes;
+editing a file alone creates no commit note. Keep the CLI and plugin on the
+same release: receipt coordination uses the CLI's native lock helper.
+When notes exist, `Stop` asks the agent to dispatch a forked subagent to load
+<%= it.skillRef('git-span:review-notes') %> and review relevant session notes. Empty stops proceed silently.
 Stop continuations proceed without another review request. `SessionEnd` on
-Claude and the stop continuation on Codex retire the session memo and plans;
+Claude and empty stops or stop continuations on Codex retire the session memo and plans;
 opportunistic 30-day cleanup covers crashed sessions.
 
 A failed Bash command can still surface a write only when the supported family

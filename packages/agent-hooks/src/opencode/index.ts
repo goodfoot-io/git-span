@@ -1,3 +1,4 @@
+import type { NoteReviewCheck } from '../common/review-notes-stop.js';
 /** OpenCode V2 setup: register domain hooks and subscribe to session lifecycle events. */
 
 import type { PluginInput, PluginModule } from '@goodfoot/agent-hooks/opencode';
@@ -36,6 +37,7 @@ export interface PluginDeps {
   logger?: MemoLogger;
   touchExecutors?: TouchExecutors;
   memoFactory?: MemoFactory;
+  check?: NoteReviewCheck;
 }
 
 /**
@@ -49,7 +51,7 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
   const logger = deps.logger ?? createOpencodeLogger();
   const sessions = new Set<string>();
   const callState = createOpencodeCallState();
-  const noteReview = createNoteReviewHandler({ directory, client: deps.client, logger });
+  const noteReview = createNoteReviewHandler({ directory, client: deps.client, logger, check: deps.check });
 
   const planHandler = createStaticPlanHandler({
     directory,

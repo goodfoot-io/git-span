@@ -1,11 +1,15 @@
 /** Private atomic receipt storage and serialized ownership recovery. */
 import { createHash, randomBytes } from 'node:crypto';
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
   opendirSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -22,23 +26,34 @@ import {
   decideCommitClaim
 } from './commit-lifecycle.js';
 import { errnoCode, isRecord } from './guards.js';
+import { acquireNativeReceiptLock } from './receipt-lock.js';
 
 export function identityKey(identity: CommitPostIdentity): string {
   return createHash('sha256')
     .update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId]))
     .digest('hex');
 }
-export function privateDirectory(path: string): void {
+export async function privateDirectory(path: string, deadline: number): Promise<void> {
   if (!isAbsolute(path)) throw new Error('receipt state root must be absolute');
+  if (performance.now() >= deadline) throw new Error('receipt directory phase deadline exhausted');
   mkdirSync(path, { recursive: true, mode: 0o700 });
-  const stat = lstatSync(path);
-  if (
-    !stat.isDirectory() ||
-    stat.isSymbolicLink() ||
-    (stat.mode & 0o077) !== 0 ||
-    (process.getuid && stat.uid !== process.getuid())
-  ) {
-    throw new Error('receipt directory is not private');
+  const owner = process.getuid?.();
+  const descriptor =
+    owner === undefined ? undefined : openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    for (;;) {
+      const stat = descriptor === undefined ? lstatSync(path) : fstatSync(descriptor);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0)
+        throw new Error('receipt directory is not private');
+      if (owner === undefined || stat.uid === owner) return;
+      // Directory-entry publication on virtiofs can temporarily misreport uid 0.
+      // Keep checking this retained inode; only the exact owner ever authorizes it.
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new Error('receipt directory ownership unavailable within phase deadline');
+      await delay(Math.min(5, remaining));
+    }
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
 }
 export function readJson(path: string, maximumBytes: number = COMMIT_RECEIPT_LIMITS.jsonFileBytes): unknown {
@@ -96,27 +111,29 @@ function ownerRecord(value: unknown): CommitClaimOwner | null {
 }
 export interface ReceiptClaim {
   readonly owner: CommitClaimOwner;
-  release(): void;
+  release(): Promise<void>;
 }
 
-/** A short guard serializes every primary claim mutation. A crashed/uncertain guard fails closed. */
-export async function acquireReceiptClaim(root: string, key: string, deadline: number): Promise<ReceiptClaim | null> {
+/**
+ * Hold a crash-released OS mutex across the entire claim; ownerless guards are unused.
+ * Native lock stripes have separate roles: invocation -> association -> capacity.
+ * Never acquire nested invocation/association claims or nested generic fixture claims.
+ */
+export async function acquireReceiptClaim(
+  root: string,
+  key: string,
+  deadline: number,
+  executable?: string
+): Promise<ReceiptClaim | null> {
   if (!/^[a-zA-Z0-9_-]+$/.test(key)) throw new Error('invalid receipt claim key');
   const directory = join(root, 'claims');
-  privateDirectory(directory);
+  await privateDirectory(directory, deadline);
   const path = join(directory, `${key}.json`);
-  const guard = join(directory, `${key}.guard`);
   const owner: CommitClaimOwner = { token: randomBytes(16).toString('hex'), pid: process.pid };
   while (performance.now() < deadline) {
-    let guarded = false;
+    const lock = await acquireNativeReceiptLock(directory, key, deadline, executable);
+    let retained = false;
     try {
-      try {
-        mkdirSync(guard, { mode: 0o700 });
-        guarded = true;
-      } catch (error) {
-        if (errnoCode(error) !== 'EEXIST') throw error;
-        return null;
-      }
       let prior: CommitClaimOwner | null = null;
       if (existsSync(path)) {
         prior = ownerRecord(readJson(path, 4096));
@@ -130,26 +147,24 @@ export async function acquireReceiptClaim(root: string, key: string, deadline: n
       if (decision === 'acquire' || decision === 'recover') {
         if (prior !== null) unlinkSync(path);
         atomicJson(path, owner, true);
+        retained = true;
         return {
           owner,
-          release: () => {
-            let releaseGuard = false;
+          release: async () => {
             try {
-              mkdirSync(guard, { mode: 0o700 });
-              releaseGuard = true;
               const current = ownerRecord(readJson(path, 4096));
               if (current?.token !== owner.token || current.pid !== owner.pid)
                 throw new Error('receipt claim ownership changed');
               unlinkSync(path);
             } finally {
-              if (releaseGuard) rmSync(guard, { recursive: true });
+              await lock.release();
             }
           }
         };
       }
       if (decision === 'refuse') return null;
     } finally {
-      if (guarded) rmSync(guard, { recursive: true });
+      if (!retained) await lock.release();
     }
     await delay(Math.min(20, Math.max(0, deadline - performance.now())));
   }
@@ -177,14 +192,15 @@ export async function reserveReceiptCapacity(
   root: string,
   invocationDelta: number,
   byteDelta: number,
-  deadline: number
+  deadline: number,
+  executable?: string
 ): Promise<boolean> {
-  const claim = await acquireReceiptClaim(root, 'capacity', deadline);
-  if (!claim) return false;
+  const claim = await acquireReceiptClaim(root, 'capacity', deadline, executable);
+  if (!claim) throw new Error('receipt capacity lock ownership unavailable');
   try {
     const path = join(root, 'usage.json');
     const usage = existsSync(path) ? usageRecord(readJson(path, 4096)) : { invocations: 0, totalBytes: 0 };
-    if (usage === null) return false;
+    if (usage === null) throw new Error('invalid receipt capacity ledger');
     const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
     if (
       next.invocations < 0 ||
@@ -196,7 +212,7 @@ export async function reserveReceiptCapacity(
     atomicJson(path, next);
     return true;
   } finally {
-    claim.release();
+    await claim.release();
   }
 }
 

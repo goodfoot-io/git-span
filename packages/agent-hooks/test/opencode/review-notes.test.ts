@@ -17,6 +17,7 @@ function fixture() {
   const synthetic = vi.fn<OpencodeReviewClient['session']['synthetic']>(async () => ({ data: undefined }));
   const warn = vi.fn();
   const deps = {
+    check: vi.fn(async () => true),
     directory: temp.parent,
     layout: temp.layout,
     client: { session: { get, synthetic } },
@@ -44,6 +45,17 @@ describe('OpenCode idle note review', () => {
     await message({ sessionID: 's' }, { parts: [{ type: 'text', text: 'next task' }] });
     await event(idle);
     expect(deps.synthetic).toHaveBeenCalledTimes(2);
+    expect(deps.warn).not.toHaveBeenCalled();
+  });
+
+  it('silently skips empty notes without resuming the session', async () => {
+    const deps = fixture();
+    deps.check.mockResolvedValue(false);
+    const handler = createNoteReviewHandler(deps);
+    handler.message('s', [{ type: 'text' }]);
+    await Promise.all([handler.idle('s'), handler.idle('s')]);
+    expect(deps.check).toHaveBeenCalledOnce();
+    expect(deps.synthetic).not.toHaveBeenCalled();
     expect(deps.warn).not.toHaveBeenCalled();
   });
 

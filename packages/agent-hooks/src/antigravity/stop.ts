@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { type HookContext, type StopInput, stopHook, stopOutput } from '@goodfoot/agent-hooks/antigravity';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { errnoCode } from '../common/guards.js';
-import { reviewNotesPrompt } from '../common/review-notes-stop.js';
+import { hasReviewNotes, type NoteReviewCheck, reviewNotesPrompt } from '../common/review-notes-stop.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 import { cleanupCallScopedState } from './stash.js';
 
@@ -29,9 +29,20 @@ import { cleanupCallScopedState } from './stash.js';
  * module load, so a test that awaited it would sweep the developer's live
  * session state no matter where its own fixtures lived.
  */
-export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
+export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT, check: NoteReviewCheck = hasReviewNotes) {
   return async (input: StopInput, ctx: HookContext) => {
-    if (input.terminationReason === 'model_stop' && !input.error && input.fullyIdle) {
+    const scope = {
+      host: 'antigravity' as const,
+      sessionId: input.conversationId,
+      cwd: input.workspacePaths[0] ?? '',
+      workspacePaths: input.workspacePaths
+    };
+    if (
+      input.terminationReason === 'model_stop' &&
+      !input.error &&
+      input.fullyIdle &&
+      (await check(scope, ctx.logger))
+    ) {
       try {
         mkdirSync(layout.dir(input.conversationId), { recursive: true, mode: 0o700 });
         writeFileSync(join(layout.dir(input.conversationId), 'antigravity-note-review-requested'), '', {
@@ -42,12 +53,7 @@ export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
           decision: 'continue',
           reason:
             'If you are already the notes-review subagent, finish without dispatching another reviewer.\n' +
-            reviewNotesPrompt({
-              host: 'antigravity',
-              sessionId: input.conversationId,
-              cwd: input.workspacePaths[0] ?? '',
-              workspacePaths: input.workspacePaths
-            })
+            reviewNotesPrompt(scope)
         });
       } catch (err) {
         if (errnoCode(err) !== 'EEXIST') ctx.logger.warn('git-span note-review guard failed', { err });

@@ -336,6 +336,65 @@ function executableOnPath(name, cwd = process.cwd()) {
   }
   throw new Error(`${name} executable is unavailable`);
 }
+async function executeCommitNotes(executable, command) {
+  return new Promise((resolveResult) => {
+    let stdout = "";
+    let stderr = "";
+    let bytes = 0;
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    let timedOut = false;
+    let outputExceeded = false;
+    let finished = false;
+    const grouped = process.platform !== "win32";
+    const child = spawn(executable, [...command.argv], {
+      cwd: command.cwd,
+      detached: grouped,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    const finish = (exitCode, signal) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolveResult({ exitCode, signal, stdout, stderr, timedOut, outputExceeded });
+    };
+    const terminate = () => {
+      try {
+        if (grouped && child.pid !== void 0) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        return finish(null, "SIGKILL");
+      }
+      finish(null, "SIGKILL");
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, command.timeoutMs);
+    const append = (kind, chunk) => {
+      bytes += chunk.length;
+      if (bytes > command.maxOutputBytes) {
+        outputExceeded = true;
+        terminate();
+        return;
+      }
+      if (kind === "stdout") stdout += stdoutDecoder.write(chunk);
+      else stderr += stderrDecoder.write(chunk);
+    };
+    child.stdout.on("data", (chunk) => append("stdout", chunk));
+    child.stderr.on("data", (chunk) => append("stderr", chunk));
+    child.stdin.on("error", () => {
+    });
+    child.stdin.end(command.stdin ?? "");
+    child.once("error", () => finish(127, null));
+    child.once("close", (exitCode, signal) => finish(exitCode, signal));
+  });
+}
 
 // src/common/git-span-command.ts
 function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git", platform = process.platform) {
@@ -8875,6 +8934,36 @@ function reviewNotesPrompt(scope) {
     "Wait for the subagent and include any blockers in your final response."
   ].join("\n");
 }
+async function hasReviewNotes(scope, logger, io) {
+  const deadline = performance.now() + 5e3;
+  const repositories = /* @__PURE__ */ new Set();
+  try {
+    for (const directory of /* @__PURE__ */ new Set([scope.cwd, ...scope.workspacePaths ?? []])) {
+      if (!directory) continue;
+      if (performance.now() >= deadline) throw new Error("note lookup deadline exhausted");
+      const repository = resolveRepoRoot(directory);
+      if (!repository || repositories.has(repository)) continue;
+      repositories.add(repository);
+      const resolved = resolveGitSpanCommand(["notes", "list", "--format", "json"], repository);
+      const command = {
+        cwd: repository,
+        argv: resolved.argv,
+        timeoutMs: Math.max(1, Math.floor(deadline - performance.now())),
+        maxOutputBytes: 1048576
+      };
+      const result = await (io?.execute(command) ?? executeCommitNotes(resolved.executable, command));
+      if (result.exitCode !== 0 || result.signal !== null || result.timedOut || result.outputExceeded)
+        throw new Error("notes CLI unavailable, failed, or exceeded lookup bounds");
+      const envelope = JSON.parse(result.stdout);
+      if (!isRecord(envelope) || !Array.isArray(envelope.notes)) throw new Error("invalid notes list response");
+      if (envelope.notes.length > 0) return true;
+    }
+    return false;
+  } catch (err) {
+    logger.warn("git-span could not confirm empty notes; requesting review", { err });
+    return true;
+  }
+}
 
 // src/opencode/review-notes.ts
 function createNoteReviewHandler(deps) {
@@ -8903,9 +8992,11 @@ function createNoteReviewHandler(deps) {
         const session = await deps.client.session.get(request, { signal: AbortSignal.timeout(5e3) });
         if (!isRecord(session) || session.id !== sessionId) throw new Error("Invalid OpenCode session response");
         if (session.parentID !== void 0 && session.parentID !== null) return;
+        const scope = { host: "opencode", sessionId, cwd: deps.directory };
+        if (!await (deps.check ?? hasReviewNotes)(scope, deps.logger)) return;
         if (pending2.get(sessionId) !== turn) return;
         await deps.client.session.synthetic(
-          { ...request, text: reviewNotesPrompt({ host: "opencode", sessionId, cwd: deps.directory }), resume: true },
+          { ...request, text: reviewNotesPrompt(scope), resume: true },
           { signal: AbortSignal.timeout(5e3) }
         );
       } catch (err) {
@@ -9127,7 +9218,7 @@ function assemblePlugin(deps = {}) {
   const logger = deps.logger ?? createOpencodeLogger();
   const sessions = /* @__PURE__ */ new Set();
   const callState = createOpencodeCallState();
-  const noteReview = createNoteReviewHandler({ directory, client: deps.client, logger });
+  const noteReview = createNoteReviewHandler({ directory, client: deps.client, logger, check: deps.check });
   const planHandler = createStaticPlanHandler({
     directory,
     layout,

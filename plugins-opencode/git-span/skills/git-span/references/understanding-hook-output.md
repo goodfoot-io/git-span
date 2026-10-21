@@ -150,7 +150,7 @@ plans between turns, and `session.deleted` — plus a final `dispose()` sweep at
 shutdown — eagerly retire the session memo and any remaining plans;
 opportunistic 30-day cleanup covers crashed sessions.
 
-After user input, `session.status` (idle) sends root sessions one synthetic prompt to
+After user input, when notes exist, `session.status` (idle) sends root sessions one synthetic prompt to
 dispatch a forked subagent using `@review-notes`.
 Synthetic prompts and child sessions do not trigger another review. OpenCode V2 resumes the session through `session.synthetic`.
 

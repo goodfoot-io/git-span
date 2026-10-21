@@ -181,9 +181,9 @@ function toResult(raw: unknown): HookResult {
 // ---------------------------------------------------------------------------
 
 describe('codex post-tool-use hook registration', () => {
-  it('registers PostToolUse with matcher apply_patch|exec_command|exec|shell|local_shell|Bash', () => {
+  it('registers PostToolUse with shell, patch and unified-exec poll matchers', () => {
     expect(hook.eventName).toBe('PostToolUse');
-    expect(hook.matcher).toBe('apply_patch|exec_command|exec|shell|local_shell|Bash');
+    expect(hook.matcher).toBe('apply_patch|exec_command|exec|shell|local_shell|Bash|write_stdin');
   });
 });
 

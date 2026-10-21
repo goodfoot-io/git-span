@@ -2,6 +2,11 @@ import type { PluginInput } from '@goodfoot/agent-hooks/opencode';
 import { describe, expect, it, vi } from 'vitest';
 import plugin from '../../src/opencode/index.js';
 
+vi.mock('../../src/common/review-notes-stop.js', async (original) => ({
+  ...(await original<typeof import('../../src/common/review-notes-stop.js')>()),
+  hasReviewNotes: vi.fn(async () => true)
+}));
+
 vi.mock('../../src/common/context-warmup.js', () => ({ startContextWarmup: vi.fn() }));
 vi.mock('../../src/opencode/post-tool-use.js', () => ({
   createAfterHandler: () => async (_input: unknown, output: { output: string }) => {

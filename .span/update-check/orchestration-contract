@@ -1,7 +1,7 @@
 packages/git-span/src/cli/context_service.rs#L1113-L1152 rk64:f081abae2eb0bf5a
-packages/git-span/src/cli/mod.rs#L836-L841 rk64:006606b3fc55b2cf
-packages/git-span/src/cli/mod.rs#L858-L862 rk64:00eea0bd49c31c5d
-packages/git-span/src/cli/mod.rs#L931-L936 rk64:4844e9c978107ce7
+packages/git-span/src/cli/mod.rs#L840-L847 rk64:fab925a0db3154ab
+packages/git-span/src/cli/mod.rs#L864-L868 rk64:00eea0bd49c31c5d
+packages/git-span/src/cli/mod.rs#L938-L943 rk64:4844e9c978107ce7
 packages/git-span/src/update_check/mod.rs#L60-L128 rk64:2d8da38270df9a51
 packages/git-span/src/update_check/mod.rs#L212-L275 rk64:09c0dbede7013fe7
 

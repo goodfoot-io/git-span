@@ -54,11 +54,15 @@ Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive
 
 ## Session note review
 
-On Claude Code and Codex, the Stop hook asks the agent to dispatch a forked subagent that loads `review-notes` and follows its instructions when relevant notes exist. The agent waits for the review and reports unresolved items. Stop continuations proceed without another review request. Codex clears session touch state on that continuation; Claude clears it at session end.
+Claude Code and Codex shell hooks record observed Git commits as session notes. Editing a file alone creates no commit note. Install the CLI and plugin from the same release; receipt coordination uses a native CLI lock helper.
 
-Antigravity requests the same review once per conversation at an idle, successful model stop. Later stops proceed and clean up call state; error and step-limit stops do not request review.
+All four hosts check for notes in the current repository and supplied workspace roots before requesting review. Empty results proceed silently; a failed lookup preserves the review request.
 
-OpenCode sends one synthetic review prompt to the root session on `session.status` (idle) after user input. Review prompts and child sessions do not trigger another review. OpenCode V2 receives the continuation through `session.synthetic` with `resume: true`.
+On Claude Code and Codex, when notes exist, the Stop hook asks the agent to dispatch a forked subagent that loads `review-notes` and follows its instructions when relevant notes exist. The agent waits for the review and reports unresolved items. Stop continuations proceed without another review request. Codex clears session touch state on that continuation or an empty stop; Claude clears it at session end.
+
+Antigravity requests the same review once per conversation at an idle, successful model stop when notes exist. Empty stops preserve its review guard. Later stops proceed and clean up call state; error and step-limit stops do not request review.
+
+OpenCode sends one synthetic review prompt to the root session on `session.status` (idle) after user input when notes exist. Review prompts and child sessions do not trigger another review. OpenCode V2 receives the continuation through `session.synthetic` with `resume: true`.
 
 ## The enforcement backstop
 

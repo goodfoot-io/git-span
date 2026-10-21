@@ -210,9 +210,15 @@ describe('generated hook bin portability', () => {
         const comments = nodeModulesComments(directBundle);
         expect(comments).toContain('// node_modules/@goodfoot/agent-hooks/dist/core/logger.js');
         expect(comments.some((comment) => comment.includes(`/dist/agents/${agent}/`))).toBe(true);
-        expect(comments.every((comment) => comment.startsWith('// node_modules/@goodfoot/agent-hooks/dist/'))).toBe(
-          true
-        );
+        const acornComment = '// node_modules/acorn/dist/acorn.mjs';
+        expect(comments.includes(acornComment)).toBe(agent === 'codex');
+        expect(
+          comments.every(
+            (comment) =>
+              comment.startsWith('// node_modules/@goodfoot/agent-hooks/dist/') ||
+              (agent === 'codex' && comment === acornComment)
+          )
+        ).toBe(true);
       }
     } finally {
       rmSync(root, { recursive: true, force: true });

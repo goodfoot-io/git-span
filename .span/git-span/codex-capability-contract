@@ -1,10 +1,10 @@
 packages/agent-hooks/src/codex/apply-patch-plan.ts#L83-L83 rk64:01a7ce4754ccb24f
-packages/agent-hooks/src/codex/post-tool-use.ts#L203-L206 rk64:ad943375cb74ef57
-packages/agent-hooks/src/codex/post-tool-use.ts#L232-L234 rk64:76a079c9038818af
-packages/agent-hooks/src/codex/post-tool-use.ts#L244-L247 rk64:bc6900f99d0d35d3
+packages/agent-hooks/src/codex/post-tool-use.ts#L147-L150 rk64:d5e6336744c12773
+packages/agent-hooks/src/codex/post-tool-use.ts#L176-L178 rk64:76a079c9038818af
+packages/agent-hooks/src/codex/post-tool-use.ts#L188-L191 rk64:7d63b9052e9afc9f
 packages/agent-hooks/src/codex/session-start.ts#L8-L24 rk64:f882af79fd78d9f4
-packages/agent-hooks/src/codex/static-plan.ts#L81-L84 rk64:bc2913f357f6c805
-packages/agent-hooks/src/codex/stop.ts#L17-L49 rk64:b41f0ed916080b8e
+packages/agent-hooks/src/codex/static-plan.ts#L90-L93 rk64:bc2913f357f6c805
+packages/agent-hooks/src/codex/stop.ts#L17-L50 rk64:fbc4b4b3133257a4
 plugins-codex/git-span/.codex-plugin/plugin.json#L25-L27 rk64:aa3d9810de05ce17
 
-The maintained Codex runtime is authoritative for the published capabilities: supported shell and apply_patch calls receive pre-execution planning and post-tool inline span context, repository context warms at session start, and Stop requests session-note review before clearing session touch state on continuation.
+The maintained Codex runtime is authoritative for the published capabilities: supported shell and apply_patch calls receive pre-execution planning and post-tool inline span context, repository context warms at session start, and Stop requests review when notes exist before clearing session touch state on continuation; confirmed empty stops clean up without review.

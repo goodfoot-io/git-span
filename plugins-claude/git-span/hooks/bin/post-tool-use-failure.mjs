@@ -9779,11 +9779,15 @@ function observedCommitReceipts(observation, enrollment) {
 // packages/agent-hooks/src/common/commit-storage.ts
 import { createHash as createHash6, randomBytes } from "node:crypto";
 import {
+  closeSync as closeSync3,
+  constants as constants2,
   existsSync as existsSync6,
+  fstatSync as fstatSync2,
   linkSync,
   lstatSync,
   mkdirSync as mkdirSync5,
   opendirSync,
+  openSync as openSync3,
   readFileSync as readFileSync8,
   renameSync as renameSync4,
   rmSync as rmSync3,
@@ -9792,15 +9796,101 @@ import {
 } from "node:fs";
 import { dirname as dirname8, isAbsolute as isAbsolute7, join as join8 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+
+// packages/agent-hooks/src/common/receipt-lock.ts
+import { spawn as spawn2 } from "node:child_process";
+async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
+  const remaining = Math.min(3e4, Math.floor(deadline - performance.now()));
+  if (remaining <= 0) throw new Error("receipt lock acquisition deadline exhausted");
+  const args = ["__receipt-lock", "--directory", directory, "--key", key2, "--wait-ms", String(remaining)];
+  const command = executable ? { executable, argv: args } : resolveGitSpanCommand(args);
+  const child = spawn2(command.executable, command.argv, {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, GIT_SPAN_DISABLE_UPDATE_CHECK: "1" },
+    windowsHide: true
+  });
+  child.stdin.on("error", () => {
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr = (stderr + chunk.toString("utf8")).slice(0, 4096);
+  });
+  let spawnError;
+  child.on("error", (error) => {
+    spawnError = error;
+  });
+  const closed = new Promise((resolve7) => {
+    child.once("close", (code, signal) => resolve7({ code, signal }));
+  });
+  let released = false;
+  try {
+    await new Promise((resolve7, reject2) => {
+      let output = "";
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject2(new Error("receipt lock acquisition deadline exhausted"));
+      }, remaining);
+      child.stdout.on("data", (chunk) => {
+        output += chunk.toString("utf8");
+        if (output === "locked\n") {
+          clearTimeout(timer);
+          resolve7();
+        } else if (output.length >= 7) {
+          clearTimeout(timer);
+          child.kill("SIGKILL");
+          reject2(new Error("invalid receipt lock readiness response"));
+        }
+      });
+      void closed.then(() => {
+        clearTimeout(timer);
+        reject2(new Error(`receipt lock unavailable: ${spawnError?.message ?? (stderr.trim() || "helper exited")}`));
+      });
+    });
+  } catch (error) {
+    child.stdin.destroy();
+    child.kill("SIGKILL");
+    await closed;
+    throw error;
+  }
+  return {
+    async release() {
+      if (released) throw new Error("receipt lock already released");
+      released = true;
+      child.stdin.end();
+      const timer = setTimeout(() => child.kill("SIGKILL"), 1e3);
+      try {
+        const result = await closed;
+        if (result.code !== 0 || result.signal !== null || spawnError)
+          throw new Error(`receipt lock release failed: ${stderr.trim() || result.signal || String(result.code)}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  };
+}
+
+// packages/agent-hooks/src/common/commit-storage.ts
 function identityKey(identity) {
   return createHash6("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
 }
-function privateDirectory(path) {
+async function privateDirectory(path, deadline) {
   if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
+  if (performance.now() >= deadline) throw new Error("receipt directory phase deadline exhausted");
   mkdirSync5(path, { recursive: true, mode: 448 });
-  const stat = lstatSync(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 63) !== 0 || process.getuid && stat.uid !== process.getuid()) {
-    throw new Error("receipt directory is not private");
+  const owner = process.getuid?.();
+  const descriptor = owner === void 0 ? void 0 : openSync3(path, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+  try {
+    for (; ; ) {
+      const stat = descriptor === void 0 ? lstatSync(path) : fstatSync2(descriptor);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 63) !== 0)
+        throw new Error("receipt directory is not private");
+      if (owner === void 0 || stat.uid === owner) return;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new Error("receipt directory ownership unavailable within phase deadline");
+      await delay(Math.min(5, remaining));
+    }
+  } finally {
+    if (descriptor !== void 0) closeSync3(descriptor);
   }
 }
 function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {
@@ -9850,23 +9940,16 @@ function ownerRecord(value) {
   const { token, pid } = value;
   return typeof token === "string" && /^[a-zA-Z0-9_-]{1,256}$/.test(token) && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? { token, pid } : null;
 }
-async function acquireReceiptClaim(root, key2, deadline) {
+async function acquireReceiptClaim(root, key2, deadline, executable) {
   if (!/^[a-zA-Z0-9_-]+$/.test(key2)) throw new Error("invalid receipt claim key");
   const directory = join8(root, "claims");
-  privateDirectory(directory);
+  await privateDirectory(directory, deadline);
   const path = join8(directory, `${key2}.json`);
-  const guard = join8(directory, `${key2}.guard`);
   const owner = { token: randomBytes(16).toString("hex"), pid: process.pid };
   while (performance.now() < deadline) {
-    let guarded = false;
+    const lock = await acquireNativeReceiptLock(directory, key2, deadline, executable);
+    let retained = false;
     try {
-      try {
-        mkdirSync5(guard, { mode: 448 });
-        guarded = true;
-      } catch (error) {
-        if (errnoCode(error) !== "EEXIST") throw error;
-        return null;
-      }
       let prior = null;
       if (existsSync6(path)) {
         prior = ownerRecord(readJson(path, 4096));
@@ -9880,26 +9963,24 @@ async function acquireReceiptClaim(root, key2, deadline) {
       if (decision === "acquire" || decision === "recover") {
         if (prior !== null) unlinkSync(path);
         atomicJson(path, owner, true);
+        retained = true;
         return {
           owner,
-          release: () => {
-            let releaseGuard = false;
+          release: async () => {
             try {
-              mkdirSync5(guard, { mode: 448 });
-              releaseGuard = true;
               const current = ownerRecord(readJson(path, 4096));
               if (current?.token !== owner.token || current.pid !== owner.pid)
                 throw new Error("receipt claim ownership changed");
               unlinkSync(path);
             } finally {
-              if (releaseGuard) rmSync3(guard, { recursive: true });
+              await lock.release();
             }
           }
         };
       }
       if (decision === "refuse") return null;
     } finally {
-      if (guarded) rmSync3(guard, { recursive: true });
+      if (!retained) await lock.release();
     }
     await delay(Math.min(20, Math.max(0, deadline - performance.now())));
   }
@@ -9910,26 +9991,26 @@ function usageRecord(value) {
   const { invocations, totalBytes } = value;
   return typeof invocations === "number" && Number.isSafeInteger(invocations) && invocations >= 0 && typeof totalBytes === "number" && Number.isSafeInteger(totalBytes) && totalBytes >= 0 ? { invocations, totalBytes } : null;
 }
-async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline) {
-  const claim = await acquireReceiptClaim(root, "capacity", deadline);
-  if (!claim) return false;
+async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline, executable) {
+  const claim = await acquireReceiptClaim(root, "capacity", deadline, executable);
+  if (!claim) throw new Error("receipt capacity lock ownership unavailable");
   try {
     const path = join8(root, "usage.json");
     const usage = existsSync6(path) ? usageRecord(readJson(path, 4096)) : { invocations: 0, totalBytes: 0 };
-    if (usage === null) return false;
+    if (usage === null) throw new Error("invalid receipt capacity ledger");
     const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
     if (next.invocations < 0 || next.invocations > COMMIT_RECEIPT_LIMITS.invocations || next.totalBytes < 0 || next.totalBytes > COMMIT_RECEIPT_LIMITS.totalBytes)
       return false;
     atomicJson(path, next);
     return true;
   } finally {
-    claim.release();
+    await claim.release();
   }
 }
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 async function enrollCommitInvocation(request, options = {}, logger2) {
-  const inspected = inspectInput(request.toolInput);
+  const inspected = inspectInput(request.toolInput, request.command);
   if (!inspected.ok) {
     logger2?.warn(`git-span commit receipts: ${inspected.reason}`);
     return { kind: "unsupported", reason: inspected.reason };
@@ -9940,9 +10021,9 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
   const directory = join9(root, "invocations", key2);
   const deadline = performance.now() + COMMIT_RECEIPT_LIMITS.drainMs;
   try {
-    privateDirectory(root);
-    privateDirectory(join9(root, "invocations"));
-    const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline);
+    await privateDirectory(root, deadline);
+    await privateDirectory(join9(root, "invocations"), deadline);
+    const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline, options.lockExecutable);
     if (!claim) throw new Error("invocation enrollment ownership unavailable");
     try {
       const enrollmentPath = join9(directory, "enrollment.json");
@@ -9975,7 +10056,26 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
       };
       const valid = validateCommitEnrollment(enrollment);
       if (!valid.ok) throw new Error(valid.reason);
+      const commands = request.additionalCommands ?? [];
+      if (commands.length > 31) throw new Error("too many shell commands in one invocation");
       const observations = checkpointCommitInvocation(valid.value, deadline);
+      const observed = new Set(observations.map((item) => item.repository.headReflog));
+      for (const context of commands) {
+        const inspectedContext = inspectInput(request.toolInput, context.command);
+        if (!inspectedContext.ok) throw new Error(inspectedContext.reason);
+        if (!lstatSync2(realpathSync3(context.cwd)).isDirectory())
+          throw new Error("effective shell cwd must be a directory");
+        for (const observation of checkpointCommitInvocation(
+          { ...valid.value, originalCommand: inspectedContext.value, cwd: context.cwd },
+          deadline
+        )) {
+          if (!observed.has(observation.repository.headReflog)) {
+            observed.add(observation.repository.headReflog);
+            observations.push(observation);
+            if (observations.length > 32) throw new Error("repository observation count exceeds budget");
+          }
+        }
+      }
       const state = {
         enrollment: valid.value,
         status: "active",
@@ -9993,7 +10093,8 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
         observing: false,
         lastActivityMs: Number.MAX_SAFE_INTEGER
       };
-      const serializedBytes = [valid.value, observations, maximumState].map(
+      const executionContexts = [{ command, cwd: request.cwd }, ...commands];
+      const serializedBytes = [valid.value, observations, maximumState, executionContexts].map(
         (value) => Buffer.byteLength(JSON.stringify(value))
       );
       const initialBytes = serializedBytes.reduce((sum, bytes) => sum + bytes, 0) + 32768;
@@ -10002,23 +10103,24 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
         logger2?.warn(`git-span commit receipts: ${reason}`);
         return { kind: "unsupported", reason };
       }
-      if (initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 1, initialBytes, deadline))
+      if (initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 1, initialBytes, deadline, options.lockExecutable))
         throw new Error("private receipt state capacity exceeded");
       try {
-        privateDirectory(directory);
-        privateDirectory(join9(directory, "receipts"));
+        await privateDirectory(directory, deadline);
+        await privateDirectory(join9(directory, "receipts"), deadline);
         atomicJson(enrollmentPath, valid.value, true);
         atomicJson(join9(directory, "state.json"), state);
         atomicJson(join9(directory, "usage.json"), { bytes: initialBytes, receipts: 0 });
         atomicJson(join9(directory, "observations.json"), observations, true);
+        if (commands.length > 0) atomicJson(join9(directory, "commands.json"), executionContexts, true);
       } catch (error) {
-        await reserveReceiptCapacity(root, -1, -initialBytes, deadline);
+        await reserveReceiptCapacity(root, -1, -initialBytes, deadline, options.lockExecutable);
         rmSync4(directory, { recursive: true, force: true });
         throw error;
       }
       return { kind: "enrolled", enrollment: valid.value };
     } finally {
-      claim.release();
+      await claim.release();
     }
   } catch (error) {
     const reason = errorMessage2(error);
@@ -10037,12 +10139,18 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
     if (!valid.ok) throw new Error(valid.reason);
     const original = restoreCommitInvocation(valid.value, identity);
     if (!original.ok) throw new Error(original.reason);
-    const restored = { ...result, original: original.value };
+    const contextsPath = join9(directory, "commands.json");
+    const executions = existsSync7(contextsPath) ? readExecutionContexts(readJson(contextsPath)) : void 0;
+    const restored = {
+      ...result,
+      original: { ...original.value, ...executions === void 0 ? {} : { executions } }
+    };
     result = restored;
     const claim = await acquireReceiptClaim(
       root,
       `invocation-${identityKey(identity)}`,
-      started + COMMIT_RECEIPT_LIMITS.drainMs
+      started + COMMIT_RECEIPT_LIMITS.drainMs,
+      options.lockExecutable
     );
     if (!claim) {
       logger2?.warn("git-span commit receipts: invocation drain ownership unavailable");
@@ -10060,7 +10168,13 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
                 throw new Error("commit observation deadline exhausted");
               const object = verifyCommitObject(valid.value.gitExecutable, receipt.repository, receipt.sha);
               if (!object.ok) throw new Error(object.reason);
-              await publishReceipt(root, directory, receipt, started + COMMIT_RECEIPT_LIMITS.drainMs);
+              await publishReceipt(
+                root,
+                directory,
+                receipt,
+                started + COMMIT_RECEIPT_LIMITS.drainMs,
+                options.lockExecutable
+              );
             }
           } catch (error) {
             logger2?.warn(`git-span commit observation: ${errorMessage2(error)}`);
@@ -10076,7 +10190,7 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
       const drained = await drainDirectory(root, directory, valid.value, options, started, logger2);
       return { ...restored, ...drained };
     } finally {
-      claim.release();
+      await claim.release();
     }
   } catch (error) {
     logger2?.warn(`git-span commit receipts: ${errorMessage2(error)}`);
@@ -10089,8 +10203,17 @@ function receiptRoot(options) {
 function errorMessage2(error) {
   return (error instanceof Error ? error.message : String(error)).slice(0, 512);
 }
-function inspectInput(input) {
-  const command = input.command;
+function readExecutionContexts(value) {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 32)
+    throw new Error("invalid shell execution contexts");
+  return value.map((item) => {
+    if (!isRecord(item) || typeof item.command !== "string" || !item.command || typeof item.cwd !== "string" || !item.cwd)
+      throw new Error("invalid shell execution context");
+    return { command: item.command, cwd: item.cwd };
+  });
+}
+function inspectInput(input, normalizedCommand) {
+  const command = normalizedCommand ?? input.command;
   if (typeof command !== "string" || command.length === 0) return { ok: false, reason: "unsupported shell input" };
   const reason = unsupportedCommandReason(input, command);
   return reason === null ? { ok: true, value: command } : { ok: false, reason };
@@ -10122,7 +10245,7 @@ function readUsage(directory) {
     throw new Error("invalid invocation usage");
   return { bytes: usage.bytes, receipts: usage.receipts };
 }
-async function publishReceipt(root, directory, receipt, deadline) {
+async function publishReceipt(root, directory, receipt, deadline, executable) {
   const enrollment = validateCommitEnrollment(readJson(join9(directory, "enrollment.json")));
   if (!enrollment.ok) throw new Error(enrollment.reason);
   if (existsSync7(join9(directory, "receipts", `${receipt.nonce}.json`))) return;
@@ -10130,7 +10253,7 @@ async function publishReceipt(root, directory, receipt, deadline) {
   if (state.status !== "active") throw new Error("receipt invocation is no longer active");
   const usage = readUsage(directory);
   const bytes = Buffer.byteLength(JSON.stringify(receipt));
-  if (usage.receipts >= COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || usage.bytes + bytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 0, bytes, deadline))
+  if (usage.receipts >= COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || usage.bytes + bytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 0, bytes, deadline, executable))
     throw new Error("receipt capacity exceeded");
   atomicJson(join9(directory, "usage.json"), { bytes: usage.bytes + bytes, receipts: usage.receipts + 1 });
   atomicJson(join9(directory, "receipts", `${receipt.nonce}.json`), receipt, true);
@@ -10158,7 +10281,8 @@ async function drainDirectory(root, directory, enrollment, options, started, log
       const association = await acquireReceiptClaim(
         root,
         `association-${commitAssociationKey(valid.value, document)}`,
-        deadline
+        deadline,
+        options.lockExecutable
       );
       if (!association) throw new Error("commit association ownership unavailable");
       try {
@@ -10197,10 +10321,10 @@ async function drainDirectory(root, directory, enrollment, options, started, log
           bytes: usage.bytes - bytes,
           receipts: Math.max(0, usage.receipts - 1)
         });
-        await reserveReceiptCapacity(root, 0, -bytes, deadline);
+        await reserveReceiptCapacity(root, 0, -bytes, deadline, options.lockExecutable);
         acknowledged++;
       } finally {
-        association.release();
+        await association.release();
       }
     } catch (error) {
       logger2?.warn(`git-span commit receipts: ${errorMessage2(error)}`);
