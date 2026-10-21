@@ -1,5 +1,6 @@
 /** Native Codex shell envelopes must create notes through the emitted hook boundary. */
 import { execFileSync, spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -194,6 +195,40 @@ describe('Codex native exec commit note creation', () => {
       post(repo, completion, { output: '', exit_code: 0, wall_time_seconds: 0.1 });
       expect(notes(repo)).toHaveLength(1);
       post(repo, completion, { output: '', exit_code: 0, wall_time_seconds: 0.1 });
+      expect(notes(repo)).toHaveLength(1);
+    } finally {
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
+  });
+
+  it('degrades a yielded execution poll to a missing note once its invocation directory is evicted', async () => {
+    const repo = fixture();
+    const command = 'read -r ready; git commit -q --allow-empty -m evicted-yield';
+    const input = envelope(repo, 'exec_command', { cmd: command, workdir: repo.root, yield_time_ms: 1000 });
+    prepare(repo, input);
+    const child = spawn('bash', ['-c', command], { cwd: repo.root, env: repo.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const finished = new Promise<number | null>((resolve, reject) => {
+      child.once('exit', resolve);
+      child.once('error', reject);
+    });
+    try {
+      post(repo, input, { output: '', session_id: 912, wall_time_seconds: 1 });
+      // Window eviction removes the whole invocation directory, including its exec-session mapping.
+      rmSync(join(repo.home, '.cache', 'git-span', 'commit-receipts', 'invocations'), { recursive: true });
+      child.stdin.end('continue\n');
+      expect(await finished).toBe(0);
+      const completion = envelope(repo, 'write_stdin', { session_id: 912, chars: '' }, 'evicted-poll');
+      expect(() => post(repo, completion, { output: '', exit_code: 0, wall_time_seconds: 0.1 })).not.toThrow();
+      expect(notes(repo)).toHaveLength(0);
+      const later = envelope(
+        repo,
+        'exec_command',
+        { cmd: 'git commit -q --allow-empty -m later', workdir: repo.root },
+        'later'
+      );
+      prepare(repo, later);
+      expect(runRealShell(repo, 'git commit -q --allow-empty -m later').exitCode).toBe(0);
+      post(repo, later, { output: '', exit_code: 0 });
       expect(notes(repo)).toHaveLength(1);
     } finally {
       if (child.exitCode === null) child.kill('SIGKILL');

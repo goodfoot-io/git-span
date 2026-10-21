@@ -1,6 +1,7 @@
 /** Real Git exercises observation, overlapping windows, durable notes and lifecycle retries. */
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -362,5 +363,77 @@ describe('commit observation without command modification', () => {
     const result = await executeCommitNotes(script, { cwd: repo, argv: [], timeoutMs: 1000, maxOutputBytes: 4096 });
     expect(result).toMatchObject({ exitCode: 0, timedOut: false });
     expect(result.stdout).toBe(encoded);
+  });
+});
+
+describe('windowed receipt store', () => {
+  /** Finished entries cloned from a real enrollment; ordering is carried by lastActivityMs. */
+  async function seedInvocations(count: number, status: 'retired' | 'acknowledged' | 'active', offset = 0) {
+    const template = request('printf seed', { cwd: scratch, toolUseId: `template-${status}-${offset}` });
+    await enroll(template);
+    await terminal(template);
+    const source = directory(template);
+    const invocations = join(options.stateRoot as string, 'invocations');
+    const names: string[] = [];
+    for (let index = 0; index < count; index++) {
+      const name = `${status}-${String(offset + index).padStart(5, '0')}`;
+      cpSync(source, join(invocations, name), { recursive: true });
+      const statePath = join(invocations, name, 'state.json');
+      const state = JSON.parse(readFileSync(statePath, 'utf8'));
+      writeFileSync(
+        statePath,
+        JSON.stringify({
+          ...state,
+          status,
+          observing: status === 'active',
+          lastActivityMs: status === 'active' ? Date.now() : offset + index + 1
+        })
+      );
+      names.push(name);
+    }
+    rmSync(source, { recursive: true });
+    return names;
+  }
+  function invocationNames() {
+    return readdirSync(join(options.stateRoot as string, 'invocations'));
+  }
+
+  it('attributes a commit when the retired global ledger reads full', async () => {
+    mkdirSync(options.stateRoot as string, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(options.stateRoot as string, 'usage.json'),
+      JSON.stringify({ invocations: 655, totalBytes: 67_036_036 }),
+      { mode: 0o600 }
+    );
+    const input = request('git commit -q --allow-empty -m after-ledger-full');
+    await enroll(input);
+    expect(shell(input).status).toBe(0);
+    expect(await terminal(input)).toMatchObject({ acknowledged: 1, pending: 0 });
+    expect(notes().notes).toHaveLength(1);
+  });
+
+  it('evicts the oldest finished entries in a batch and never the entry being enrolled', async () => {
+    const retired = await seedInvocations(400, 'retired');
+    const acknowledged = await seedInvocations(300, 'acknowledged', 400);
+    const active = await seedInvocations(2, 'active', 700);
+    const input = request('git commit -q --allow-empty -m windowed');
+    await enroll(input);
+    const names = invocationNames();
+    expect(names.length).toBeLessThanOrEqual(512);
+    expect(names.length).toBeGreaterThan(300);
+    expect(names).toContain(identityKey(input));
+    expect(names.filter((name) => name.startsWith('.'))).toEqual([]);
+    for (const name of active) expect(names).toContain(name);
+    expect(names).not.toContain(retired[0]);
+    expect(names).toContain(acknowledged[acknowledged.length - 1]);
+    expect(shell(input).status).toBe(0);
+    expect(await terminal(input)).toMatchObject({ acknowledged: 1, pending: 0 });
+    expect(notes().notes).toHaveLength(1);
+  });
+
+  it('does not scan or evict while the store is within its window', async () => {
+    const seeded = await seedInvocations(10, 'retired');
+    await enroll(request('printf ok'));
+    expect(invocationNames()).toEqual(expect.arrayContaining(seeded));
   });
 });

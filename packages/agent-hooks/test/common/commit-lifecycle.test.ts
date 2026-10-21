@@ -21,6 +21,18 @@ const owner = { token: 'owner-1234567890abcdef', pid: 1000 };
 const emptyUsage = { invocations: 0, totalBytes: 0, invocationReceipts: 0, invocationBytes: 0 };
 
 describe('independent invocation lifecycle', () => {
+  it('keeps the newest receipts when an invocation reaches its receipt window', () => {
+    const full: CommitInvocationState = {
+      ...active,
+      pendingNonces: Array.from({ length: COMMIT_RECEIPT_LIMITS.receiptsPerInvocation }, (_, index) => `old-${index}`)
+    };
+    const result = transitionCommitInvocation(full, { kind: 'receipt', receipt, nowMs: 1 });
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    expect(result.value.pendingNonces).toHaveLength(COMMIT_RECEIPT_LIMITS.receiptsPerInvocation);
+    expect(result.value.pendingNonces[0]).toBe('old-1');
+    expect(result.value.pendingNonces.at(-1)).toBe(nonce);
+  });
   it('publishes a receipt without completing active yielded execution', () => {
     expect(transitionCommitInvocation(active, { kind: 'receipt', receipt, nowMs: 1 })).toMatchObject({
       ok: true,
