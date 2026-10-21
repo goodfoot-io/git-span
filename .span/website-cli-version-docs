@@ -1,4 +1,4 @@
-packages/git-span/package.json#L1-L4 rk64:2e40bb09c71d9fc7
-packages/website/content/docs/getting-started.mdx#L14-L25 rk64:90aa8e0bfdc5d658
+packages/git-span/package.json#L1-L4 rk64:e274174491efb2c2
+packages/website/content/docs/getting-started.mdx#L14-L25 rk64:d0b5df3a52b37339
 
 The CLI package version is authoritative, and the getting-started verification example prints that released version; scripts/sync-versions.sh rewrites the printed line during yarn bump, so a mismatch means the docs step was skipped or edited by hand.

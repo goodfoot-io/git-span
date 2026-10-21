@@ -23,6 +23,7 @@ const ENTRY_MODULES = [
   '../../src/claude/post-tool-use.js',
   '../../src/claude/post-tool-use-failure.js',
   '../../src/claude/session-end.js',
+  '../../src/claude/stop.js',
   '../../src/codex/session-start.js',
   '../../src/codex/static-plan.js',
   '../../src/codex/apply-patch-plan.js',

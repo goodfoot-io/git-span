@@ -1,13 +1,12 @@
 {
   "name": "opencode-git-span",
-  "version": "1.1.32",
+  "version": "1.1.33",
   "description": "In-session git-span for OpenCode: silent span-drift healing behind shell/read/edit/write/patch calls, and an installer for the git-span skills and expert agent.",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.mjs",
+  "main": "./dist/index/index.js",
   "exports": {
-    ".": "./dist/index.mjs",
-    "./server": "./dist/index.mjs"
+    ".": "./dist/index/index.js"
   },
   "bin": {
     "opencode-git-span": "bin/opencode-git-span.mjs"

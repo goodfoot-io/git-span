@@ -20,15 +20,14 @@ yourself to work while they run.
 
 ## Spawn
 
-Spawn each worker with the `task` tool, setting `subagent_type` to `general`, its unit
-in the `prompt`:
+Dispatch each worker with `subagent`. Include this prompt with its unit:
 
-```json
-{
-  "description": "Reconcile worker <i>",
-  "subagent_type": "general",
-  "prompt": "Read [absolute path to ./procedure.md] and run its stage 3 on the unit below. Only stage 3 — do not run stages 1, 2, or 4, and never commit.\n\nUnit: <spans; every drifted anchor as path, range, CHANGED/DELETED; each span's why; shared files; non-drifted context spans; range-overlap flags>\n\nReport per span: classification, action taken, the decisive nonlocal fact, every anchor diff (retired and added addresses), and elapsed time. Flag any span you stopped on and why."
-}
+```text
+Read [absolute path to ./procedure.md] and run stage 3 only. Never commit.
+Unit: <spans; drifted anchors with path, range and status; whys; shared files;
+non-drifted context spans; range-overlap flags>
+Report classifications, actions, decisive nonlocal facts, retired and added
+anchors, elapsed time, and blockers. Use the returned sessionID for follow-ups.
 ```
 
 Units must be disjoint and must never separate spans with overlapping ranges on

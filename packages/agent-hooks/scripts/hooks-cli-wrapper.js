@@ -14,8 +14,8 @@
  * authoring stays milliseconds across all adapters.
  *
  * `--agent opencode` emits no manifest at all: `-o` names an artifact
- * *directory* the CLI fills with one self-contained `<entry>.mjs` per plugin
- * entry, so the wrapper returns before the manifest-rewrite steps (which
+ * *directory* the CLI fills with one `<entry>/` package containing `package.json`
+ * and a self-contained `index.js`, so the wrapper returns before the manifest-rewrite steps (which
  * read `-o` as a JSON file and would fail on EISDIR). `--agent antigravity`
  * emits its manifest at the plugin root (`-o` is the root `hooks.json`,
  * bundles in `bin/` beside it -- a Claude-style `hooks/hooks.json` layout is

@@ -136,7 +136,11 @@ describe('generated hook bin portability', () => {
       'plugins-opencode/git-span/dist'
     ]) {
       const files = allPaths(join(WORKSPACE_ROOT, relative)).filter(
-        (path) => path.endsWith('.mjs') || path.endsWith('hooks.json') || path.endsWith('hooks.meta.json')
+        (path) =>
+          path.endsWith('.mjs') ||
+          path.endsWith('.js') ||
+          path.endsWith('hooks.json') ||
+          path.endsWith('hooks.meta.json')
       );
       expect(files.length).toBeGreaterThan(0);
       for (const path of files) {
@@ -345,7 +349,7 @@ describe('generated hook bin portability', () => {
           '--agent',
           'claude-code',
           '-i',
-          'src/claude/{session-start,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
+          'src/claude/{session-start,static-plan,post-tool-use,post-tool-use-failure,stop,session-end}.ts',
           '-o',
           join(outDir, 'hooks.json')
         ],
@@ -357,6 +361,7 @@ describe('generated hook bin portability', () => {
         'PreToolUse',
         'PostToolUse',
         'PostToolUseFailure',
+        'Stop',
         'SessionEnd'
       ]);
       expect(groupFor(out, 'SessionStart', 'session-start.mjs')).not.toBeNull();
@@ -368,7 +373,8 @@ describe('generated hook bin portability', () => {
         'post-tool-use.mjs',
         'session-end.mjs',
         'session-start.mjs',
-        'static-plan.mjs'
+        'static-plan.mjs',
+        'stop.mjs'
       ]);
       const expected: [string, string, string][] = [
         ['PreToolUse', 'static-plan.mjs', CLAUDE_STATIC_PLAN_PRE_MATCHER],
@@ -392,7 +398,8 @@ describe('generated hook bin portability', () => {
         ['PreToolUse', 'static-plan.mjs', 10],
         ['PostToolUse', 'post-tool-use.mjs', 15],
         ['PostToolUseFailure', 'post-tool-use-failure.mjs', 15],
-        ['SessionEnd', 'session-end.mjs', 10]
+        ['SessionEnd', 'session-end.mjs', 10],
+        ['Stop', 'stop.mjs', 10]
       ] as const) {
         expect(groupFor(out, event, bundle)?.hooks[0]?.timeout, `${event} ${bundle} timeout`).toBe(timeout);
       }
@@ -781,7 +788,8 @@ describe('mandatory installed-artifact static attribution smoke', () => {
       'post-tool-use.mjs',
       'session-end.mjs',
       'session-start.mjs',
-      'static-plan.mjs'
+      'static-plan.mjs',
+      'stop.mjs'
     ]);
     expect(emittedBundleNames(bundles.codexHooksDir)).toEqual([
       'apply-patch-plan.mjs',

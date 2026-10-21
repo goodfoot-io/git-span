@@ -526,14 +526,22 @@ function classify(error, phase, policy, onUnexpectedError) {
 }
 function writeStream(stream, content) {
   return new Promise((resolve7, reject2) => {
-    stream.write(content, (error) => error ? reject2(error) : resolve7());
+    stream.write(content, (error) => {
+      if (error)
+        reject2(error);
+      else
+        resolve7();
+    });
   });
 }
 async function writeUnexpectedErrorStderr(error) {
-  const content = error instanceof Error ? `${error.stack ?? error.message}
-` : `${String(error)}
-`;
-  await writeStream(process.stderr, content);
+  if (error instanceof Error) {
+    await writeStream(process.stderr, `${error.stack ?? error.message}
+`);
+  } else {
+    await writeStream(process.stderr, `${String(error)}
+`);
+  }
 }
 function cleanupQuietly() {
   try {
@@ -739,7 +747,7 @@ function createCodexTransport() {
 }
 async function execute(hookFn) {
   const eventName = hookFn.hookEventName;
-  const composed = (input, context) => {
+  const composed = ((input, context) => {
     const result = hookFn(input, context);
     const normalize = (value) => {
       if (typeof value === "string") {
@@ -748,7 +756,7 @@ async function execute(hookFn) {
       return value;
     };
     return result instanceof Promise ? result.then(normalize) : normalize(result);
-  };
+  });
   composed.eventName = hookFn.eventName ?? eventName;
   composed.matcher = hookFn.matcher;
   composed.timeout = hookFn.timeout;
@@ -896,6 +904,7 @@ function isGitIgnored(repoRoot, repoRelPath) {
     });
     return true;
   } catch (err) {
+    void err;
     return false;
   }
 }
@@ -1005,9 +1014,11 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
           fs.rmSync(trashPath, { recursive: true, force: true });
         }
       } catch (err) {
+        void err;
       }
     }
   } catch (err) {
+    void err;
   }
   let entries;
   try {
@@ -1034,6 +1045,7 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
         fs.utimesSync(trashPath, now / 1e3, now / 1e3);
       }
     } catch (err) {
+      void err;
     }
   }
 }
@@ -4040,6 +4052,7 @@ function parseCommandDetailed(command, opts = {}) {
   const cwd = typeof opts === "string" ? opts : opts.cwd ?? process.cwd();
   const { writes: heredocWrites, masked } = extractHeredocWrites(command);
   const { stages: simpleCommands, malformed } = splitTopLevel(masked);
+  void malformed;
   const results = [];
   const fsLineCache = /* @__PURE__ */ new Map();
   const gitLineCache = /* @__PURE__ */ new Map();
@@ -7150,6 +7163,7 @@ function changedOnDisk(cache, cwd) {
           changed.add(join5(repoRoot, entry.slice(3)));
         }
       } catch (err) {
+        void err;
       }
     }
   }

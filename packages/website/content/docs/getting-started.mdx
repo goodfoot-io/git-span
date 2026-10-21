@@ -18,7 +18,7 @@ git span --version
 ```
 
 ```txt
-git-span 1.1.32
+git-span 1.1.33
 ```
 
 <Callout type="info">
@@ -43,7 +43,7 @@ claude plugin install git-span@git-span
 ```
 </Callout>
 
-This wires the workflow hooks, four skills (`git-span`, `cover-commits`, `reconcile`, and `hook-effect-analysis`), and an expert subagent — see [Agent integration](/docs/agent-integration) for what each piece does.
+This wires the workflow hooks, five skills (`git-span`, `cover-commits`, `review-notes`, `reconcile`, and `hook-effect-analysis`), and an expert subagent — see [Agent integration](/docs/agent-integration) for what each piece does.
 
 ## Install the Codex plugin
 
@@ -72,7 +72,7 @@ Add the npm package to the `plugin` array in your OpenCode config (`opencode.jso
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-git-span"]
+  "plugins": ["opencode-git-span"]
 }
 ```
 
@@ -84,7 +84,7 @@ npx opencode-git-span install
 
 Use `npx opencode-git-span install --global` instead to install the skills and expert agent under `$XDG_CONFIG_HOME/opencode` (or `~/.config/opencode`). Re-run the installer after upgrading the npm package.
 
-This wires the touch hook, four skills (`git-span`, `cover-commits`, `reconcile`, and `hook-effect-analysis`), and an expert subagent — see [Agent integration](/docs/agent-integration) for what each piece does.
+This wires the touch hook, five skills (`git-span`, `cover-commits`, `review-notes`, `reconcile`, and `hook-effect-analysis`), and an expert subagent — see [Agent integration](/docs/agent-integration) for what each piece does.
 
 ## Install the Antigravity plugin
 
@@ -101,7 +101,7 @@ Or install the plugin directory directly from GitHub:
 agy plugin install https://github.com/goodfoot-io/git-span.git/plugins-antigravity/git-span
 ```
 
-Antigravity has no marketplace or separate hook-trust prompt. The plugin installs four skills and the workflow hooks; it does not install an expert subagent. Re-run the install after upgrading to refresh the installed copy under `~/.gemini/config/plugins/git-span/`.
+Antigravity has no marketplace or separate hook-trust prompt. The plugin installs five skills and the workflow hooks; it does not install an expert subagent. Re-run the install after upgrading to refresh the installed copy under `~/.gemini/config/plugins/git-span/`.
 
 ## Verify
 

@@ -1,5 +1,5 @@
 packages/agent-hooks/test/antigravity/skill-tree-vocabulary.test.ts rk64:e97c516ab364731d
-packages/agent-hooks/test/opencode/skill-tree-vocabulary.test.ts rk64:bd5910fe2053aa00
+packages/agent-hooks/test/opencode/skill-tree-vocabulary.test.ts rk64:7bb2e877ad5b6c7b
 plugins-antigravity/git-span/skills/git-span/SKILL.md#L23-L30 rk64:0dd93ac4afa88ca7
 plugins-antigravity/git-span/skills/git-span/SKILL.md#L51-L54 rk64:208d10a605282398
 plugins-antigravity/git-span/skills/git-span/references/ci-and-sync.md rk64:89184562319a6de4
@@ -32,18 +32,18 @@ plugins-codex/git-span/skills/reconcile/SKILL.md rk64:696c6779ce00d50d
 plugins-opencode/git-span/agents/expert.md rk64:c1f0a3155790dfdc
 plugins-opencode/git-span/skills/git-span/SKILL.md#L23-L30 rk64:26aa73ae181a11bd
 plugins-opencode/git-span/skills/git-span/SKILL.md#L51-L54 rk64:208d10a605282398
-plugins-opencode/git-span/skills/git-span/references/ci-and-sync.md rk64:95c9d451d77f1d25
-plugins-opencode/git-span/skills/git-span/references/finding-span-candidates.md rk64:458e98bdef9d87c2
+plugins-opencode/git-span/skills/git-span/references/ci-and-sync.md rk64:a9123d82057a4979
+plugins-opencode/git-span/skills/git-span/references/finding-span-candidates.md rk64:680be43ab10a7596
 plugins-opencode/git-span/skills/git-span/references/hookignore.md rk64:0f8bc8c5a88fb76b
 plugins-opencode/git-span/skills/git-span/references/triage.md rk64:d2c9df5be0f0521e
 plugins-opencode/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:b17ce2fa658af7ce
-plugins-opencode/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:4f26765042bdc567
-plugins-opencode/git-span/skills/reconcile/SKILL.md rk64:8df460d92ddd9ecd
-scripts/agent-skills-plugins.json rk64:10c035d4800adb89
+plugins-opencode/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:40f27834ca7d0b6b
+plugins-opencode/git-span/skills/reconcile/SKILL.md rk64:032d7bf6b1ce3221
+scripts/agent-skills-plugins.json rk64:0a8aee0f985a85fb
 skills-src/git-span/git-span/SKILL.md.eta rk64:73216010b3832149
 skills-src/git-span/git-span/references/finding-span-candidates.md.eta rk64:826e9801d37bde41
 skills-src/git-span/git-span/references/hookignore.md.eta rk64:534d217ccc81e892
-skills-src/git-span/git-span/references/why-cleanup-campaign.md.eta rk64:a726f4b6e84fa2e2
-skills-src/git-span/reconcile/references/team.md.eta rk64:ab0e2562e87fc70e
+skills-src/git-span/git-span/references/why-cleanup-campaign.md.eta rk64:c6d23bb567185222
+skills-src/git-span/reconcile/references/team.md.eta rk64:2820b91326bdeab9
 
 All four plugin skill trees — Claude, Codex, OpenCode, and Antigravity — are rendered from the shared template tree skills-src/git-span by scripts/build-agent-skills.mjs, so the expert, triage, whole-file-anchor, and reconcile guidance and the core skill's never-narrow gotcha bullet land identically on every tree from a single template edit. Deliberately per-platform — expressed as it.variant branches in the anchored templates, never hand edits to the rendered trees — are the harness dispatch/vocabulary sections: the reconcile team spawn syntax (team.md's Antigravity branch dispatches by prose, having no pinned subagent tool name), understanding-hook-output's channel semantics, the core skill's hook-vocabulary items (the Same-commit workflow event names and the Where-to-go-next install pointer), hookignore's event names, the cleanup campaign's worker dispatch, and the candidate finder's installed-skill script paths — plus the install flow in install-and-trust.md, whose per-platform bodies describe the Codex marketplace/trust flow, the OpenCode npm plugin array and npx installer, and the Antigravity agy plugin install into ~/.gemini/config/plugins. Host-facing terms themselves (tool names and skill-dispatch syntax via it.skillRef) come from the one glossary in scripts/agent-skills-vocabulary.mjs, written into opting-in templates as a generated region by scripts/sync-skill-vocabulary.mjs (--check gated in validate.sh and the release workflow). The expert is the one surface still forked by hand: agents/expert.md lives outside skills-src on the Claude, Codex, and OpenCode trees only — Antigravity ships no expert agent. Standing vitest controls (packages/agent-hooks test/opencode/skill-tree-vocabulary.test.ts and test/antigravity/skill-tree-vocabulary.test.ts) grep the opencode and antigravity skill trees for foreign-host vocabulary outside these sanctioned spots.

@@ -4,7 +4,7 @@ packages/agent-hooks/src/codex/post-tool-use.ts#L232-L234 rk64:76a079c9038818af
 packages/agent-hooks/src/codex/post-tool-use.ts#L244-L247 rk64:bc6900f99d0d35d3
 packages/agent-hooks/src/codex/session-start.ts#L8-L24 rk64:f882af79fd78d9f4
 packages/agent-hooks/src/codex/static-plan.ts#L81-L84 rk64:bc2913f357f6c805
-packages/agent-hooks/src/codex/stop.ts#L16-L45 rk64:09451b82d9781846
-plugins-codex/git-span/.codex-plugin/plugin.json#L25-L27 rk64:db1367263f57182f
+packages/agent-hooks/src/codex/stop.ts#L17-L49 rk64:b41f0ed916080b8e
+plugins-codex/git-span/.codex-plugin/plugin.json#L25-L27 rk64:aa3d9810de05ce17
 
-The maintained Codex runtime is authoritative for the published capabilities: supported shell and apply_patch calls receive pre-execution planning and post-tool inline span context, repository context warms at session start, and session touch state is cleared at stop.
+The maintained Codex runtime is authoritative for the published capabilities: supported shell and apply_patch calls receive pre-execution planning and post-tool inline span context, repository context warms at session start, and Stop requests session-note review before clearing session touch state on continuation.

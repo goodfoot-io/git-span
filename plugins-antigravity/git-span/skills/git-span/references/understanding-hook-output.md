@@ -146,8 +146,10 @@ verification evidence; it never contains a file body or repository tree.
 `PostToolUse` atomically consumes the record once, verifies the evidence,
 reparses ordinary operations, and applies shell join and post-state gates before
 touching a span. Success, failure, interruption, and duplicate delivery cannot
-reuse a plan. Under Antigravity, `Stop` prunes the session's call-scoped
-plans and stashes; the surfaced-span memo is deliberately left to its TTL
+reuse a plan. Under Antigravity, an idle, successful model `Stop` requests
+a forked subagent using `review-notes` once per
+conversation. Later stops prune the session's call-scoped plans and stashes;
+error and step-limit stops do not request review. The surfaced-span memo is deliberately left to its TTL
 sweep (pruning it at a turn boundary would make identical spans re-inject
 every turn), and opportunistic 30-day cleanup covers crashed sessions.
 

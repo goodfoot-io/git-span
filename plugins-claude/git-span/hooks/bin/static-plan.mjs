@@ -593,14 +593,22 @@ function classify(error, phase, policy, onUnexpectedError) {
 }
 function writeStream(stream, content) {
   return new Promise((resolve7, reject2) => {
-    stream.write(content, (error) => error ? reject2(error) : resolve7());
+    stream.write(content, (error) => {
+      if (error)
+        reject2(error);
+      else
+        resolve7();
+    });
   });
 }
 async function writeUnexpectedErrorStderr(error) {
-  const content = error instanceof Error ? `${error.stack ?? error.message}
-` : `${String(error)}
-`;
-  await writeStream(process.stderr, content);
+  if (error instanceof Error) {
+    await writeStream(process.stderr, `${error.stack ?? error.message}
+`);
+  } else {
+    await writeStream(process.stderr, `${String(error)}
+`);
+  }
 }
 function cleanupQuietly() {
   try {
@@ -964,9 +972,11 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
           fs2.rmSync(trashPath, { recursive: true, force: true });
         }
       } catch (err) {
+        void err;
       }
     }
   } catch (err) {
+    void err;
   }
   let entries;
   try {
@@ -993,6 +1003,7 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
         fs2.utimesSync(trashPath, now / 1e3, now / 1e3);
       }
     } catch (err) {
+      void err;
     }
   }
 }
@@ -3922,6 +3933,7 @@ function parseCommandDetailed(command, opts = {}) {
   const cwd = typeof opts === "string" ? opts : opts.cwd ?? process.cwd();
   const { writes: heredocWrites, masked } = extractHeredocWrites(command);
   const { stages: simpleCommands, malformed } = splitTopLevel(masked);
+  void malformed;
   const results = [];
   const fsLineCache = /* @__PURE__ */ new Map();
   const gitLineCache = /* @__PURE__ */ new Map();

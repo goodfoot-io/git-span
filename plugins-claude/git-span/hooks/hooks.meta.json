@@ -4,6 +4,7 @@
     "post-tool-use.mjs",
     "session-end.mjs",
     "session-start.mjs",
-    "static-plan.mjs"
+    "static-plan.mjs",
+    "stop.mjs"
   ]
 }

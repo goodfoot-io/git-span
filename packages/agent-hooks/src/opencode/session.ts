@@ -18,6 +18,7 @@
 import { cleanupSessionState, DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore } from '../common/bash-attribution.js';
 import type { MemoLogger } from '../common/span-surface.js';
+import type { OpencodeEvent } from './types.js';
 
 export interface LifecycleHandlerDeps {
   layout?: SessionLayout;
@@ -35,10 +36,13 @@ export function createEventHandler(
 ) {
   const layout = deps.layout ?? DEFAULT_SESSION_LAYOUT;
   const logger = deps.logger ?? { warn: () => undefined };
-  return async (context: { event?: { type?: string; properties?: { sessionID?: string } } }): Promise<void> => {
+  return async (context: { event?: OpencodeEvent }): Promise<void> => {
     try {
       const type = context?.event?.type;
-      const sessionId = context?.event?.properties?.sessionID;
+      const sessionId =
+        type === 'session.created' || type === 'session.deleted'
+          ? context?.event?.properties?.info?.id
+          : context?.event?.properties?.sessionID;
       if (typeof sessionId !== 'string' || sessionId.length === 0) return;
       if (type === 'session.created') {
         deps.sessions.add(sessionId);

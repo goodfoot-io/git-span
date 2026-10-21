@@ -1,13 +1,14 @@
-/** Codex Stop hook — eager cleanup of session memo and planned touches. */
+/** Codex Stop hook — review session notes, then clean up on continuation. */
 
 import { dirname, join } from 'node:path';
-import { type HookContext, type StopInput, stopHook } from '@goodfoot/agent-hooks/codex';
+import { type HookContext, type StopInput, stopHook, stopOutput } from '@goodfoot/agent-hooks/codex';
 import { cleanupSessionState, DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { type CommitRuntimeOptions, cleanupCommitInvocations } from '../common/commit-runtime.js';
+import { reviewNotesStopReason } from '../common/review-notes-stop.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /**
- * The cleanup handler. Extracted from the default export so a test can
+ * The Stop handler. Extracted from the default export so a test can
  * construct one over a scratch layout: a default export binds
  * {@link DEFAULT_SESSION_LAYOUT} at module load, so a test that awaited it
  * would sweep the developer's live session state no matter where its own
@@ -18,6 +19,9 @@ export function createHandler(
   runtimeOptions: CommitRuntimeOptions = {}
 ) {
   return async (input: StopInput, ctx: HookContext) => {
+    const reason = reviewNotesStopReason(input, 'codex');
+    if (reason !== undefined) return stopOutput({ decision: 'block', reason });
+
     try {
       await cleanupCommitInvocations(
         'codex',

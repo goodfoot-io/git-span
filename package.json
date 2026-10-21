@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-span-monorepo",
-  "version": "1.1.32",
+  "version": "1.1.33",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/goodfoot-io/git-span.git"
@@ -39,7 +39,7 @@
   "packageManager": "yarn@4.18.0",
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
-    "@goodfoot/agent-skills": "1.0.25",
+    "@goodfoot/agent-skills": "1.0.28",
     "@types/node": "24.x",
     "esbuild": "^0.28.2",
     "knip": "^6.32.2",
@@ -49,5 +49,8 @@
   },
   "dependencies": {
     "puppeteer-core": "^25.7.0"
+  },
+  "resolutions": {
+    "@effect/platform-node-shared": "4.0.1"
   }
 }

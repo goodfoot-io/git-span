@@ -141,9 +141,11 @@ verification evidence; it never contains a file body or repository tree.
 `PostToolUse` atomically consumes the record once, verifies the evidence,
 reparses ordinary operations, and applies shell join and post-state gates before
 touching a span. Success, failure, interruption, and duplicate delivery cannot
-reuse a plan. `SessionEnd` on Claude and `Stop` on Codex eagerly
-retire the session memo and plans; opportunistic 30-day cleanup covers crashed
-sessions.
+reuse a plan. `Stop` asks the agent to dispatch a forked subagent to load
+`git-span:review-notes` and review relevant session notes.
+Stop continuations proceed without another review request. `SessionEnd` on
+Claude and the stop continuation on Codex retire the session memo and plans;
+opportunistic 30-day cleanup covers crashed sessions.
 
 A failed Bash command can still surface a write only when the supported family
 provides decisive post-state evidence, such as an expected replacement result.

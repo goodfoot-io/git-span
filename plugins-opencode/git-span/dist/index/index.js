@@ -136,6 +136,7 @@ function isGitIgnored(repoRoot, repoRelPath) {
     });
     return true;
   } catch (err) {
+    void err;
     return false;
   }
 }
@@ -245,9 +246,11 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
           fs.rmSync(trashPath, { recursive: true, force: true });
         }
       } catch (err) {
+        void err;
       }
     }
   } catch (err) {
+    void err;
   }
   let entries;
   try {
@@ -274,6 +277,7 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
         fs.utimesSync(trashPath, now / 1e3, now / 1e3);
       }
     } catch (err) {
+      void err;
     }
   }
 }
@@ -3417,6 +3421,7 @@ function parseCommandDetailed(command, opts = {}) {
   const cwd = typeof opts === "string" ? opts : opts.cwd ?? process.cwd();
   const { writes: heredocWrites, masked } = extractHeredocWrites(command);
   const { stages: simpleCommands, malformed } = splitTopLevel(masked);
+  void malformed;
   const results = [];
   const fsLineCache = /* @__PURE__ */ new Map();
   const gitLineCache = /* @__PURE__ */ new Map();
@@ -6527,6 +6532,7 @@ function changedOnDisk(cache, cwd) {
           changed.add(join4(repoRoot, entry.slice(3)));
         }
       } catch (err) {
+        void err;
       }
     }
   }
@@ -8858,6 +8864,57 @@ function postTracked(touch, cwd) {
 }
 disableUpdateCheck();
 
+// src/common/review-notes-stop.ts
+function reviewNotesPrompt(scope) {
+  const skill = scope.host === "claude" || scope.host === "codex" ? "git-span:review-notes" : "review-notes";
+  return [
+    "Dispatch a forked subagent with this prompt:",
+    `"Load ${skill}. Check the notes for items relevant to this session. If any exist, follow the skill instructions to review them, remove completed notes, and report unresolved items."`,
+    `Review scope: ${JSON.stringify(scope)}`,
+    "Include other repositories used in this session in the review scope.",
+    "Wait for the subagent and include any blockers in your final response."
+  ].join("\n");
+}
+
+// src/opencode/review-notes.ts
+function createNoteReviewHandler(deps) {
+  const pending2 = /* @__PURE__ */ new Map();
+  return {
+    message(sessionId, parts) {
+      if (typeof sessionId !== "string" || !sessionId || !Array.isArray(parts)) return;
+      if (parts.some(
+        (part) => isRecord(part) && part.synthetic !== true && (part.type === "text" || part.type === "file")
+      ))
+        pending2.set(sessionId, { requested: false });
+    },
+    forget(sessionId) {
+      pending2.delete(sessionId);
+    },
+    clear() {
+      pending2.clear();
+    },
+    async idle(sessionId) {
+      const turn = pending2.get(sessionId);
+      if (!turn || turn.requested) return;
+      turn.requested = true;
+      try {
+        if (!deps.client) throw new Error("OpenCode client unavailable for note review");
+        const request = { sessionID: sessionId };
+        const session = await deps.client.session.get(request, { signal: AbortSignal.timeout(5e3) });
+        if (!isRecord(session) || session.id !== sessionId) throw new Error("Invalid OpenCode session response");
+        if (session.parentID !== void 0 && session.parentID !== null) return;
+        if (pending2.get(sessionId) !== turn) return;
+        await deps.client.session.synthetic(
+          { ...request, text: reviewNotesPrompt({ host: "opencode", sessionId, cwd: deps.directory }), resume: true },
+          { signal: AbortSignal.timeout(5e3) }
+        );
+      } catch (err) {
+        deps.logger.warn("git-span opencode note-review continuation failed", { err });
+      }
+    }
+  };
+}
+
 // src/opencode/session.ts
 function createEventHandler(deps) {
   const layout = deps.layout ?? DEFAULT_SESSION_LAYOUT;
@@ -8865,7 +8922,7 @@ function createEventHandler(deps) {
   return async (context) => {
     try {
       const type = context?.event?.type;
-      const sessionId = context?.event?.properties?.sessionID;
+      const sessionId = type === "session.created" || type === "session.deleted" ? context?.event?.properties?.info?.id : context?.event?.properties?.sessionID;
       if (typeof sessionId !== "string" || sessionId.length === 0) return;
       if (type === "session.created") {
         deps.sessions.add(sessionId);
@@ -9070,6 +9127,7 @@ function assemblePlugin(deps = {}) {
   const logger = deps.logger ?? createOpencodeLogger();
   const sessions = /* @__PURE__ */ new Set();
   const callState = createOpencodeCallState();
+  const noteReview = createNoteReviewHandler({ directory, client: deps.client, logger });
   const planHandler = createStaticPlanHandler({
     directory,
     layout,
@@ -9093,13 +9151,19 @@ function assemblePlugin(deps = {}) {
     sessions,
     pruneSession: (sessionId) => callState.pruneSession(sessionId),
     plannedCalls: (sessionId) => callState.plannedCalls(sessionId),
-    forgetSession: (sessionId) => callState.pruneSession(sessionId)
+    forgetSession: (sessionId) => {
+      callState.pruneSession(sessionId);
+      noteReview.forget(sessionId);
+    }
   });
   const dispose = createDisposeHandler({
     layout,
     logger,
     sessions,
-    clearAll: () => callState.clear()
+    clearAll: () => {
+      callState.clear();
+      noteReview.clear();
+    }
   });
   return {
     dispose,
@@ -9109,7 +9173,16 @@ function assemblePlugin(deps = {}) {
       if (typeof event?.properties?.sessionID === "string" && event.properties.sessionID.length > 0) {
         sessions.add(event.properties.sessionID);
       }
+      if (event?.type === "session.created" && typeof event.properties?.info?.id === "string")
+        sessions.add(event.properties.info.id);
       await eventHandler({ event });
+      if (event?.type === "session.error" && typeof event.properties?.sessionID === "string")
+        noteReview.forget(event.properties.sessionID);
+      if (event?.type === "session.idle" && typeof event.properties?.sessionID === "string")
+        await noteReview.idle(event.properties.sessionID);
+    },
+    "chat.message": async (input, output) => {
+      noteReview.message(input?.sessionID, output?.parts);
     },
     "tool.execute.before": async (input, output) => {
       if (typeof input?.sessionID === "string" && input.sessionID.length > 0) sessions.add(input.sessionID);
@@ -9129,20 +9202,72 @@ function assemblePlugin(deps = {}) {
     }
   };
 }
-async function gitSpanOpencode(input = {}) {
-  const directory = typeof input.directory === "string" && input.directory.length > 0 ? input.directory : process.cwd();
+async function gitSpanOpencode(ctx) {
+  const directory = ctx.location.directory;
   const logger = createOpencodeLogger();
-  try {
-    startContextWarmup(directory, (err) => logger.warn("git-span context warm-up child failed", { err }));
-  } catch (err) {
-    logger.warn("git-span context warm-up failed open", { err });
-  }
-  return assemblePlugin({ ...input, directory, logger });
+  startContextWarmup(directory, (err) => logger.warn("git-span context warm-up failed", { err }));
+  const hooks = assemblePlugin({ directory, logger, client: { session: ctx.session } });
+  const registrations = [];
+  registrations.push(
+    await ctx.tool.hook("execute.before", async (event) => {
+      const output = { args: event.input };
+      await hooks["tool.execute.before"]?.({ tool: event.tool, sessionID: event.sessionID, callID: event.id }, output);
+      event.input = output.args;
+    })
+  );
+  registrations.push(
+    await ctx.tool.hook("execute.after", async (event) => {
+      if (event.status !== "completed") return;
+      const content = event.result.content;
+      const text = typeof content === "string" ? content : (content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("\n");
+      const output = { output: text, metadata: event.result.metadata };
+      await hooks["tool.execute.after"]?.(
+        { tool: event.tool, sessionID: event.sessionID, callID: event.id, args: event.input },
+        output
+      );
+      const suffix = output.output?.slice(text.length);
+      if (suffix)
+        event.result = {
+          ...event.result,
+          content: typeof content === "string" ? output.output : [...content ?? [], { type: "text", text: suffix }]
+        };
+    })
+  );
+  registrations.push(
+    await ctx.session.hook("prompt", async (event) => {
+      await hooks["chat.message"]?.(
+        { sessionID: event.sessionID },
+        { parts: [{ type: "text", text: event.prompt.text }] }
+      );
+    })
+  );
+  const controller = new AbortController();
+  const events = (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        if (event.location && event.location.directory !== directory) continue;
+        const data = event.data;
+        if (!isRecord(data) || typeof data.sessionID !== "string") continue;
+        if (event.type === "session.status" && isRecord(data.status) && data.status.type === "idle") {
+          await hooks.event?.({ event: { type: "session.idle", properties: { sessionID: data.sessionID } } });
+        } else if (event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
+          await hooks.event?.({ event: { type: "session.error", properties: { sessionID: data.sessionID } } });
+        } else if (event.type === "session.created" || event.type === "session.deleted") {
+          await hooks.event?.({ event: { type: event.type, properties: { info: { id: data.sessionID } } } });
+        }
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) logger.warn("git-span OpenCode event subscription failed", { err });
+    }
+  })();
+  return async () => {
+    controller.abort();
+    await Promise.all(registrations.map((registration) => registration.dispose()));
+    await events;
+    await hooks.dispose?.();
+  };
 }
-var pluginModule = {
-  id: "opencode-git-span",
-  server: gitSpanOpencode
-};
+var pluginModule = { id: "opencode-git-span", setup: gitSpanOpencode };
 disableUpdateCheck();
 var index_default = pluginModule;
 export {

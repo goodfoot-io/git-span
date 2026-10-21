@@ -30,7 +30,7 @@ export function buildRealHookBundles(): BuiltRealHookBundles {
         '--agent',
         'claude-code',
         '-i',
-        'src/claude/{session-start,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
+        'src/claude/{session-start,static-plan,post-tool-use,post-tool-use-failure,stop,session-end}.ts',
         '-o',
         join(claudeRoot, 'hooks.json'),
         '--no-sourcemap'

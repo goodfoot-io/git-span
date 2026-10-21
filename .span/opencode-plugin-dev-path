@@ -1,4 +1,4 @@
-opencode.json rk64:c01b8c5057f7c89f
+opencode.json rk64:de467876381873dd
 packages/agent-hooks/package.json#L10-L10 rk64:6e1c6239a6e4c073
 
-This repo's own opencode.json points at the local dev/test plugin path ./plugins-opencode/git-span/dist/index.mjs so the plugin loads from checked-in source while iterating; that path string must match the bundle filename the unified @goodfoot/agent-hooks CLI emits for build:opencode's src/opencode/index.ts entry (stable names yield index.mjs), and nothing but this coupling notices if the outfile location moves.
+The repository's OpenCode V2 configuration loads the local plugin package at ./plugins-opencode/git-span/dist/index; build:opencode must keep that directory aligned with the package emitted for src/opencode/index.ts, since the host loader resolves this path independently of the hook build.

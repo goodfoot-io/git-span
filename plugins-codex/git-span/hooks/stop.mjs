@@ -523,14 +523,22 @@ function classify(error, phase, policy, onUnexpectedError) {
 }
 function writeStream(stream, content) {
   return new Promise((resolve6, reject2) => {
-    stream.write(content, (error) => error ? reject2(error) : resolve6());
+    stream.write(content, (error) => {
+      if (error)
+        reject2(error);
+      else
+        resolve6();
+    });
   });
 }
 async function writeUnexpectedErrorStderr(error) {
-  const content = error instanceof Error ? `${error.stack ?? error.message}
-` : `${String(error)}
-`;
-  await writeStream(process.stderr, content);
+  if (error instanceof Error) {
+    await writeStream(process.stderr, `${error.stack ?? error.message}
+`);
+  } else {
+    await writeStream(process.stderr, `${String(error)}
+`);
+  }
 }
 function cleanupQuietly() {
   try {
@@ -674,6 +682,16 @@ function subagentStartOutput(options = {}) {
     hookSpecificOutput
   });
 }
+function stopOutput(options = {}) {
+  return buildOutput("Stop", {
+    continue: options.continue,
+    stopReason: options.stopReason,
+    suppressOutput: options.suppressOutput,
+    systemMessage: options.systemMessage,
+    decision: options.decision,
+    reason: options.reason
+  });
+}
 
 // node_modules/@goodfoot/agent-hooks/dist/agents/codex/transport.js
 function convertToHookOutput(output) {
@@ -719,7 +737,7 @@ function createCodexTransport() {
 }
 async function execute(hookFn) {
   const eventName = hookFn.hookEventName;
-  const composed = (input, context) => {
+  const composed = ((input, context) => {
     const result = hookFn(input, context);
     const normalize = (value) => {
       if (typeof value === "string") {
@@ -728,7 +746,7 @@ async function execute(hookFn) {
       return value;
     };
     return result instanceof Promise ? result.then(normalize) : normalize(result);
-  };
+  });
   composed.eventName = hookFn.eventName ?? eventName;
   composed.matcher = hookFn.matcher;
   composed.timeout = hookFn.timeout;
@@ -1465,6 +1483,22 @@ async function invokeNotes(enrollment, receipt, options, args, stdin, started) {
   return result.stdout;
 }
 
+// packages/agent-hooks/src/common/review-notes-stop.ts
+function reviewNotesPrompt(scope) {
+  const skill = scope.host === "claude" || scope.host === "codex" ? "git-span:review-notes" : "review-notes";
+  return [
+    "Dispatch a forked subagent with this prompt:",
+    `"Load ${skill}. Check the notes for items relevant to this session. If any exist, follow the skill instructions to review them, remove completed notes, and report unresolved items."`,
+    `Review scope: ${JSON.stringify(scope)}`,
+    "Include other repositories used in this session in the review scope.",
+    "Wait for the subagent and include any blockers in your final response."
+  ].join("\n");
+}
+function reviewNotesStopReason(input, host) {
+  if (input.stop_hook_active) return void 0;
+  return reviewNotesPrompt({ host, sessionId: input.session_id, cwd: input.cwd });
+}
+
 // packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
@@ -1473,6 +1507,8 @@ function disableUpdateCheck() {
 // packages/agent-hooks/src/codex/stop.ts
 function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) {
   return async (input, ctx) => {
+    const reason = reviewNotesStopReason(input, "codex");
+    if (reason !== void 0) return stopOutput({ decision: "block", reason });
     try {
       await cleanupCommitInvocations(
         "codex",

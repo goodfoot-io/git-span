@@ -590,14 +590,22 @@ function classify(error, phase, policy, onUnexpectedError) {
 }
 function writeStream(stream, content) {
   return new Promise((resolve3, reject) => {
-    stream.write(content, (error) => error ? reject(error) : resolve3());
+    stream.write(content, (error) => {
+      if (error)
+        reject(error);
+      else
+        resolve3();
+    });
   });
 }
 async function writeUnexpectedErrorStderr(error) {
-  const content = error instanceof Error ? `${error.stack ?? error.message}
-` : `${String(error)}
-`;
-  await writeStream(process.stderr, content);
+  if (error instanceof Error) {
+    await writeStream(process.stderr, `${error.stack ?? error.message}
+`);
+  } else {
+    await writeStream(process.stderr, `${String(error)}
+`);
+  }
 }
 function cleanupQuietly() {
   try {

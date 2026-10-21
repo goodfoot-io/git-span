@@ -1,35 +1,15 @@
-/**
- * OpenCode plugin entry — assembles the git-span adapter into the host's
- * `Hooks` shape (local structural types, no SDK dependency; the peer package
- * bundles this module through the unified `@goodfoot/agent-hooks` CLI
- * (`--agent opencode`) to `plugins-opencode/git-span/dist/index.mjs` for
- * bun/node ESM loading).
- *
- * Hooks assembled here:
- * - `tool.execute.before` — static planning first (bash planned touches,
- *   apply_patch range-fidelity plans), fail-open.
- * - `shell.env` — records the resolved per-call cwd (live-verified ordering:
- *   before → shell.env → after) so the touch pipeline frames on truth.
- * - `tool.execute.after` — appends touch blocks to the
- *   tool result. Never throws.
- * - `event` — decision-8 lifecycle split (idle prunes call state, deleted
- *   cleans disk, created tracks).
- * - `dispose` — full sweep of every session this process tracked.
- *
- * Init runs {@link startContextWarmup} against the instance directory,
- * fail-open. Executors are adapter-scoped with tightened timeouts (5 s vs the
- * 10 s defaults): OpenCode loads plugins in-process with no per-hook timeout,
- * so a stalled scan would block the host loop — the plugin bounds its own
- * subprocesses instead (plan decision 11).
- */
+/** OpenCode V2 setup: register domain hooks and subscribe to session lifecycle events. */
 
+import type { PluginInput, PluginModule } from '@goodfoot/agent-hooks/opencode';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { startContextWarmup } from '../common/context-warmup.js';
+import { isRecord } from '../common/guards.js';
 import type { MemoFactory, MemoLogger } from '../common/span-surface.js';
 import type { TouchExecutors } from '../common/touch-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 import { createOpencodeLogger } from './logger.js';
 import { createAfterHandler } from './post-tool-use.js';
+import { createNoteReviewHandler } from './review-notes.js';
 import { createDisposeHandler, createEventHandler } from './session.js';
 import { createOpencodeCallState } from './stash.js';
 import { createStaticPlanHandler } from './static-plan.js';
@@ -38,7 +18,7 @@ import type {
   OpencodeAfterOutput,
   OpencodeBeforeOutput,
   OpencodeEvent,
-  OpencodePluginInput,
+  OpencodeReviewClient,
   OpencodeShellEnvInput,
   OpencodeShellEnvOutput,
   OpencodeToolInput
@@ -51,6 +31,7 @@ export * from './types.js';
 /** Injected surfaces for {@link assemblePlugin} — every field optional. */
 export interface PluginDeps {
   directory?: string;
+  client?: OpencodeReviewClient;
   layout?: SessionLayout;
   logger?: MemoLogger;
   touchExecutors?: TouchExecutors;
@@ -68,6 +49,7 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
   const logger = deps.logger ?? createOpencodeLogger();
   const sessions = new Set<string>();
   const callState = createOpencodeCallState();
+  const noteReview = createNoteReviewHandler({ directory, client: deps.client, logger });
 
   const planHandler = createStaticPlanHandler({
     directory,
@@ -92,13 +74,19 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
     sessions,
     pruneSession: (sessionId) => callState.pruneSession(sessionId),
     plannedCalls: (sessionId) => callState.plannedCalls(sessionId),
-    forgetSession: (sessionId) => callState.pruneSession(sessionId)
+    forgetSession: (sessionId) => {
+      callState.pruneSession(sessionId);
+      noteReview.forget(sessionId);
+    }
   });
   const dispose = createDisposeHandler({
     layout,
     logger,
     sessions,
-    clearAll: () => callState.clear()
+    clearAll: () => {
+      callState.clear();
+      noteReview.clear();
+    }
   });
 
   return {
@@ -109,7 +97,16 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
       if (typeof event?.properties?.sessionID === 'string' && event.properties.sessionID.length > 0) {
         sessions.add(event.properties.sessionID);
       }
+      if (event?.type === 'session.created' && typeof event.properties?.info?.id === 'string')
+        sessions.add(event.properties.info.id);
       await eventHandler({ event });
+      if (event?.type === 'session.error' && typeof event.properties?.sessionID === 'string')
+        noteReview.forget(event.properties.sessionID);
+      if (event?.type === 'session.idle' && typeof event.properties?.sessionID === 'string')
+        await noteReview.idle(event.properties.sessionID);
+    },
+    'chat.message': async (input, output) => {
+      noteReview.message(input?.sessionID, output?.parts);
     },
     'tool.execute.before': async (input: OpencodeToolInput, output: OpencodeBeforeOutput) => {
       if (typeof input?.sessionID === 'string' && input.sessionID.length > 0) sessions.add(input.sessionID);
@@ -139,36 +136,80 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
   };
 }
 
-/**
- * The plugin OpenCode loads: an async init receiving `{ directory }` and
- * returning the hooks object. Warm-up is fire-and-forget and fail-open; any
- * init error still resolves to a usable hooks object rather than rejecting
- * into the fail-closed host loader.
- */
-export async function gitSpanOpencode(input: OpencodePluginInput = {}): Promise<GitSpanOpencodeHooks> {
-  const directory = typeof input.directory === 'string' && input.directory.length > 0 ? input.directory : process.cwd();
+/** Register the native V2 adapter and return its asynchronous cleanup. */
+export async function gitSpanOpencode(ctx: PluginInput) {
+  const directory = ctx.location.directory;
   const logger = createOpencodeLogger();
-  try {
-    startContextWarmup(directory, (err) => logger.warn('git-span context warm-up child failed', { err }));
-  } catch (err) {
-    logger.warn('git-span context warm-up failed open', { err });
-  }
-  return assemblePlugin({ ...input, directory, logger });
+  startContextWarmup(directory, (err) => logger.warn('git-span context warm-up failed', { err }));
+  const hooks = assemblePlugin({ directory, logger, client: { session: ctx.session } });
+  const registrations: { dispose(): Promise<void> }[] = [];
+  registrations.push(
+    await ctx.tool.hook('execute.before', async (event) => {
+      const output: OpencodeBeforeOutput = { args: event.input };
+      await hooks['tool.execute.before']?.({ tool: event.tool, sessionID: event.sessionID, callID: event.id }, output);
+      event.input = output.args;
+    })
+  );
+  registrations.push(
+    await ctx.tool.hook('execute.after', async (event) => {
+      if (event.status !== 'completed') return;
+      const content = event.result.content;
+      const text =
+        typeof content === 'string'
+          ? content
+          : (content ?? [])
+              .filter((part) => part.type === 'text')
+              .map((part) => part.text)
+              .join('\n');
+      const output: OpencodeAfterOutput = { output: text, metadata: event.result.metadata };
+      await hooks['tool.execute.after']?.(
+        { tool: event.tool, sessionID: event.sessionID, callID: event.id, args: event.input },
+        output
+      );
+      const suffix = output.output?.slice(text.length);
+      if (suffix)
+        event.result = {
+          ...event.result,
+          content: typeof content === 'string' ? output.output : [...(content ?? []), { type: 'text', text: suffix }]
+        };
+    })
+  );
+  registrations.push(
+    await ctx.session.hook('prompt', async (event) => {
+      await hooks['chat.message']?.(
+        { sessionID: event.sessionID },
+        { parts: [{ type: 'text', text: event.prompt.text }] }
+      );
+    })
+  );
+  const controller = new AbortController();
+  const events = (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        if (event.location && event.location.directory !== directory) continue;
+        const data: unknown = event.data;
+        if (!isRecord(data) || typeof data.sessionID !== 'string') continue;
+        if (event.type === 'session.status' && isRecord(data.status) && data.status.type === 'idle') {
+          await hooks.event?.({ event: { type: 'session.idle', properties: { sessionID: data.sessionID } } });
+        } else if (event.type === 'session.execution.failed' || event.type === 'session.execution.interrupted') {
+          await hooks.event?.({ event: { type: 'session.error', properties: { sessionID: data.sessionID } } });
+        } else if (event.type === 'session.created' || event.type === 'session.deleted') {
+          await hooks.event?.({ event: { type: event.type, properties: { info: { id: data.sessionID } } } });
+        }
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) logger.warn('git-span OpenCode event subscription failed', { err });
+    }
+  })();
+  return async () => {
+    controller.abort();
+    await Promise.all(registrations.map((registration) => registration.dispose()));
+    await events;
+    await hooks.dispose?.();
+  };
 }
 
-/**
- * The module shape OpenCode's loader detects: a default-exported
- * `{ id?, server }` object whose `server` builds the hooks. Detection on the
- * `server` key short-circuits before the host inspects any other export, so
- * the helper re-exports above stay safe to keep.
- *
- * `id` keys hook attribution; it matches the npm package name so logs from a
- * path-installed copy read identically to an npm-installed one.
- */
-const pluginModule: { id: string; server: typeof gitSpanOpencode } = {
-  id: 'opencode-git-span',
-  server: gitSpanOpencode
-};
+const pluginModule: PluginModule = { id: 'opencode-git-span', setup: gitSpanOpencode };
 
 // Automated git-span caller: suppress the update check before any executor
 // runs so every `git span` child inherits the env var.

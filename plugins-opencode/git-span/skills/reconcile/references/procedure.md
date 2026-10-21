@@ -9,7 +9,7 @@ only stage that may be delegated (see `./team.md`).
 **Report** below means your final summary if you own the reconciliation, or your
 message to the owner if you are a delegated worker.
 
-Invoke `$git-span` only when a topic exceeds what is here; navigate to
+Invoke `@git-span` only when a topic exceeds what is here; navigate to
 the named section.
 
 **Embedded coverage mode:** the coverage owner controls all staging and commits,

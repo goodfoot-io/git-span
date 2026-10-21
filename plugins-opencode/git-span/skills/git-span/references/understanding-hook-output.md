@@ -132,7 +132,7 @@ codes and no touch.
 Every candidate is scoped to the effective working directory's repository and
 filtered through one batched tracked-file query. Files outside the repository,
 ignored files, span metadata, and untracked files are dropped. The `bash`
-tool's `workdir` argument (resolved by the host) is used for both planning and
+tool's declared `workdir` argument is used for both planning and
 post-tool attribution, so an explicit working directory inside a different
 repository is handled in that repository.
 
@@ -145,10 +145,14 @@ verification evidence; it never contains a file body or repository tree.
 `tool.execute.after` atomically consumes the record once, verifies the evidence,
 reparses ordinary operations, and applies shell join and post-state gates before
 touching a span. Success, failure, interruption, and duplicate delivery cannot
-reuse a plan. Under OpenCode, `session.idle` prunes the session's call-scoped
+reuse a plan. Under OpenCode, `session.status` (idle) prunes the session's call-scoped
 plans between turns, and `session.deleted` — plus a final `dispose()` sweep at
 shutdown — eagerly retire the session memo and any remaining plans;
 opportunistic 30-day cleanup covers crashed sessions.
+
+After user input, `session.status` (idle) sends root sessions one synthetic prompt to
+dispatch a forked subagent using `@review-notes`.
+Synthetic prompts and child sessions do not trigger another review. OpenCode V2 resumes the session through `session.synthetic`.
 
 A command that merely exits nonzero still reaches the after hook under
 OpenCode — the bash tool returns with a numeric `exit`, and exit-gated join
@@ -156,9 +160,9 @@ semantics apply (a short-circuited `&&` attributes nothing because its write
 never ran) — but like the twins' failed commands it can surface a write only
 when the parse provides decisive post-state evidence, such as an expected
 replacement result; an inconclusive write goes silent under a nonzero exit
-rather than firing as an existence-gated advisory. Only host-level failures
-(invalid arguments, denied permission, spawn errors) skip the after hook
-entirely — such a call surfaces nothing, so even one carrying decisive
+rather than firing as an existence-gated advisory. The adapter ignores host-level failure results
+(invalid arguments, denied permission, spawn errors). Such a call surfaces
+nothing, so even one carrying decisive
 post-state evidence, such as an expected replacement result, goes
 unattributed. This is the degraded-parity caveat documented in
 `references/install-and-trust.md`. Interrupted calls (an `exit: null`

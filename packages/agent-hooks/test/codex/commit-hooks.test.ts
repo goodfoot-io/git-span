@@ -180,7 +180,7 @@ describe('codex deployed commit adapters', () => {
       child.on('error', reject);
     });
     try {
-      invokeRealHook(join(hooks, 'stop.mjs'), { ...input, hook_event_name: 'Stop' }, repo.env);
+      invokeRealHook(join(hooks, 'stop.mjs'), { ...input, hook_event_name: 'Stop', stop_hook_active: true }, repo.env);
       const dirs = readdirSync(join(stateRoot(repo), 'invocations'));
       expect(dirs).toHaveLength(1);
       expect(
@@ -190,7 +190,7 @@ describe('codex deployed commit adapters', () => {
       expect(await finished).toBe(0);
       post(repo, input, updated, '');
       expect(notes(repo)).toHaveLength(1);
-      invokeRealHook(join(hooks, 'stop.mjs'), { ...input, hook_event_name: 'Stop' }, repo.env);
+      invokeRealHook(join(hooks, 'stop.mjs'), { ...input, hook_event_name: 'Stop', stop_hook_active: true }, repo.env);
       const later = envelope(repo, 'later-turn', 'git commit -q --allow-empty -m later');
       const laterUpdated = prepare(repo, later);
       const shell = runRealShell(repo, laterUpdated.command as string);

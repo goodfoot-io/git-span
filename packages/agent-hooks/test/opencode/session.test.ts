@@ -165,7 +165,7 @@ describe('opencode lifecycle split (decision 8)', () => {
       });
       await event({ event: { type: 'session.idle', properties: {} } });
       await event({ event: { type: 'unrelated.event', properties: { sessionID: 'gone' } } });
-      await event({ event: { type: 'session.deleted', properties: { sessionID: 'gone' } } });
+      await event({ event: { type: 'session.deleted', properties: { info: { id: 'gone' } } } });
 
       expect(existsSync(memoFile)).toBe(false);
       expect(sessions.has('gone')).toBe(false);

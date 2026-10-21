@@ -3,7 +3,7 @@ packages/agent-hooks/src/antigravity/post-tool-use.ts#L1-L20 rk64:5edcc942913e04
 packages/agent-hooks/src/antigravity/run-command.ts#L1-L7 rk64:8e5ce0b0d9f8aafe
 packages/agent-hooks/src/antigravity/stash.ts#L1-L26 rk64:6a0cb79707c780c0
 packages/agent-hooks/src/antigravity/static-plan.ts#L1-L10 rk64:865a45e835b31896
-packages/agent-hooks/src/antigravity/stop.ts#L1-L15 rk64:9a72a1285351c6af
+packages/agent-hooks/src/antigravity/stop.ts#L1-L15 rk64:c353402ba11f1a5f
 packages/agent-hooks/src/antigravity/tool-call-stash.ts#L1-L11 rk64:aec736d443a2ca9b
 
-Antigravity's tool-call-stash.ts and post-tool-use.ts share stash.ts's conversationId:stepIdx key format, while static-plan.ts and touch attribution decode run_command through run-command.ts. post-tool-use.ts feeds the conversation-scoped pending injection queue that post-invocation.ts drains, and stop.ts retires the call-scoped state; a key-format or lifecycle change must preserve this cross-file delivery contract.
+Antigravity's tool-call-stash.ts and post-tool-use.ts share stash.ts's conversationId:stepIdx key format, while static-plan.ts and touch attribution decode run_command through run-command.ts. post-tool-use.ts feeds the conversation-scoped pending injection queue that post-invocation.ts drains. Stop requests note review once per conversation before retiring call-scoped state on subsequent stops; its review guard and surfaced-span memo survive that cleanup. A key-format or lifecycle change must preserve this cross-file delivery contract.

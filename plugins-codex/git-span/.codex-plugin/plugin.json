@@ -1,6 +1,6 @@
 {
   "name": "git-span",
-  "version": "1.1.32",
+  "version": "1.1.33",
   "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying compact decision-relevant context shared by its anchors.",
   "author": {
     "name": "goodfoot",
@@ -24,7 +24,7 @@
     "capabilities": [
       "Plans supported shell and apply_patch touches before execution",
       "Surfaces coupled spans inline",
-      "Warms repository context at session start and clears session touch state at stop"
+      "Warms repository context at session start; requests session-note review at stop and clears touch state on continuation"
     ],
     "defaultPrompt": [
       "Check `git span drift` for drifted spans and help me reconcile them."

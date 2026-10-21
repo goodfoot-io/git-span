@@ -1,23 +1,20 @@
-/**
- * Local structural types for the subset of OpenCode's plugin `Hooks` surface
- * this adapter uses. Deliberately loose (`unknown` leaves narrowed at the
- * edges): OpenCode's own SDK types are not a dependency — the peer package
- * bundles this module standalone, and every field is re-validated before use
- * so a host shape change fails open instead of misbehaving.
- *
- * Verified host facts these encode (notes/opencode-runtime-spikes.md):
- * - `tool.execute.before(input{tool,sessionID,callID}, output{args})` blocks
- *   by throwing; the thrown message reaches the model verbatim.
- * - `tool.execute.after(input{…,args}, output{title,output,metadata})` fires
- *   only after successful execution; appending to `output.output` injects.
- * - `shell.env(input{cwd,sessionID?,callID?})` fires per shell execution with
- *   the resolved cwd, ordered before → shell.env → after per callID.
- * - `event` delivers typed events; `session.*` properties carry `sessionID`.
+/** Internal envelopes shared by the OpenCode attribution handlers and their tests.
+ * Native V2 domain hooks are translated into these envelopes by index.ts.
  */
 
-/** The plugin init input this adapter reads. */
-export interface OpencodePluginInput {
-  directory?: string;
+/** OpenCode V2 session operations used by the review continuation. */
+export interface OpencodeReviewClient {
+  session: {
+    get(input: { sessionID: string }, options?: { signal: AbortSignal }): Promise<unknown>;
+    synthetic(
+      input: { sessionID: string; text: string; resume: true },
+      options?: { signal: AbortSignal }
+    ): Promise<unknown>;
+  };
+}
+
+export interface OpencodeChatInput {
+  sessionID?: string;
 }
 
 /** Shared `input` envelope of the tool hooks. */
@@ -62,16 +59,16 @@ export interface OpencodeShellEnvOutput {
 /** A typed host event (`event.type` + `event.properties`). */
 export interface OpencodeEvent {
   type?: string;
-  properties?: { sessionID?: string };
+  properties?: { sessionID?: string; info?: { id?: string; parentID?: string } };
 }
 
 /**
- * The subset of OpenCode's `Hooks` object this adapter returns. Local and
- * structural — no dependency on an OpenCode SDK.
+ * Normalized attribution callbacks used internally by the native adapter.
  */
 export interface GitSpanOpencodeHooks {
   dispose?: () => Promise<void> | void;
   event?: (context: { event: OpencodeEvent }) => Promise<void>;
+  'chat.message'?: (input: OpencodeChatInput, output: { parts?: unknown }) => Promise<void>;
   'tool.execute.before'?: (input: OpencodeToolInput, output: OpencodeBeforeOutput) => Promise<void>;
   'tool.execute.after'?: (input: OpencodeToolInput, output: OpencodeAfterOutput) => Promise<void>;
   'shell.env'?: (input: OpencodeShellEnvInput, output: OpencodeShellEnvOutput) => Promise<void>;

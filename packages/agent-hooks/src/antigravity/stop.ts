@@ -10,12 +10,16 @@
  * {@link cleanupCallScopedState} for the full rationale); the layout's TTL
  * sweep retires the memo with the rest of the session directory.
  *
- * Never returns `decision: "continue"` — that would block the stop and
- * re-enter the loop, which no cleanup failure could ever justify.
+ * Request note review once per conversation; the durable guard survives
+ * hook subprocesses and call-scoped cleanup.
  */
 
-import { type HookContext, type StopInput, stopHook } from '@goodfoot/agent-hooks/antigravity';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { type HookContext, type StopInput, stopHook, stopOutput } from '@goodfoot/agent-hooks/antigravity';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
+import { errnoCode } from '../common/guards.js';
+import { reviewNotesPrompt } from '../common/review-notes-stop.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 import { cleanupCallScopedState } from './stash.js';
 
@@ -27,6 +31,28 @@ import { cleanupCallScopedState } from './stash.js';
  */
 export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
   return async (input: StopInput, ctx: HookContext) => {
+    if (input.terminationReason === 'model_stop' && !input.error && input.fullyIdle) {
+      try {
+        mkdirSync(layout.dir(input.conversationId), { recursive: true, mode: 0o700 });
+        writeFileSync(join(layout.dir(input.conversationId), 'antigravity-note-review-requested'), '', {
+          flag: 'wx',
+          mode: 0o600
+        });
+        return stopOutput({
+          decision: 'continue',
+          reason:
+            'If you are already the notes-review subagent, finish without dispatching another reviewer.\n' +
+            reviewNotesPrompt({
+              host: 'antigravity',
+              sessionId: input.conversationId,
+              cwd: input.workspacePaths[0] ?? '',
+              workspacePaths: input.workspacePaths
+            })
+        });
+      } catch (err) {
+        if (errnoCode(err) !== 'EEXIST') ctx.logger.warn('git-span note-review guard failed', { err });
+      }
+    }
     try {
       cleanupCallScopedState(layout, input.conversationId);
       return undefined;

@@ -1,4 +1,8 @@
 #!/usr/bin/env -S node --enable-source-maps
+// packages/agent-hooks/src/antigravity/stop.ts
+import { mkdirSync as mkdirSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join3 } from "node:path";
+
 // node_modules/@goodfoot/agent-hooks/dist/agents/antigravity/events.js
 var HOOK_EVENT_NAMES = [
   "PreToolUse",
@@ -502,14 +506,22 @@ function classify(error, phase, policy, onUnexpectedError) {
 }
 function writeStream(stream, content) {
   return new Promise((resolve2, reject) => {
-    stream.write(content, (error) => error ? reject(error) : resolve2());
+    stream.write(content, (error) => {
+      if (error)
+        reject(error);
+      else
+        resolve2();
+    });
   });
 }
 async function writeUnexpectedErrorStderr(error) {
-  const content = error instanceof Error ? `${error.stack ?? error.message}
-` : `${String(error)}
-`;
-  await writeStream(process.stderr, content);
+  if (error instanceof Error) {
+    await writeStream(process.stderr, `${error.stack ?? error.message}
+`);
+  } else {
+    await writeStream(process.stderr, `${String(error)}
+`);
+  }
 }
 function cleanupQuietly() {
   try {
@@ -600,6 +612,18 @@ var AntigravityBlockError = class extends HookBlockError {
     this.reason = reason;
   }
 };
+function omitUndefined(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== void 0));
+}
+function buildOutput(type, stdout) {
+  return {
+    _type: type,
+    stdout: omitUndefined(stdout)
+  };
+}
+function stopOutput(options = {}) {
+  return buildOutput("Stop", { decision: options.decision, reason: options.reason });
+}
 
 // node_modules/@goodfoot/agent-hooks/dist/agents/antigravity/transport.js
 function formatErrorText(error) {
@@ -693,6 +717,18 @@ var THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
 var SESSION_TRASH_MARKER = ".trash-session-";
 var lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
 
+// packages/agent-hooks/src/common/review-notes-stop.ts
+function reviewNotesPrompt(scope) {
+  const skill = scope.host === "claude" || scope.host === "codex" ? "git-span:review-notes" : "review-notes";
+  return [
+    "Dispatch a forked subagent with this prompt:",
+    `"Load ${skill}. Check the notes for items relevant to this session. If any exist, follow the skill instructions to review them, remove completed notes, and report unresolved items."`,
+    `Review scope: ${JSON.stringify(scope)}`,
+    "Include other repositories used in this session in the review scope.",
+    "Wait for the subagent and include any blockers in your final response."
+  ].join("\n");
+}
+
 // packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
@@ -732,6 +768,26 @@ function cleanupCallScopedState(layout, conversationId, now = Date.now()) {
 // packages/agent-hooks/src/antigravity/stop.ts
 function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
+    if (input.terminationReason === "model_stop" && !input.error && input.fullyIdle) {
+      try {
+        mkdirSync4(layout.dir(input.conversationId), { recursive: true, mode: 448 });
+        writeFileSync2(join3(layout.dir(input.conversationId), "antigravity-note-review-requested"), "", {
+          flag: "wx",
+          mode: 384
+        });
+        return stopOutput({
+          decision: "continue",
+          reason: "If you are already the notes-review subagent, finish without dispatching another reviewer.\n" + reviewNotesPrompt({
+            host: "antigravity",
+            sessionId: input.conversationId,
+            cwd: input.workspacePaths[0] ?? "",
+            workspacePaths: input.workspacePaths
+          })
+        });
+      } catch (err) {
+        if (errnoCode(err) !== "EEXIST") ctx.logger.warn("git-span note-review guard failed", { err });
+      }
+    }
     try {
       cleanupCallScopedState(layout, input.conversationId);
       return void 0;

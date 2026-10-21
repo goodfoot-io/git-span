@@ -7,7 +7,7 @@ Once installed (see [Getting started](/docs/getting-started)), the git-span plug
 
 - **A touch hook** — surfaces existing spans after supported reads and writes and repairs mechanically safe positional drift inline.
 - **Static planning and lifecycle hooks** — capture bounded pre-state for supported writes, deduplicate context, warm up the CLI, and clean up session state.
-- **Four skills** — `git-span` for declaration, inspection, and focused reconciliation; `cover-commits` for reviewing noted commits and consuming their notes after validated repairs; `reconcile` for multi-span triage; and `hook-effect-analysis` for measuring hook emissions.
+- **Five skills** — `git-span` for declaration, inspection, and focused reconciliation; `cover-commits` for reviewing noted commits and consuming their notes after validated repairs; `review-notes` for reviewing session notes and removing completed notes; `reconcile` for multi-span triage; and `hook-effect-analysis` for measuring hook emissions.
 - **An expert subagent where supported** — Claude Code, Codex, and OpenCode ship one; Antigravity ships skills and hooks without a separate agent artifact.
 
 The integrations use the same scriptable `git span` CLI available in a terminal or CI.
@@ -38,19 +38,27 @@ Shell envelopes' `workdir` selects the effective repository for planning and att
 
 ## OpenCode specifics
 
-OpenCode loads the npm plugin in-process without a trust-review step. `tool.execute.before` captures shell and patch plans; `tool.execute.after` appends `<git-span>` context to tool output. Shell cwd frames and session lifecycle keep plans scoped to the correct repository and tool call.
+OpenCode loads the npm plugin in-process without a trust-review step. `tool.execute.before` captures shell and patch plans; `tool.execute.after` appends `<git-span>` context to tool output. Declared shell working directories and session lifecycle keep plans scoped to the correct repository and tool call.
 
-Host-level failures such as invalid arguments, denied permission, or spawn errors never reach the after hook and receive no attribution. A numeric nonzero shell exit still reaches it, with exit-gated attribution; an `exit: null` result suppresses attribution like an interruption. The experimental `execute` tool is outside coverage. The plugin bounds its own CLI subprocesses because the host imposes no per-hook timeout.
+The adapter ignores failed tool results, so host-level failures such as invalid arguments, denied permission, or spawn errors receive no attribution. A numeric nonzero shell exit still reaches it, with exit-gated attribution; an `exit: null` result suppresses attribution like an interruption. The experimental `execute` tool is outside coverage. The plugin bounds its own CLI subprocesses because the host imposes no per-hook timeout.
 
 Loading the plugin disables CLI update checks for the session. Set `OPENCODE_GIT_SPAN_LOG_FILE` to a path for JSONL hook diagnostics.
 
 ## Antigravity specifics
 
-Antigravity installs four skills and the workflow hooks without a marketplace or separate trust-review step. Empty `PreToolUse` responses mean denial on this host, so the retained pre-tool handlers return explicit allow decisions.
+Antigravity installs five skills and the workflow hooks without a marketplace or separate trust-review step. Empty `PreToolUse` responses mean denial on this host, so the retained pre-tool handlers return explicit allow decisions.
 
 Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive no touch attribution; explicit `git span drift` checks or CI verify their changes.
 
 `PostToolUse` carries a step index rather than the original call or response. The plugin joins disk-backed pre-call state, queues rendered touch context, and delivers it after the invocation's tool batch as an ephemeral message. Successful calls provide no exit-code or response-derived read evidence. Failed calls never surface writes because there is no post-state evidence to verify.
+
+## Session note review
+
+On Claude Code and Codex, the Stop hook asks the agent to dispatch a forked subagent that loads `review-notes` and follows its instructions when relevant notes exist. The agent waits for the review and reports unresolved items. Stop continuations proceed without another review request. Codex clears session touch state on that continuation; Claude clears it at session end.
+
+Antigravity requests the same review once per conversation at an idle, successful model stop. Later stops proceed and clean up call state; error and step-limit stops do not request review.
+
+OpenCode sends one synthetic review prompt to the root session on `session.status` (idle) after user input. Review prompts and child sessions do not trigger another review. OpenCode V2 receives the continuation through `session.synthetic` with `resume: true`.
 
 ## The enforcement backstop
 

@@ -122,7 +122,7 @@ and rejects provable supersession (whole-file vs same-path range); preserve its 
 the logical region changed. Require scoped drift to exit 0.
 
 ## Where to go next
-Uncovered commits recorded in notes → `$cover-commits`.
+Uncovered commits recorded in notes → `@cover-commits`.
 Pick the first that fits:
 1. Read-only question, no `.span` mutation intended → `references/inspect.md`.
 2. A `drift`/`show`/`list` finding says `DELETED`, `CONFLICT`, or `SUBMODULE` →

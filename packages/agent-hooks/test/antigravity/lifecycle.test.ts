@@ -8,8 +8,10 @@
  * Stop is a turn-like execution-loop boundary.
  */
 
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Logger } from '@goodfoot/agent-hooks';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import preInvocationHookEntry, {
@@ -84,26 +86,68 @@ describe('antigravity stop cleanup', () => {
     expect(stopHookEntry.eventName).toBe('Stop');
   });
 
-  it('retires call-scoped state, keeps the memo, and never blocks the stop', async () => {
+  it('requests review once, then retires call-scoped state and keeps the memo', async () => {
     const conv = 'agy-stop-conv';
     stashToolCall(layout, conv, 2, { name: 'run_command', args: {} });
     appendPendingInjection(layout, conv, 'undrained');
     writeFileSync(layout.memoFile(conv), '{"surfaced":[]}');
 
-    const result = await createStopHandler(layout)(
-      {
-        ...base(conv, ['/repo']),
-        executionNum: 1,
-        terminationReason: 'model_stop',
-        fullyIdle: true
-      } as never,
-      { logger } as never
-    );
+    const input = {
+      ...base(conv, ['/repo']),
+      executionNum: 1,
+      terminationReason: 'model_stop',
+      fullyIdle: true
+    };
+    const result = await createStopHandler(layout)(input as never, { logger });
+    expect(result?.stdout.decision).toBe('continue');
+    expect(result?.stdout.reason).toContain('Load review-notes');
+    expect(result?.stdout.reason).toContain('forked subagent');
+    expect(existsSync(layout.memoFile(conv))).toBe(true);
 
-    // Anything but decision "continue" lets the agent stop; undefined prints {}.
-    expect(result).toBeUndefined();
+    // A new handler models the next one-shot hook process; cleanup leaves its guard intact.
+    expect(await createStopHandler(layout)({ ...input, executionNum: 2 } as never, { logger })).toBeUndefined();
     expect(takeToolCall(layout, conv, 2)).toBeNull();
     expect(drainPendingInjections(layout, conv)).toEqual([]);
     expect(existsSync(layout.memoFile(conv))).toBe(true);
+    expect(await createStopHandler(layout)({ ...input, executionNum: 3 } as never, { logger })).toBeUndefined();
+  });
+
+  it.each([
+    { terminationReason: 'error', fullyIdle: true },
+    { terminationReason: 'max_steps_exceeded', fullyIdle: true },
+    { terminationReason: 'model_stop', fullyIdle: false },
+    { terminationReason: 'model_stop', fullyIdle: true, error: 'cancelled' }
+  ])('does not resume an abnormal or busy stop: %j', async (state) => {
+    const input = { ...base(`skip-${JSON.stringify(state)}`, ['/repo']), executionNum: 1, ...state };
+    expect(await createStopHandler(layout)(input as never, { logger })).toBeUndefined();
+  });
+
+  it('the emitted hook guard survives separate processes', () => {
+    const input = {
+      ...base('agy-emitted-review', ['/repo']),
+      executionNum: 1,
+      terminationReason: 'model_stop',
+      fullyIdle: true
+    };
+    const bundle = resolve('../../plugins-antigravity/git-span/bin/stop.mjs');
+    const run = () =>
+      spawnSync(process.execPath, [bundle], {
+        input: JSON.stringify(input),
+        encoding: 'utf8',
+        env: { ...process.env, HOME: temp.parent }
+      });
+    const first = run();
+    expect(first.status).toBe(0);
+    expect(first.stderr).toBe('');
+    expect(JSON.parse(first.stdout)).toMatchObject({
+      decision: 'continue',
+      reason: expect.stringContaining('Load review-notes')
+    });
+    for (let i = 0; i < 2; i++) {
+      const continuation = run();
+      expect(continuation.status).toBe(0);
+      expect(continuation.stderr).toBe('');
+      expect(JSON.parse(continuation.stdout)).toEqual({});
+    }
   });
 });

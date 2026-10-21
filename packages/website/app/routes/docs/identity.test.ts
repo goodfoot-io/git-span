@@ -58,6 +58,7 @@ const HEADING_INVENTORY: Record<string, string[]> = {
     'codex-specifics',
     'opencode-specifics',
     'antigravity-specifics',
+    'session-note-review',
     'the-enforcement-backstop'
   ],
   '/docs/concepts': ['span', 'anchor', 'the-why', 'the-span-directory', 'drift', 'automation-lifecycle'],

@@ -21,7 +21,7 @@ sub-batches by class or topic, as long as no split separates spans sharing a
 file. A span sharing no file with any other non-clean span is a component of
 size one — still a valid fork unit.
 
-Some steps reference sections of the `$git-span` skill. These are
+Some steps reference sections of the `@git-span` skill. These are
 conditional — invoke the skill only when the topic exceeds what is explained
 here. The skill's sections are loaded together when the skill is invoked;
 navigate to the named section within it.
@@ -139,18 +139,10 @@ sharing a file are never split across units), so subagents touch disjoint
 `.span/` files. They share the main worktree without conflict. Only the main
 agent commits.
 
-OpenCode task subagents start with no context — nothing carries over from your
-conversation. The prompt must carry everything the fork model would have
-inherited: point the subagent at this reference by absolute path (the procedure
-below lives here) and inline the why standard's application to its unit:
-
-```json
-{
-  "description": "Clean up <label> why cluster",
-  "subagent_type": "general",
-  "prompt": "Read [absolute path to ./why-cleanup-campaign.md] and run its Cleanup procedure on the unit below. Do not commit.\n\nBring these <N> spans' whys up to the why standard inlined above (component: <label> — connected via <shared-file>).\n\n## <name-1>\n- Class: <list-tier class from triage>\n- Why: <from git span list>\n- Anchors: <paths> — verify current bytes before rewriting\n\n(Context: these spans share <shared-file>. Clean sibling spans also anchoring it: <list>. <Overlap or duplicate-candidate flag if any>.)"
-}
-```
+Dispatch workers with `subagent`. Give each worker this reference's absolute
+path, its assigned spans, current whys and anchors, shared-file context, and
+the why standard for its unit. Instruct it to run the Cleanup procedure below
+and never commit. Use the returned sessionID for follow-ups.
 
 ### Cleanup procedure
 
@@ -188,7 +180,7 @@ For each assigned span:
 6. **Do not commit.**
 
 For deletion syntax or why rules beyond what is explained here, invoke the
-corresponding `$git-span` section.
+corresponding `@git-span` section.
 
 ### After all forks complete
 

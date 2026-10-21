@@ -1,9 +1,13 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "permission": {
-    "*": {
-      "*": "allow"
+  "plugins": [
+    "./plugins-opencode/git-span/dist/index"
+  ],
+  "permissions": [
+    {
+      "action": "*",
+      "resource": "*",
+      "effect": "allow"
     }
-  },
-  "plugin": ["./plugins-opencode/git-span/dist/index.mjs"]
+  ]
 }
