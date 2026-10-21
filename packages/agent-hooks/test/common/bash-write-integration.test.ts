@@ -1688,7 +1688,7 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
       cwd,
       tool_use_id: toolUseId,
       tool_name: 'Bash',
-      tool_input: { command },
+      tool_input: { command, workdir: cwd },
       tool_response: 'ok'
     };
   }

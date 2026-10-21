@@ -523,7 +523,7 @@ describe('codex post-tool-use touch signal', () => {
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'Bash',
-        tool_input: { command: `sed -n '39,60p' ${filePath}` }
+        tool_input: { workdir: repo.root, command: `sed -n '39,60p' ${filePath}` }
       };
 
       const result = toResult(await handler(input as never, { logger } as never));
@@ -542,7 +542,7 @@ describe('codex post-tool-use touch signal', () => {
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'Bash',
-        tool_input: { command: 'echo hello && git status' }
+        tool_input: { workdir: repo.root, command: 'echo hello && git status' }
       };
 
       const result = await handler(input as never, { logger } as never);
@@ -569,7 +569,7 @@ describe('codex post-tool-use touch signal', () => {
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'Bash',
-        tool_input: { command }
+        tool_input: { workdir: repo.root, command }
       };
 
       const result = toResult(await handler(input as never, { logger } as never));
@@ -600,7 +600,7 @@ describe('codex post-tool-use touch signal', () => {
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'Bash',
-        tool_input: { command }
+        tool_input: { workdir: repo.root, command }
       };
 
       const result = toResult(await handler(input as never, { logger } as never));
@@ -644,7 +644,7 @@ describe('codex post-tool-use touch signal', () => {
         const input = {
           ...postInput(repo.root, null),
           tool_name: 'Bash',
-          tool_input: { command: `rg -n alpha ${filePath}` },
+          tool_input: { workdir: repo.root, command: `rg -n alpha ${filePath}` },
           tool_response: `${filePath}:50:alpha\n`
         };
 
@@ -699,7 +699,7 @@ describe('codex post-tool-use touch signal', () => {
         const input = {
           ...postInput(repo.root, null),
           tool_name: 'Bash',
-          tool_input: { command: `rg -n alpha ${filePath}` },
+          tool_input: { workdir: repo.root, command: `rg -n alpha ${filePath}` },
           tool_response: {
             stdout: `${filePath}:50:alpha\n`,
             stderr: '',
@@ -739,7 +739,7 @@ describe('codex post-tool-use touch signal', () => {
           const input = {
             ...postInput(repo.root, null),
             tool_name: 'Bash',
-            tool_input: { command: `rg -n alpha ${filePath}` },
+            tool_input: { workdir: repo.root, command: `rg -n alpha ${filePath}` },
             tool_response: toolResponse
           };
 
@@ -785,7 +785,7 @@ describe('codex post-tool-use touch signal', () => {
         const input = {
           ...postInput(repo.root, null),
           tool_name: 'Bash',
-          tool_input: { command },
+          tool_input: { workdir: repo.root, command },
           tool_response: diffResponse
         };
 
@@ -825,7 +825,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     return {
       ...postInput(repo.root, null),
       tool_name: 'Bash',
-      tool_input: { command }
+      tool_input: { workdir: repo.root, command }
     };
   }
 
@@ -969,7 +969,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
           tool_use_id: 'tu-sed-plan',
           cwd: repo.root,
           tool_name: 'Bash',
-          tool_input: { command }
+          tool_input: { command, workdir: repo.root }
         } as never,
         { logger } as never
       );

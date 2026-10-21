@@ -584,7 +584,7 @@ function hookEnvelope(
     session_id: sessionId,
     cwd: repo.root,
     tool_name: 'Bash',
-    tool_input: { command },
+    tool_input: { command, ...(host === 'codex' ? { workdir: repo.root } : {}) },
     tool_use_id: toolUseId,
     ...(response === undefined
       ? {}
@@ -761,7 +761,7 @@ describe('emitted hook diagnostics', () => {
         session_id: `logging-${String(_host).toLowerCase()}`,
         cwd: join(bundles.root, 'missing-repository'),
         tool_name: 'Bash',
-        tool_input: { command: 'rm file.ts' },
+        tool_input: { command: 'rm file.ts', workdir: join(bundles.root, 'missing-repository') },
         tool_use_id: 'logging-witness'
       },
       { ...process.env, AGENT_HOOKS_LOG_FILE: logPath }

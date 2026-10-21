@@ -641,6 +641,25 @@ function buildOutput(type, stdout, stderr) {
     ...stderr !== void 0 ? { stderr } : {}
   };
 }
+function preToolUseOutput(options = {}) {
+  const hasSpecific = options.additionalContext !== void 0 || options.permissionDecision !== void 0 || options.permissionDecisionReason !== void 0 || options.updatedInput !== void 0;
+  const hookSpecificOutput = hasSpecific ? omitUndefined({
+    hookEventName: "PreToolUse",
+    additionalContext: options.additionalContext,
+    permissionDecision: options.permissionDecision,
+    permissionDecisionReason: options.permissionDecisionReason,
+    updatedInput: options.updatedInput
+  }) : void 0;
+  return buildOutput("PreToolUse", {
+    continue: options.continue,
+    stopReason: options.stopReason,
+    suppressOutput: options.suppressOutput,
+    systemMessage: options.systemMessage,
+    decision: options.decision,
+    reason: options.reason,
+    hookSpecificOutput
+  });
+}
 function userPromptSubmitOutput(options = {}) {
   const hookSpecificOutput = options.additionalContext !== void 0 ? {
     hookEventName: "UserPromptSubmit",
@@ -7436,6 +7455,77 @@ function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
+// packages/agent-hooks/src/codex/execution-plan.ts
+var EXECUTION_PLAN_FLAG = "--execution-plan";
+var MAX_ENCODED_BYTES = 16384;
+var COMMAND_PREFIX = "node -e '/*git-span-execution-plan*/";
+function nonempty(value) {
+  return typeof value === "string" && value.length > 0 && !value.includes("\0");
+}
+function decodeExecutionPlan(encoded) {
+  if (encoded.length === 0 || encoded.length > MAX_ENCODED_BYTES || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))
+    return null;
+  try {
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.toString("base64") !== encoded) return null;
+    const value = JSON.parse(bytes.toString("utf8"));
+    if (!isRecord(value) || value.version !== 1 || !nonempty(value.sessionId) || !nonempty(value.toolUseId) || !nonempty(value.layoutBase) || value.transcriptLocator !== void 0 && !nonempty(value.transcriptLocator) || !isRecord(value.toolInput) || !nonempty(value.toolInput.command) || !isRecord(value.options) || Object.entries(value.options).some(
+      ([key2, item]) => !["stateRoot", "notesExecutable", "lockExecutable"].includes(key2) || !nonempty(item)
+    ))
+      return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+function isExecutionPlanCommand(command) {
+  return command.startsWith(COMMAND_PREFIX);
+}
+function executionPlanCommand(plan, bundleUrl) {
+  const encoded = Buffer.from(JSON.stringify(plan)).toString("base64");
+  if (decodeExecutionPlan(encoded) === null || isExecutionPlanCommand(plan.toolInput.command)) return null;
+  const module = Buffer.from(bundleUrl).toString("base64");
+  const script = `process.argv[2]=\`${EXECUTION_PLAN_FLAG}\`;process.argv[3]=\`${encoded}\`;import(Buffer.from(\`${module}\`,\`base64\`).toString()).catch(()=>process.exit(0))`;
+  return `${COMMAND_PREFIX}${script}'
+${plan.toolInput.command}`;
+}
+async function runExecutionPlan(encoded) {
+  const logger2 = new Logger({ logEnvVar: "AGENT_HOOKS_LOG_FILE" });
+  try {
+    const plan = decodeExecutionPlan(encoded);
+    if (plan === null) throw new Error("invalid or oversized execution plan");
+    const cwd = process.cwd();
+    const layout = createSessionLayout(plan.layoutBase);
+    planBashTouches(
+      plan.toolInput.command,
+      cwd,
+      plan.sessionId,
+      plan.toolUseId,
+      logger2,
+      createDefaultPlannedTouchStore(layout)
+    );
+    const result = await enrollCommitInvocation(
+      {
+        host: "codex",
+        sessionId: plan.sessionId,
+        toolUseId: plan.toolUseId,
+        cwd,
+        toolInput: plan.toolInput,
+        command: plan.toolInput.command,
+        ...plan.transcriptLocator ? { transcriptLocator: plan.transcriptLocator } : {}
+      },
+      plan.options,
+      logger2
+    );
+    if (result.kind !== "enrolled")
+      logger2.warn("git-span execution-directory enrollment unavailable", { reason: result.reason });
+  } catch (err) {
+    logger2.warn("git-span execution-directory planning failed closed for attribution", { err });
+  } finally {
+    logger2.close();
+  }
+}
+
 // node_modules/acorn/dist/acorn.mjs
 var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
 var astralIdentifierStartCodes = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 7, 25, 39, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 5, 57, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 24, 43, 261, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 33, 24, 3, 24, 45, 74, 6, 0, 67, 12, 65, 1, 2, 0, 15, 4, 10, 7381, 42, 31, 98, 114, 8702, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 208, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 225, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4381, 3, 5773, 3, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 8489];
@@ -13210,6 +13300,38 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) {
         if (narrowed.matched) ctx.logger.warn("Codex code-mode exec envelope is not statically recoverable");
         return void 0;
       }
+      const canonical = narrowed.executions[0];
+      if (input.tool_name === "Bash" && narrowed.executions.length === 1 && canonical?.workdir === null && isRecord(input.tool_input) && typeof input.tool_input.command === "string") {
+        if (isExecutionPlanCommand(input.tool_input.command)) return void 0;
+        if (canonical.background) {
+          ctx.logger.warn("git-span commit attribution does not support visible background or delegated execution");
+          return void 0;
+        }
+        const command = executionPlanCommand(
+          {
+            version: 1,
+            sessionId: input.session_id,
+            toolUseId: input.tool_use_id,
+            toolInput: { ...input.tool_input, command: input.tool_input.command },
+            layoutBase: layout.base,
+            options: {
+              stateRoot: options.stateRoot,
+              ...options.notesExecutable ? { notesExecutable: options.notesExecutable } : {},
+              ...options.lockExecutable ? { lockExecutable: options.lockExecutable } : {}
+            },
+            ...input.transcript_path ? { transcriptLocator: input.transcript_path } : {}
+          },
+          import.meta.url
+        );
+        if (command === null) {
+          ctx.logger.warn("git-span execution-directory plan exceeds the supported command payload limit");
+          return void 0;
+        }
+        return preToolUseOutput({
+          permissionDecision: "allow",
+          updatedInput: { ...input.tool_input, command }
+        });
+      }
       const cwd = input.cwd ?? "";
       const commands = narrowed.executions.map((item) => ({
         command: item.command,
@@ -13259,6 +13381,10 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) {
   };
 }
 disableUpdateCheck();
+if (process.argv[2] === EXECUTION_PLAN_FLAG) {
+  await runExecutionPlan(process.argv[3] ?? "");
+  process.exit(0);
+}
 var static_plan_default = preToolUseHook(
   { matcher: "Bash|shell|exec|local_shell|exec_command", timeout: 1e4 },
   createHandler()

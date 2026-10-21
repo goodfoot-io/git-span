@@ -159,7 +159,13 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
   async function runCodexBash(cwd: string, command: string, toolResponse: unknown = undefined): Promise<void> {
     const handler = createCodexHandler(undefined, inMemoryMemoFactory(), layout);
     await handler(
-      { session_id: 'sess', cwd, tool_name: 'Bash', tool_input: { command }, tool_response: toolResponse } as never,
+      {
+        session_id: 'sess',
+        cwd,
+        tool_name: 'Bash',
+        tool_input: { command, workdir: cwd },
+        tool_response: toolResponse
+      } as never,
       { logger: codexLogger } as never
     );
   }
@@ -454,7 +460,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
         tool_use_id: fixture.toolUseId,
         cwd: repoA.root,
         tool_name: 'Bash',
-        tool_input: { command }
+        tool_input: { command, workdir: repoA.root }
       };
       const warnings: string[] = [];
       const testLogger = {

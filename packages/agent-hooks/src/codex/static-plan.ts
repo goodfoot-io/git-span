@@ -1,12 +1,18 @@
 /** Codex PreToolUse planner for every supported shell envelope. */
 
 import { dirname, join, resolve as resolvePath } from 'node:path';
-import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/agent-hooks/codex';
+import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/agent-hooks/codex';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-attribution.js';
 import { type CommitRuntimeOptions, enrollCommitInvocation } from '../common/commit-runtime.js';
 import { isRecord } from '../common/guards.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
+import {
+  EXECUTION_PLAN_FLAG,
+  executionPlanCommand,
+  isExecutionPlanCommand,
+  runExecutionPlan
+} from './execution-plan.js';
 import { narrowShellExecutions } from './shell-input.js';
 
 /** Extract a shell command and the workdir carried by classic/code-mode envelopes. */
@@ -29,6 +35,44 @@ export function createHandler(
       if (narrowed.executions.length === 0) {
         if (narrowed.matched) ctx.logger.warn('Codex code-mode exec envelope is not statically recoverable');
         return undefined;
+      }
+      const canonical = narrowed.executions[0];
+      if (
+        input.tool_name === 'Bash' &&
+        narrowed.executions.length === 1 &&
+        canonical?.workdir === null &&
+        isRecord(input.tool_input) &&
+        typeof input.tool_input.command === 'string'
+      ) {
+        if (isExecutionPlanCommand(input.tool_input.command)) return undefined;
+        if (canonical.background) {
+          ctx.logger.warn('git-span commit attribution does not support visible background or delegated execution');
+          return undefined;
+        }
+        const command = executionPlanCommand(
+          {
+            version: 1,
+            sessionId: input.session_id,
+            toolUseId: input.tool_use_id,
+            toolInput: { ...input.tool_input, command: input.tool_input.command },
+            layoutBase: layout.base,
+            options: {
+              stateRoot: options.stateRoot,
+              ...(options.notesExecutable ? { notesExecutable: options.notesExecutable } : {}),
+              ...(options.lockExecutable ? { lockExecutable: options.lockExecutable } : {})
+            },
+            ...(input.transcript_path ? { transcriptLocator: input.transcript_path } : {})
+          },
+          import.meta.url
+        );
+        if (command === null) {
+          ctx.logger.warn('git-span execution-directory plan exceeds the supported command payload limit');
+          return undefined;
+        }
+        return preToolUseOutput({
+          permissionDecision: 'allow',
+          updatedInput: { ...input.tool_input, command }
+        });
       }
       const cwd = input.cwd ?? '';
       const commands = narrowed.executions.map((item) => ({
@@ -86,6 +130,12 @@ export const STATIC_PLAN_PRE_MATCHER = 'Bash|shell|exec|local_shell|exec_command
 // Automated git-span caller: suppress the update check before any executor
 // runs so every `git span` child inherits the env var.
 disableUpdateCheck();
+
+// The emitted SDK entry calls execute() after this module. Helper mode must finish first.
+if (process.argv[2] === EXECUTION_PLAN_FLAG) {
+  await runExecutionPlan(process.argv[3] ?? '');
+  process.exit(0);
+}
 
 export default preToolUseHook(
   { matcher: 'Bash|shell|exec|local_shell|exec_command', timeout: 10_000 },

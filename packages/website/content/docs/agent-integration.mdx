@@ -36,6 +36,8 @@ Installing the plugin leaves hooks inactive until the user reviews and trusts th
 
 Shell envelopes' `workdir` selects the effective repository for planning and attribution. Patch planning and post-tool handling preserve the affected ranges, including supported failure-event attribution. Context arrives through `additionalContext`.
 
+When Codex omits `workdir` from a Bash hook payload, the plugin prepends a quiet helper through `updatedInput`. The helper checkpoints the actual working directory before the original command runs in its original shell, preserving stdin, stdout, stderr, and exit status. This works with stock Codex and requires no explicit `git -C`. If the helper cannot record a checkpoint, the plugin suppresses attribution rather than guessing from the session directory.
+
 ## OpenCode specifics
 
 OpenCode loads the npm plugin in-process without a trust-review step. `tool.execute.before` captures shell and patch plans; `tool.execute.after` appends `<git-span>` context to tool output. Declared shell working directories and session lifecycle keep plans scoped to the correct repository and tool call.

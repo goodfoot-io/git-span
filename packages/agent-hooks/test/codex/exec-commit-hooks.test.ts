@@ -91,7 +91,7 @@ describe('Codex native exec commit note creation', () => {
         caller,
         form === 'canonical' ? 'Bash' : form === 'code-mode' ? 'exec' : 'exec_command',
         form === 'canonical'
-          ? { command }
+          ? { command, workdir: target.root }
           : form === 'direct'
             ? args
             : form === 'arguments'
@@ -142,7 +142,7 @@ describe('Codex native exec commit note creation', () => {
   it('supports the canonical Bash terminal delivered only after a yielded process completes', async () => {
     const repo = fixture();
     const command = 'read -r ready; git commit -q --allow-empty -m canonical-yield';
-    const input = envelope(repo, 'Bash', { command });
+    const input = envelope(repo, 'Bash', { command, workdir: repo.root });
     prepare(repo, input);
     const child = spawn('bash', ['-c', command], { cwd: repo.root, env: repo.env, stdio: ['pipe', 'pipe', 'pipe'] });
     const finished = new Promise<number | null>((resolve, reject) => {

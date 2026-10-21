@@ -33,6 +33,7 @@ import {
   retainExecution,
   yieldedExecution
 } from './commit-exec.js';
+import { isExecutionPlanCommand } from './execution-plan.js';
 import { narrowShellExecutions } from './shell-input.js';
 
 const APPLY_PATCH_SUCCESS_PREFIX = 'Success. Updated the following files:';
@@ -109,6 +110,26 @@ export function createHandler(
       }
     }
     if (poll) return undefined;
+    if (
+      original === null &&
+      isRecord(input.tool_input) &&
+      typeof input.tool_input.command === 'string' &&
+      isExecutionPlanCommand(input.tool_input.command)
+    ) {
+      ctx.logger.warn('git-span execution-directory receipt missing; suppressing session-directory attribution');
+      return undefined;
+    }
+    if (
+      original === null &&
+      input.tool_name === 'Bash' &&
+      isRecord(input.tool_input) &&
+      typeof input.tool_input.command === 'string' &&
+      typeof input.tool_input.workdir !== 'string' &&
+      typeof input.tool_input.cwd !== 'string'
+    ) {
+      ctx.logger.warn('git-span canonical Bash execution directory unknown; suppressing session-directory attribution');
+      return undefined;
+    }
     const cwd = original?.cwd ?? input.cwd ?? '';
     const sessionId = input.session_id;
     const memo = memoFactory(ctx.logger, layout);

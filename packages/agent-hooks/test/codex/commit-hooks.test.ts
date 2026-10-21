@@ -64,7 +64,7 @@ function envelope(repo: RealBundleRepo, id: string, command: string): Record<str
     transcript_path: '/frozen/transcript.jsonl',
     cwd: repo.root,
     tool_name: 'Bash',
-    tool_input: { command, timeout: 20_000, description: 'preserve auxiliary fields' },
+    tool_input: { command, workdir: repo.root, timeout: 20_000, description: 'preserve auxiliary fields' },
     permission_mode: 'default',
     model: 'fixture',
     turn_id: 'turn-1'
@@ -293,7 +293,7 @@ describe('emitted receipt envelope and executable-search controls', () => {
     repo.env.AGENT_HOOKS_LOG_FILE = log;
     const command = `git commit -q --allow-empty -m oversized; #${'x'.repeat(100_000)}`;
     const input = envelope(repo, 'oversized', command);
-    input.tool_input = { command, description: 'y'.repeat(900_000) };
+    input.tool_input = { command, workdir: repo.root, description: 'y'.repeat(900_000) };
     const result = invokeRealHook(join(hooks, 'static-plan.mjs'), input, repo.env);
     expect((result.output?.hookSpecificOutput as Record<string, unknown>)?.updatedInput).toBeUndefined();
     expect(readdirSync(join(stateRoot(repo), 'invocations'))).toEqual([]);
