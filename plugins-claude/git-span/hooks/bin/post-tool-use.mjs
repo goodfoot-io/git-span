@@ -9395,7 +9395,7 @@ function postTrackedValue(absolutePath, value, cwd) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync7, lstatSync as lstatSync2, realpathSync as realpathSync3, rmSync as rmSync4 } from "node:fs";
+import { existsSync as existsSync7, lstatSync as lstatSync2, realpathSync as realpathSync3, renameSync as renameSync5, rmSync as rmSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join9 } from "node:path";
 
@@ -9473,10 +9473,14 @@ var COMMIT_RECEIPT_LIMITS = {
   jsonFileBytes: 1048576,
   identityKeyBytes: 256,
   reflogBytes: 1048576,
+  /** Newest receipts kept per invocation. */
   receiptsPerInvocation: 256,
-  bytesPerInvocation: 4194304,
+  /** Invocation directories kept before a batch eviction starts. */
+  invocationWindow: 512,
+  /** Invocation count a batch eviction reduces the store to. */
+  invocationWindowFloor: 384,
+  /** Hard scan bound for readers that walk the invocation directory. */
   invocations: 4096,
-  totalBytes: 67108864,
   abandonedRetentionMs: 864e5,
   drainMs: 3e3,
   cliMs: 2e3
@@ -10009,27 +10013,6 @@ async function acquireReceiptClaim(root, key2, deadline, executable) {
   }
   return null;
 }
-function usageRecord(value) {
-  if (!isRecord(value)) return null;
-  const { invocations, totalBytes } = value;
-  return typeof invocations === "number" && Number.isSafeInteger(invocations) && invocations >= 0 && typeof totalBytes === "number" && Number.isSafeInteger(totalBytes) && totalBytes >= 0 ? { invocations, totalBytes } : null;
-}
-async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline, executable) {
-  const claim = await acquireReceiptClaim(root, "capacity", deadline, executable);
-  if (!claim) throw new Error("receipt capacity lock ownership unavailable");
-  try {
-    const path = join8(root, "usage.json");
-    const usage = existsSync6(path) ? usageRecord(readJson(path, 4096)) : { invocations: 0, totalBytes: 0 };
-    if (usage === null) throw new Error("invalid receipt capacity ledger");
-    const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
-    if (next.invocations < 0 || next.invocations > COMMIT_RECEIPT_LIMITS.invocations || next.totalBytes < 0 || next.totalBytes > COMMIT_RECEIPT_LIMITS.totalBytes)
-      return false;
-    atomicJson(path, next);
-    return true;
-  } finally {
-    await claim.release();
-  }
-}
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 async function enrollCommitInvocation(request, options = {}, logger2) {
@@ -10046,6 +10029,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
   try {
     await privateDirectory(root, deadline);
     await privateDirectory(join9(root, "invocations"), deadline);
+    await evictInvocations(root, key2, deadline, options.lockExecutable, logger2);
     const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline, options.lockExecutable);
     if (!claim) throw new Error("invocation enrollment ownership unavailable");
     try {
@@ -10106,38 +10090,20 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
         observing: true,
         lastActivityMs: Date.now()
       };
-      const maximumState = {
-        ...state,
-        status: "acknowledged",
-        pendingNonces: Array.from(
-          { length: COMMIT_RECEIPT_LIMITS.receiptsPerInvocation },
-          () => "x".repeat(COMMIT_RECEIPT_LIMITS.identityKeyBytes)
-        ),
-        observing: false,
-        lastActivityMs: Number.MAX_SAFE_INTEGER
-      };
       const executionContexts = [{ command, cwd: request.cwd }, ...commands];
-      const serializedBytes = [valid.value, observations, maximumState, executionContexts].map(
-        (value) => Buffer.byteLength(JSON.stringify(value))
-      );
-      const initialBytes = serializedBytes.reduce((sum, bytes) => sum + bytes, 0) + 32768;
-      if (serializedBytes.some((bytes) => bytes > COMMIT_RECEIPT_LIMITS.jsonFileBytes) || initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation) {
+      if ([valid.value, observations, state, executionContexts].some((value) => !fitsJsonFile(value))) {
         const reason = "serialized receipt envelope exceeds private state bounds";
         logger2?.warn(`git-span commit receipts: ${reason}`);
         return { kind: "unsupported", reason };
       }
-      if (initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 1, initialBytes, deadline, options.lockExecutable))
-        throw new Error("private receipt state capacity exceeded");
       try {
         await privateDirectory(directory, deadline);
         await privateDirectory(join9(directory, "receipts"), deadline);
         atomicJson(enrollmentPath, valid.value, true);
         atomicJson(join9(directory, "state.json"), state);
-        atomicJson(join9(directory, "usage.json"), { bytes: initialBytes, receipts: 0 });
         atomicJson(join9(directory, "observations.json"), observations, true);
         if (commands.length > 0) atomicJson(join9(directory, "commands.json"), executionContexts, true);
       } catch (error) {
-        await reserveReceiptCapacity(root, -1, -initialBytes, deadline, options.lockExecutable);
         rmSync4(directory, { recursive: true, force: true });
         throw error;
       }
@@ -10191,13 +10157,7 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
                 throw new Error("commit observation deadline exhausted");
               const object = verifyCommitObject(valid.value.gitExecutable, receipt.repository, receipt.sha);
               if (!object.ok) throw new Error(object.reason);
-              await publishReceipt(
-                root,
-                directory,
-                receipt,
-                started + COMMIT_RECEIPT_LIMITS.drainMs,
-                options.lockExecutable
-              );
+              await publishReceipt(directory, receipt);
             }
           } catch (error) {
             logger2?.warn(`git-span commit observation: ${errorMessage2(error)}`);
@@ -10218,6 +10178,61 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
   } catch (error) {
     logger2?.warn(`git-span commit receipts: ${errorMessage2(error)}`);
     return result;
+  }
+}
+function fitsJsonFile(value) {
+  return Buffer.byteLength(JSON.stringify(value)) <= COMMIT_RECEIPT_LIMITS.jsonFileBytes;
+}
+function evictionRank(directory, now) {
+  try {
+    const enrollment = validateCommitEnrollment(readJson(join9(directory, "enrollment.json")));
+    if (!enrollment.ok) return { rank: 0, lastActivityMs: 0 };
+    const state = readState(directory, enrollment.value);
+    if (state.status === "retired") return { rank: 0, lastActivityMs: state.lastActivityMs };
+    if (state.status === "acknowledged") return { rank: 1, lastActivityMs: state.lastActivityMs };
+    if (now - state.lastActivityMs >= COMMIT_RECEIPT_LIMITS.abandonedRetentionMs)
+      return { rank: 2, lastActivityMs: state.lastActivityMs };
+    return null;
+  } catch {
+    return { rank: 0, lastActivityMs: 0 };
+  }
+}
+async function evictInvocations(root, enrollingKey, deadline, executable, logger2) {
+  const invocations = join9(root, "invocations");
+  try {
+    const names = boundedEntries(invocations, Number.POSITIVE_INFINITY, deadline);
+    for (const name of names)
+      if (name.startsWith(".evicted-")) rmSync4(join9(invocations, name), { recursive: true, force: true });
+    const live = names.filter((name) => !name.startsWith(".evicted-"));
+    if (live.length <= COMMIT_RECEIPT_LIMITS.invocationWindow) return;
+    const now = Date.now();
+    const candidates = live.filter((name) => name !== enrollingKey).flatMap((name) => {
+      const ranked = evictionRank(join9(invocations, name), now);
+      return ranked === null ? [] : [{ name, ...ranked }];
+    }).sort((a, b) => a.rank - b.rank || a.lastActivityMs - b.lastActivityMs);
+    let remaining = live.length;
+    for (const candidate of candidates) {
+      if (remaining <= COMMIT_RECEIPT_LIMITS.invocationWindowFloor || performance.now() >= deadline) break;
+      const claim = await acquireReceiptClaim(
+        root,
+        `invocation-${candidate.name}`,
+        Math.min(deadline, performance.now() + 100),
+        executable
+      );
+      if (!claim) continue;
+      try {
+        if (evictionRank(join9(invocations, candidate.name), Date.now()) === null) continue;
+        const trash = join9(invocations, `.evicted-${randomBytes2(8).toString("hex")}`);
+        renameSync5(join9(invocations, candidate.name), trash);
+        rmSync4(trash, { recursive: true, force: true });
+        remaining--;
+      } finally {
+        await claim.release();
+      }
+    }
+    logger2?.warn(`git-span commit receipts: evicted ${live.length - remaining} old invocations`);
+  } catch (error) {
+    logger2?.warn(`git-span commit receipts: eviction skipped: ${errorMessage2(error)}`);
   }
 }
 function receiptRoot(options) {
@@ -10262,27 +10277,19 @@ function readState(directory, enrollment) {
     lastActivityMs: value.lastActivityMs
   };
 }
-function readUsage(directory) {
-  const usage = readJson(join9(directory, "usage.json"), 4096);
-  if (!isRecord(usage) || typeof usage.bytes !== "number" || !Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || typeof usage.receipts !== "number" || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
-    throw new Error("invalid invocation usage");
-  return { bytes: usage.bytes, receipts: usage.receipts };
-}
-async function publishReceipt(root, directory, receipt, deadline, executable) {
+async function publishReceipt(directory, receipt) {
   const enrollment = validateCommitEnrollment(readJson(join9(directory, "enrollment.json")));
   if (!enrollment.ok) throw new Error(enrollment.reason);
   if (existsSync7(join9(directory, "receipts", `${receipt.nonce}.json`))) return;
   const state = readState(directory, enrollment.value);
   if (state.status !== "active") throw new Error("receipt invocation is no longer active");
-  const usage = readUsage(directory);
-  const bytes = Buffer.byteLength(JSON.stringify(receipt));
-  if (usage.receipts >= COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || usage.bytes + bytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 0, bytes, deadline, executable))
-    throw new Error("receipt capacity exceeded");
-  atomicJson(join9(directory, "usage.json"), { bytes: usage.bytes + bytes, receipts: usage.receipts + 1 });
   atomicJson(join9(directory, "receipts", `${receipt.nonce}.json`), receipt, true);
+  const pendingNonces = [...state.pendingNonces, receipt.nonce];
+  for (const dropped of pendingNonces.slice(0, -COMMIT_RECEIPT_LIMITS.receiptsPerInvocation))
+    rmSync4(join9(directory, "receipts", `${dropped}.json`), { force: true });
   atomicJson(join9(directory, "state.json"), {
     ...state,
-    pendingNonces: [...state.pendingNonces, receipt.nonce],
+    pendingNonces: pendingNonces.slice(-COMMIT_RECEIPT_LIMITS.receiptsPerInvocation),
     lastActivityMs: Date.now()
   });
 }
@@ -10337,14 +10344,7 @@ async function drainDirectory(root, directory, enrollment, options, started, log
           if (!confirmation.ok) throw new Error(confirmation.reason);
         }
         if (performance.now() >= deadline) throw new Error("receipt drain deadline exhausted before acknowledgment");
-        const usage = readUsage(directory);
-        const bytes = lstatSync2(join9(directory, "receipts", name)).size;
         rmSync4(join9(directory, "receipts", name));
-        atomicJson(join9(directory, "usage.json"), {
-          bytes: usage.bytes - bytes,
-          receipts: Math.max(0, usage.receipts - 1)
-        });
-        await reserveReceiptCapacity(root, 0, -bytes, deadline, options.lockExecutable);
         acknowledged++;
       } finally {
         await association.release();

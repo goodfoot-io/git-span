@@ -129,8 +129,7 @@ describe('commit observation without command modification', () => {
         'enrollment.json',
         'observations.json',
         'receipts',
-        'state.json',
-        'usage.json'
+        'state.json'
       ]);
       expect(shell(input)).toMatchObject({ status: 0, stdout: '', stderr: '' });
       expect(await terminal(input)).toMatchObject({

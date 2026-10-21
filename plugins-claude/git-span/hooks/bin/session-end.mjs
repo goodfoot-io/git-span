@@ -859,7 +859,7 @@ function cleanupSessionState(layout, sessionId, now = Date.now()) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync5, lstatSync as lstatSync2, realpathSync as realpathSync3, rmSync as rmSync3 } from "node:fs";
+import { existsSync as existsSync5, lstatSync as lstatSync2, realpathSync as realpathSync3, renameSync as renameSync3, rmSync as rmSync3 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join4 } from "node:path";
 
@@ -937,10 +937,14 @@ var COMMIT_RECEIPT_LIMITS = {
   jsonFileBytes: 1048576,
   identityKeyBytes: 256,
   reflogBytes: 1048576,
+  /** Newest receipts kept per invocation. */
   receiptsPerInvocation: 256,
-  bytesPerInvocation: 4194304,
+  /** Invocation directories kept before a batch eviction starts. */
+  invocationWindow: 512,
+  /** Invocation count a batch eviction reduces the store to. */
+  invocationWindowFloor: 384,
+  /** Hard scan bound for readers that walk the invocation directory. */
   invocations: 4096,
-  totalBytes: 67108864,
   abandonedRetentionMs: 864e5,
   drainMs: 3e3,
   cliMs: 2e3
@@ -1387,27 +1391,6 @@ async function acquireReceiptClaim(root, key2, deadline, executable) {
   }
   return null;
 }
-function usageRecord(value) {
-  if (!isRecord(value)) return null;
-  const { invocations, totalBytes } = value;
-  return typeof invocations === "number" && Number.isSafeInteger(invocations) && invocations >= 0 && typeof totalBytes === "number" && Number.isSafeInteger(totalBytes) && totalBytes >= 0 ? { invocations, totalBytes } : null;
-}
-async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline, executable) {
-  const claim = await acquireReceiptClaim(root, "capacity", deadline, executable);
-  if (!claim) throw new Error("receipt capacity lock ownership unavailable");
-  try {
-    const path = join3(root, "usage.json");
-    const usage = existsSync4(path) ? usageRecord(readJson(path, 4096)) : { invocations: 0, totalBytes: 0 };
-    if (usage === null) throw new Error("invalid receipt capacity ledger");
-    const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
-    if (next.invocations < 0 || next.invocations > COMMIT_RECEIPT_LIMITS.invocations || next.totalBytes < 0 || next.totalBytes > COMMIT_RECEIPT_LIMITS.totalBytes)
-      return false;
-    atomicJson(path, next);
-    return true;
-  } finally {
-    await claim.release();
-  }
-}
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 async function cleanupCommitInvocations(host, sessionId, options = {}, logger2) {
@@ -1437,12 +1420,9 @@ async function cleanupCommitInvocations(host, sessionId, options = {}, logger2) 
         const state = readState(directory, valid.value);
         const abandoned = Date.now() - state.lastActivityMs >= COMMIT_RECEIPT_LIMITS.abandonedRetentionMs;
         if (abandoned) {
-          const usage = readUsage(directory);
           logger2?.warn("git-span commit receipts: expired abandoned state and pending evidence");
-          if (await reserveReceiptCapacity(root, -1, -usage.bytes, deadline, options.lockExecutable)) {
-            rmSync3(directory, { recursive: true });
-            result.retired++;
-          }
+          rmSync3(directory, { recursive: true });
+          result.retired++;
           continue;
         }
         if (valid.value.host !== host || valid.value.sessionId !== sessionId || state.status === "active") continue;
@@ -1487,12 +1467,6 @@ function readState(directory, enrollment) {
     observing: value.observing,
     lastActivityMs: value.lastActivityMs
   };
-}
-function readUsage(directory) {
-  const usage = readJson(join4(directory, "usage.json"), 4096);
-  if (!isRecord(usage) || typeof usage.bytes !== "number" || !Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || typeof usage.receipts !== "number" || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
-    throw new Error("invalid invocation usage");
-  return { bytes: usage.bytes, receipts: usage.receipts };
 }
 async function drainDirectory(root, directory, enrollment, options, started, logger2) {
   const deadline = started + COMMIT_RECEIPT_LIMITS.drainMs;
@@ -1545,14 +1519,7 @@ async function drainDirectory(root, directory, enrollment, options, started, log
           if (!confirmation.ok) throw new Error(confirmation.reason);
         }
         if (performance.now() >= deadline) throw new Error("receipt drain deadline exhausted before acknowledgment");
-        const usage = readUsage(directory);
-        const bytes = lstatSync2(join4(directory, "receipts", name)).size;
         rmSync3(join4(directory, "receipts", name));
-        atomicJson(join4(directory, "usage.json"), {
-          bytes: usage.bytes - bytes,
-          receipts: Math.max(0, usage.receipts - 1)
-        });
-        await reserveReceiptCapacity(root, 0, -bytes, deadline, options.lockExecutable);
         acknowledged++;
       } finally {
         await association.release();

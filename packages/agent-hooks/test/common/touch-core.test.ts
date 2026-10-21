@@ -761,7 +761,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           execFileSync: (...args: Parameters<typeof actual.execFileSync>): ReturnType<typeof actual.execFileSync> => {
             const [file, cmdArgs] = args;
             if (file === 'git' && Array.isArray(cmdArgs)) gitCalls.push(cmdArgs);
-            else if (typeof file === 'string' && basename(file) === 'git-span' && Array.isArray(cmdArgs))
+            else if (typeof file === 'string' && /^git-span(\.exe)?$/.test(basename(file)) && Array.isArray(cmdArgs))
               gitCalls.push(['span', ...cmdArgs]);
             return actual.execFileSync(...args);
           }

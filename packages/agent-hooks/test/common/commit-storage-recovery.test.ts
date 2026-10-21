@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { acquireReceiptClaim, reserveReceiptCapacity } from '../../src/common/commit-storage.js';
+import { acquireReceiptClaim } from '../../src/common/commit-storage.js';
 import { acquireNativeReceiptLock } from '../../src/common/receipt-lock.js';
 import { buildWorkspaceGitSpan } from '../real-bundle-helpers.js';
 
@@ -52,7 +52,7 @@ function nativeProcess(directory: string, key = 'capacity', waitMs = 1000) {
 }
 
 describe('receipt storage crash recovery', () => {
-  it('reserves capacity after the claim owner dies leaving an empty serialization guard', async () => {
+  it('recovers the claim after its owner dies leaving an empty serialization guard', async () => {
     const { root, claims } = scratch();
 
     const child = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], {
@@ -63,32 +63,20 @@ describe('receipt storage crash recovery', () => {
     expect(Number.isSafeInteger(deadPid)).toBe(true);
     expect(() => process.kill(deadPid, 0)).toThrowError(expect.objectContaining({ code: 'ESRCH' }));
 
-    mkdirSync(join(claims, 'capacity.guard'), { mode: 0o700 });
-    writeFileSync(join(claims, 'capacity.json'), JSON.stringify({ token: 'abandoned-owner', pid: deadPid }), {
+    mkdirSync(join(claims, 'invocation-dead.guard'), { mode: 0o700 });
+    writeFileSync(join(claims, 'invocation-dead.json'), JSON.stringify({ token: 'abandoned-owner', pid: deadPid }), {
       mode: 0o600
     });
-    const usage = { invocations: 282, totalBytes: 29 * 1024 * 1024 };
-    writeFileSync(join(root, 'usage.json'), JSON.stringify(usage), { mode: 0o600 });
 
-    expect(await reserveReceiptCapacity(root, 1, 1024, performance.now() + 1000, binary)).toBe(true);
-    expect(JSON.parse(readFileSync(join(root, 'usage.json'), 'utf8'))).toEqual({
-      invocations: usage.invocations + 1,
-      totalBytes: usage.totalBytes + 1024
-    });
-    expect(await reserveReceiptCapacity(root, 1, 1024, performance.now() + 1000, binary)).toBe(true);
-    expect(existsSync(join(claims, 'capacity.guard'))).toBe(true);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const claim = await acquireReceiptClaim(root, 'invocation-dead', performance.now() + 1000, binary);
+      expect(claim).not.toBeNull();
+      await claim?.release();
+    }
+    expect(existsSync(join(claims, 'invocation-dead.guard'))).toBe(true);
   });
 
-  it('serializes concurrent real capacity reservations without losing accounting', async () => {
-    const { root } = scratch();
-    const results = await Promise.all(
-      Array.from({ length: 8 }, () => reserveReceiptCapacity(root, 1, 1024, performance.now() + 4000, binary))
-    );
-    expect(results).toEqual(Array(8).fill(true));
-    expect(JSON.parse(readFileSync(join(root, 'usage.json'), 'utf8'))).toEqual({ invocations: 8, totalBytes: 8192 });
-  });
-
-  it('allows nested association and capacity work while an invocation stripe is held', async () => {
+  it('allows nested association work while an invocation stripe is held', async () => {
     const { root, claims } = scratch();
     const invocation = await acquireReceiptClaim(root, 'invocation-first', performance.now() + 2000, binary);
     expect(invocation).not.toBeNull();
@@ -103,7 +91,7 @@ describe('receipt storage crash recovery', () => {
       const association = await acquireReceiptClaim(root, 'association-first', performance.now() + 2000, binary);
       expect(association).not.toBeNull();
       try {
-        expect(await reserveReceiptCapacity(root, 1, 1024, performance.now() + 2000, binary)).toBe(true);
+        expect(association).not.toBeNull();
       } finally {
         await association?.release();
       }
@@ -135,26 +123,17 @@ describe('receipt storage crash recovery', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(owner);
   });
 
-  it('refuses malformed ownership and invalid ledgers without calling them exhausted capacity', async () => {
+  it('refuses malformed ownership', async () => {
     const { root, claims } = scratch();
-    writeFileSync(join(claims, 'capacity.json'), '{}', { mode: 0o600 });
-    await expect(reserveReceiptCapacity(root, 1, 1, performance.now() + 1000, binary)).rejects.toThrow(
-      'ownership unavailable'
-    );
-    rmSync(join(claims, 'capacity.json'));
-    writeFileSync(join(root, 'usage.json'), '{"totalBytes":-1}', { mode: 0o600 });
-    await expect(reserveReceiptCapacity(root, 1, 1, performance.now() + 1000, binary)).rejects.toThrow(
-      'invalid receipt capacity ledger'
-    );
+    writeFileSync(join(claims, 'invocation-bad.json'), '{}', { mode: 0o600 });
+    expect(await acquireReceiptClaim(root, 'invocation-bad', performance.now() + 1000, binary)).toBeNull();
   });
 
-  it('refuses an unavailable lock executable and genuine over-capacity independently', async () => {
+  it('refuses an unavailable lock executable', async () => {
     const { root } = scratch();
     await expect(
-      reserveReceiptCapacity(root, 1, 1, performance.now() + 1000, join(root, 'missing-executable'))
+      acquireReceiptClaim(root, 'invocation-any', performance.now() + 1000, join(root, 'missing-executable'))
     ).rejects.toThrow('receipt lock unavailable');
-    expect(await reserveReceiptCapacity(root, 4097, 0, performance.now() + 1000, binary)).toBe(false);
-    expect(existsSync(join(root, 'usage.json'))).toBe(false);
   });
 
   it('checks primary ownership on release while still holding the mutex', async () => {

@@ -4,8 +4,7 @@ import {
   type CommitInvocationState,
   commitCliBudgetMs,
   decideCommitClaim,
-  transitionCommitInvocation,
-  validateCommitStateCapacity
+  transitionCommitInvocation
 } from '../../src/common/commit-lifecycle.js';
 import { enrollment, nonce, receipt } from './commit-fixtures.js';
 
@@ -18,7 +17,6 @@ const active: CommitInvocationState = {
 };
 const completed: CommitInvocationState = { ...active, status: 'completed', pendingNonces: [nonce], observing: false };
 const owner = { token: 'owner-1234567890abcdef', pid: 1000 };
-const emptyUsage = { invocations: 0, totalBytes: 0, invocationReceipts: 0, invocationBytes: 0 };
 
 describe('independent invocation lifecycle', () => {
   it('keeps the newest receipts when an invocation reaches its receipt window', () => {
@@ -135,27 +133,7 @@ describe('independent invocation lifecycle', () => {
   });
 });
 
-describe('bounded capacity, claims and drain deadline', () => {
-  it('allows exact capacity limits', () => {
-    const additional = {
-      invocations: COMMIT_RECEIPT_LIMITS.invocations,
-      totalBytes: COMMIT_RECEIPT_LIMITS.totalBytes,
-      invocationReceipts: COMMIT_RECEIPT_LIMITS.receiptsPerInvocation,
-      invocationBytes: COMMIT_RECEIPT_LIMITS.bytesPerInvocation
-    };
-    expect(validateCommitStateCapacity(emptyUsage, additional)).toEqual({ ok: true, value: additional });
-  });
-  it.each([
-    { invocations: COMMIT_RECEIPT_LIMITS.invocations + 1 },
-    { totalBytes: COMMIT_RECEIPT_LIMITS.totalBytes + 1 },
-    { invocationReceipts: COMMIT_RECEIPT_LIMITS.receiptsPerInvocation + 1 },
-    { invocationBytes: COMMIT_RECEIPT_LIMITS.bytesPerInvocation + 1 },
-    { invocationBytes: -1 },
-    { invocationReceipts: 0.5 },
-    { totalBytes: Number.NaN }
-  ])('rejects overflow or invalid capacity accounting %#', (changed) => {
-    expect(validateCommitStateCapacity(emptyUsage, { ...emptyUsage, ...changed }).ok).toBe(false);
-  });
+describe('claims and drain deadline', () => {
   it.each([
     [null, 'uncertain', 100, 'acquire'],
     [owner, 'dead', 100, 'recover'],

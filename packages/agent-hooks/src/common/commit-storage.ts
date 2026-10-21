@@ -116,7 +116,7 @@ export interface ReceiptClaim {
 
 /**
  * Hold a crash-released OS mutex across the entire claim; ownerless guards are unused.
- * Native lock stripes have separate roles: invocation -> association -> capacity.
+ * Native lock stripes have separate roles: invocation -> association.
  * Never acquire nested invocation/association claims or nested generic fixture claims.
  */
 export async function acquireReceiptClaim(
@@ -169,51 +169,6 @@ export async function acquireReceiptClaim(
     await delay(Math.min(20, Math.max(0, deadline - performance.now())));
   }
   return null;
-}
-
-interface Usage {
-  invocations: number;
-  totalBytes: number;
-}
-/** The root capacity ledger, or null when the stored document is not non-negative safe-integer counts. */
-function usageRecord(value: unknown): Usage | null {
-  if (!isRecord(value)) return null;
-  const { invocations, totalBytes } = value;
-  return typeof invocations === 'number' &&
-    Number.isSafeInteger(invocations) &&
-    invocations >= 0 &&
-    typeof totalBytes === 'number' &&
-    Number.isSafeInteger(totalBytes) &&
-    totalBytes >= 0
-    ? { invocations, totalBytes }
-    : null;
-}
-export async function reserveReceiptCapacity(
-  root: string,
-  invocationDelta: number,
-  byteDelta: number,
-  deadline: number,
-  executable?: string
-): Promise<boolean> {
-  const claim = await acquireReceiptClaim(root, 'capacity', deadline, executable);
-  if (!claim) throw new Error('receipt capacity lock ownership unavailable');
-  try {
-    const path = join(root, 'usage.json');
-    const usage = existsSync(path) ? usageRecord(readJson(path, 4096)) : { invocations: 0, totalBytes: 0 };
-    if (usage === null) throw new Error('invalid receipt capacity ledger');
-    const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
-    if (
-      next.invocations < 0 ||
-      next.invocations > COMMIT_RECEIPT_LIMITS.invocations ||
-      next.totalBytes < 0 ||
-      next.totalBytes > COMMIT_RECEIPT_LIMITS.totalBytes
-    )
-      return false;
-    atomicJson(path, next);
-    return true;
-  } finally {
-    await claim.release();
-  }
 }
 
 /** Fail-closed file creation also checks the current user's ownership on existing state. */

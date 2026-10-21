@@ -43,11 +43,15 @@ export function transitionCommitInvocation(
       const receipt = validateCommitReceipt(event.receipt, state.enrollment);
       if (!receipt.ok) return receipt;
       if (state.pendingNonces.includes(event.receipt.nonce)) return keep();
-      if (state.pendingNonces.length >= COMMIT_RECEIPT_LIMITS.receiptsPerInvocation)
-        return reject('receipt count exceeds budget');
       return {
         ok: true,
-        value: { ...state, pendingNonces: [...state.pendingNonces, event.receipt.nonce], lastActivityMs: event.nowMs }
+        value: {
+          ...state,
+          pendingNonces: [...state.pendingNonces, event.receipt.nonce].slice(
+            -COMMIT_RECEIPT_LIMITS.receiptsPerInvocation
+          ),
+          lastActivityMs: event.nowMs
+        }
       };
     }
     case 'terminal': {
@@ -87,38 +91,6 @@ export function transitionCommitInvocation(
         return keep();
       return { ok: true, value: { ...state, status: 'retired', pendingNonces: [], lastActivityMs: event.nowMs } };
   }
-}
-
-/** The capacity dimensions every receipt-state accounting check covers. */
-const COMMIT_STATE_USAGE_KEYS = ['invocations', 'totalBytes', 'invocationReceipts', 'invocationBytes'] as const;
-
-export type CommitStateUsage = { readonly [K in (typeof COMMIT_STATE_USAGE_KEYS)[number]]: number };
-
-/** Reject overflow before new publication; callers diagnose once and allow the original command unchanged. */
-export function validateCommitStateCapacity(
-  usage: CommitStateUsage,
-  additional: CommitStateUsage
-): CommitValidation<CommitStateUsage> {
-  const limits: CommitStateUsage = {
-    invocations: COMMIT_RECEIPT_LIMITS.invocations,
-    totalBytes: COMMIT_RECEIPT_LIMITS.totalBytes,
-    invocationReceipts: COMMIT_RECEIPT_LIMITS.receiptsPerInvocation,
-    invocationBytes: COMMIT_RECEIPT_LIMITS.bytesPerInvocation
-  };
-  const total = { ...usage };
-  for (const key of COMMIT_STATE_USAGE_KEYS) {
-    if (
-      !Number.isSafeInteger(usage[key]) ||
-      usage[key] < 0 ||
-      !Number.isSafeInteger(additional[key]) ||
-      additional[key] < 0
-    )
-      return { ok: false, reason: 'invalid receipt capacity accounting' };
-    total[key] = usage[key] + additional[key];
-    if (!Number.isSafeInteger(total[key]) || total[key] > limits[key])
-      return { ok: false, reason: 'receipt state capacity exceeded' };
-  }
-  return { ok: true, value: total };
 }
 
 export interface CommitClaimOwner {
