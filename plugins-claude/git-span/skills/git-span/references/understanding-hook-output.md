@@ -144,6 +144,9 @@ touching a span. Success, failure, interruption, and duplicate delivery cannot
 reuse a plan. Shell hooks record observed Git commits as session notes;
 editing a file alone creates no commit note. Keep the CLI and plugin on the
 same release: receipt coordination uses the CLI's native lock helper.
+A commit in a repository created or first entered in the same Bash call (`git init`
+then `git commit`, or a repository named only through a shell variable) gets no note,
+because enrollment observes only the hook's cwd and literal paths.
 When notes exist, `Stop` asks the agent to dispatch a forked subagent to load
 `git-span:review-notes` and review relevant session notes. Empty stops proceed silently.
 Stop continuations proceed without another review request. `SessionEnd` on

@@ -377,6 +377,8 @@ async function evictInvocations(
 ): Promise<void> {
   const invocations = join(root, 'invocations');
   try {
+    // The pre-window global usage ledger is no longer read; drop it so it does not linger as ownerless state.
+    rmSync(join(root, 'usage.json'), { force: true });
     const names = boundedEntries(invocations, Number.POSITIVE_INFINITY, deadline);
     for (const name of names)
       if (name.startsWith('.evicted-')) rmSync(join(invocations, name), { recursive: true, force: true });
@@ -393,12 +395,18 @@ async function evictInvocations(
     let remaining = live.length;
     for (const candidate of candidates) {
       if (remaining <= COMMIT_RECEIPT_LIMITS.invocationWindowFloor || performance.now() >= deadline) break;
-      const claim = await acquireReceiptClaim(
-        root,
-        `invocation-${candidate.name}`,
-        Math.min(deadline, performance.now() + 100),
-        executable
-      );
+      // The lock helper reports a timeout by throwing; a contended victim is skipped, never fatal to the batch.
+      let claim: Awaited<ReturnType<typeof acquireReceiptClaim>>;
+      try {
+        claim = await acquireReceiptClaim(
+          root,
+          `invocation-${candidate.name}`,
+          Math.min(deadline, performance.now() + 100),
+          executable
+        );
+      } catch {
+        continue;
+      }
       if (!claim) continue;
       try {
         // The state may have changed between ranking and claiming.
@@ -411,7 +419,7 @@ async function evictInvocations(
         await claim.release();
       }
     }
-    logger?.warn(`git-span commit receipts: evicted ${live.length - remaining} old invocations`);
+    logger?.info?.(`git-span commit receipts: evicted ${live.length - remaining} old invocations`);
   } catch (error) {
     logger?.warn(`git-span commit receipts: eviction skipped: ${errorMessage(error)}`);
   }

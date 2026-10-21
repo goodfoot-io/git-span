@@ -15,6 +15,8 @@ These hooks are advisory coverage, not the enforcement boundary. Human changes, 
 
 Claude Code and Codex record observed Git commits as session notes; editing a file alone creates no commit note. Install the CLI and plugin from the same release: receipt coordination uses the CLI's native lock helper, which releases ownership when a hook exits or crashes.
 
+Known exception: commit observation is fixed when the Bash call is enrolled, and watches only the hook's `cwd` and repositories named by literal paths in the command. A commit in a repository created or first entered in the same Bash call (`git init` then `git commit`, or a repository named only through a shell variable such as `cd $dir`) receives no note. Notes are advisory coverage, not a durable guarantee; run `git span drift` in CI.
+
 ## Host coverage
 
 ### Claude Code
