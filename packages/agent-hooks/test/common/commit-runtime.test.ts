@@ -1,5 +1,5 @@
 /** Real Git exercises observation, overlapping windows, durable notes and lifecycle retries. */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -428,6 +428,47 @@ describe('windowed receipt store', () => {
     expect(shell(input).status).toBe(0);
     expect(await terminal(input)).toMatchObject({ acknowledged: 1, pending: 0 });
     expect(notes().notes).toHaveLength(1);
+  });
+
+  it('skips a candidate whose lock times out and keeps evicting the rest, logging at info', async () => {
+    const retired = await seedInvocations(600, 'retired');
+    const claims = join(options.stateRoot as string, 'claims');
+    mkdirSync(claims, { recursive: true, mode: 0o700 });
+    // A real contender holds the oldest candidate's lock, so the helper reports a timeout by throwing.
+    const holder = spawn(
+      binary,
+      ['__receipt-lock', '--directory', claims, '--key', `invocation-${retired[0]}`, '--wait-ms', '5000'],
+      { stdio: ['pipe', 'pipe', 'ignore'] }
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.once('error', reject);
+        holder.stdout.once('data', () => resolve());
+      });
+      const infos: string[] = [];
+      const input = request('git commit -q --allow-empty -m contended');
+      const result = await enrollCommitInvocation(input, options, {
+        warn: (message) => warnings.push(message),
+        info: (message) => infos.push(message)
+      });
+      expect(result.kind).toBe('enrolled');
+      const names = invocationNames();
+      expect(names).toContain(retired[0]);
+      expect(names).not.toContain(retired[1]);
+      expect(names.length).toBeLessThanOrEqual(COMMIT_RECEIPT_LIMITS.invocationWindowFloor + 2);
+      expect(warnings).toEqual([]);
+      expect(infos.some((message) => message.includes('evicted'))).toBe(true);
+    } finally {
+      holder.stdin.end();
+    }
+  });
+
+  it('removes the retired global usage ledger during store maintenance', async () => {
+    mkdirSync(options.stateRoot as string, { recursive: true, mode: 0o700 });
+    const ledger = join(options.stateRoot as string, 'usage.json');
+    writeFileSync(ledger, JSON.stringify({ invocations: 655, totalBytes: 67_036_036 }), { mode: 0o600 });
+    await enroll(request('printf ok'));
+    expect(existsSync(ledger)).toBe(false);
   });
 
   it('does not scan or evict while the store is within its window', async () => {

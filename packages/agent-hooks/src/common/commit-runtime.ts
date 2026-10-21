@@ -47,6 +47,7 @@ import { splitTopLevel } from './shell-split.js';
 /** Host logging adapter; normal enrollment and successful recording remain silent. */
 export interface CommitRuntimeLogger {
   warn(message: string, fields?: Record<string, unknown>): void;
+  info?(message: string, fields?: Record<string, unknown>): void;
 }
 
 /** Inject a private scratch root and real CLI adapter in acceptance checks. Defaults use production discovery. */
