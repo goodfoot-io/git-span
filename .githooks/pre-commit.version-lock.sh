@@ -35,8 +35,6 @@ function glob(dir, pattern) {
 const targets = [];
 
 function addPackageJson(file) {
-  // git-mora has its own release train and validates its manifests below.
-  if (file === 'packages/git-mora/package.json' || /^npm\/git-mora-[^/]+\/package\.json$/.test(file)) return;
   if (!fs.existsSync(file)) return;
   targets.push({
     file,
@@ -212,9 +210,6 @@ if (fs.existsSync(cliFile)) {
   }
 }
 NODE
-if [ -f packages/git-mora/scripts/versions.mjs ]; then
-  node packages/git-mora/scripts/versions.mjs check
-fi
 yarn install
 git add package.json \
     packages/*/package.json \

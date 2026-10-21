@@ -7479,62 +7479,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"git-mora-darwin-arm64@npm:0.1.0, git-mora-darwin-arm64@workspace:npm/git-mora-darwin-arm64":
-  version: 0.0.0-use.local
-  resolution: "git-mora-darwin-arm64@workspace:npm/git-mora-darwin-arm64"
-  languageName: unknown
-  linkType: soft
-
-"git-mora-darwin-x64@npm:0.1.0, git-mora-darwin-x64@workspace:npm/git-mora-darwin-x64":
-  version: 0.0.0-use.local
-  resolution: "git-mora-darwin-x64@workspace:npm/git-mora-darwin-x64"
-  languageName: unknown
-  linkType: soft
-
-"git-mora-linux-arm64@npm:0.1.0, git-mora-linux-arm64@workspace:npm/git-mora-linux-arm64":
-  version: 0.0.0-use.local
-  resolution: "git-mora-linux-arm64@workspace:npm/git-mora-linux-arm64"
-  languageName: unknown
-  linkType: soft
-
-"git-mora-linux-x64@npm:0.1.0, git-mora-linux-x64@workspace:npm/git-mora-linux-x64":
-  version: 0.0.0-use.local
-  resolution: "git-mora-linux-x64@workspace:npm/git-mora-linux-x64"
-  languageName: unknown
-  linkType: soft
-
-"git-mora-win32-x64@npm:0.1.0, git-mora-win32-x64@workspace:npm/git-mora-win32-x64":
-  version: 0.0.0-use.local
-  resolution: "git-mora-win32-x64@workspace:npm/git-mora-win32-x64"
-  languageName: unknown
-  linkType: soft
-
-"git-mora@workspace:packages/git-mora":
-  version: 0.0.0-use.local
-  resolution: "git-mora@workspace:packages/git-mora"
-  dependencies:
-    "@biomejs/biome": "npm:^2.5.8"
-    git-mora-darwin-arm64: "npm:0.1.0"
-    git-mora-darwin-x64: "npm:0.1.0"
-    git-mora-linux-arm64: "npm:0.1.0"
-    git-mora-linux-x64: "npm:0.1.0"
-    git-mora-win32-x64: "npm:0.1.0"
-  dependenciesMeta:
-    git-mora-darwin-arm64:
-      optional: true
-    git-mora-darwin-x64:
-      optional: true
-    git-mora-linux-arm64:
-      optional: true
-    git-mora-linux-x64:
-      optional: true
-    git-mora-win32-x64:
-      optional: true
-  bin:
-    git-mora: bin/git-mora.exe
-  languageName: unknown
-  linkType: soft
-
 "git-span-darwin-arm64@npm:1.1.32, git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
   version: 0.0.0-use.local
   resolution: "git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64"

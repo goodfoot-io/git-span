@@ -84,8 +84,6 @@ scripts/ssh/
 # with a symlink to the platform binary on consumer machines.
 npm/git-span-*/bin/git-span
 npm/git-span-*/bin/git-span.exe
-npm/git-mora-*/bin/git-mora
-npm/git-mora-*/bin/git-mora.exe
 .claude/settings.local.json
 
 # Local benchmark/profiling outputs
