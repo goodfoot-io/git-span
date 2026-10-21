@@ -7419,6 +7419,7 @@ function evictionRank(directory, now) {
 async function evictInvocations(root, enrollingKey, deadline, executable, logger2) {
   const invocations = join9(root, "invocations");
   try {
+    rmSync4(join9(root, "usage.json"), { force: true });
     const names = boundedEntries(invocations, Number.POSITIVE_INFINITY, deadline);
     for (const name of names)
       if (name.startsWith(".evicted-")) rmSync4(join9(invocations, name), { recursive: true, force: true });
@@ -7432,12 +7433,17 @@ async function evictInvocations(root, enrollingKey, deadline, executable, logger
     let remaining = live.length;
     for (const candidate of candidates) {
       if (remaining <= COMMIT_RECEIPT_LIMITS.invocationWindowFloor || performance.now() >= deadline) break;
-      const claim = await acquireReceiptClaim(
-        root,
-        `invocation-${candidate.name}`,
-        Math.min(deadline, performance.now() + 100),
-        executable
-      );
+      let claim;
+      try {
+        claim = await acquireReceiptClaim(
+          root,
+          `invocation-${candidate.name}`,
+          Math.min(deadline, performance.now() + 100),
+          executable
+        );
+      } catch {
+        continue;
+      }
       if (!claim) continue;
       try {
         if (evictionRank(join9(invocations, candidate.name), Date.now()) === null) continue;
@@ -7449,7 +7455,7 @@ async function evictInvocations(root, enrollingKey, deadline, executable, logger
         await claim.release();
       }
     }
-    logger2?.warn(`git-span commit receipts: evicted ${live.length - remaining} old invocations`);
+    logger2?.info?.(`git-span commit receipts: evicted ${live.length - remaining} old invocations`);
   } catch (error) {
     logger2?.warn(`git-span commit receipts: eviction skipped: ${errorMessage2(error)}`);
   }
