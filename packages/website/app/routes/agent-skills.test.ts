@@ -129,8 +129,8 @@ describe('GET /.well-known/agent-skills/*', () => {
       expect(await response.text()).toBe(defined(agentSkillsPublication.files[`${name}/SKILL.md`]).content);
     }
     const script = await fileLoader(
-      skillArgs('/.well-known/agent-skills/hook-effect-analysis/scripts/collect.mjs', {
-        '*': 'hook-effect-analysis/scripts/collect.mjs'
+      skillArgs('/.well-known/agent-skills/git-span/scripts/mine.mjs', {
+        '*': 'git-span/scripts/mine.mjs'
       })
     );
     expect(script.headers.get('content-type')).toBe('text/plain; charset=utf-8');

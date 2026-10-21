@@ -16,8 +16,8 @@
 | Moved | `git span drift --fix <name>` |
 | Changed; anchors still agree at the same address | `git span add <name> <same-anchor>`; preserve its exact shape |
 | Changed whole-file anchor; the file is still consumed as a unit | `git span add <name> <same-bare-path>`; whole-file stays whole-file |
-| Changed; logical region moved | Locate its new extent, then `remove <old-anchor>` before `add <new-anchor>` |
-| Changed; the file shrank below the anchored end but the region still exists | `remove <old-anchor>` then `add <new-anchor>` with the new extent equal to the file's current line count — an identity change, not a narrowing |
+| Changed; logical region moved | Locate its new extent, then `replace <old-anchor> <new-anchor>` |
+| Changed; the file shrank below the anchored end but the region still exists | `replace <old-anchor> <new-anchor>` with the new extent equal to the file's current line count — an identity change, not a narrowing |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor |
 | Lifecycle gate satisfied | Make the authorized change, revise or retire the why, and reconcile or retire superseded anchors |
 | Authority unclear or no intentional change explains drift | Decide which side is authoritative — a doc drifting behind deliberate, committed code is wrong; a code change with no coherent commit story may be a regression. Conform the non-authoritative side; stop if ambiguity remains |

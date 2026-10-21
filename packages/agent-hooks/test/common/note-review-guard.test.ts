@@ -43,9 +43,51 @@ describe('note-review presence guard', () => {
     );
   });
 
-  it.each(['42', '"text"', '{"arbitrary":true}'])('accepts opaque note documents: %s', async (document) => {
+  it.each([
+    '{"schemaVersion":1,"host":"codex","sessionId":"session","transcriptLocator":"t"}',
+    '{"kind":"git-span/uncovered-commit","schema_version":1,"session_id":"session"}'
+  ])('requests review for a note belonging to this session: %s', async (document) => {
     expect(await hasReviewNotes(scope, logger, io(`{"notes":[{"id":1,"document":${document}}]}`))).toBe(true);
   });
+
+  it.each([
+    '42',
+    '"text"',
+    '{"arbitrary":true}',
+    '{"schemaVersion":1,"host":"codex","sessionId":"other"}',
+    '{"schemaVersion":1,"host":"claude","sessionId":"session"}',
+    '{"kind":"git-span/uncovered-commit","schema_version":1,"session_id":"other"}',
+    '{"kind":"git-span/uncovered-commit","schema_version":1}'
+  ])('does not request review for a note outside this session: %s', async (document) => {
+    expect(await hasReviewNotes(scope, logger, io(`{"notes":[{"id":1,"document":${document}}]}`))).toBe(false);
+  });
+
+  it.each(['antigravity', 'opencode'] as const)(
+    'requests review on %s for any note, regardless of session',
+    async (host) => {
+      const hostScope = { ...scope, host };
+      for (const document of [
+        '42',
+        '{"arbitrary":true}',
+        '{"schemaVersion":1,"host":"codex","sessionId":"other"}',
+        '{"kind":"git-span/uncovered-commit","schema_version":1,"session_id":"other"}'
+      ])
+        expect(await hasReviewNotes(hostScope, logger, io(`{"notes":[{"id":1,"document":${document}}]}`))).toBe(true);
+    }
+  );
+
+  it.each(['antigravity', 'opencode'] as const)('does not request review on %s without notes', async (host) => {
+    expect(await hasReviewNotes({ ...scope, host }, logger, io('{"notes":[]}'))).toBe(false);
+  });
+
+  it.each(['claude', 'codex', 'antigravity', 'opencode'] as const)(
+    'skips review and warns on %s when the notes lookup fails',
+    async (host) => {
+      const warn = vi.fn();
+      expect(await hasReviewNotes({ ...scope, host }, { warn }, io('not json'))).toBe(false);
+      expect(warn).toHaveBeenCalledOnce();
+    }
+  );
 
   it('includes other workspace repositories', async () => {
     const other = join(temp.parent, 'other');
@@ -66,7 +108,7 @@ describe('note-review presence guard', () => {
       timedOut: false,
       outputExceeded: false,
       stderr: '',
-      stdout: '{"notes":[42]}'
+      stdout: '{"notes":[{"id":2,"document":{"session_id":"session"}}]}'
     });
     expect(await hasReviewNotes({ ...scope, workspacePaths: [other] }, logger, execute)).toBe(true);
     expect(execute.execute).toHaveBeenCalledTimes(2);
@@ -78,16 +120,16 @@ describe('note-review presence guard', () => {
     io('{"notes":[]}', { exitCode: 1 }),
     io('{"notes":[]}', { timedOut: true }),
     io('{"notes":[]}', { outputExceeded: true })
-  ])('preserves review when absence cannot be confirmed', async (execute) => {
+  ])('skips review and warns when the notes lookup fails', async (execute) => {
     const warn = vi.fn();
-    expect(await hasReviewNotes(scope, { warn }, execute)).toBe(true);
+    expect(await hasReviewNotes(scope, { warn }, execute)).toBe(false);
     expect(warn).toHaveBeenCalledOnce();
   });
 
   it('silently skips non-repository sessions', async () => {
     const nonrepo = makeTempLayout();
     try {
-      const execute = io('{"notes":[42]}');
+      const execute = io('{"notes":[{"id":1,"document":{"session_id":"session"}}]}');
       expect(await hasReviewNotes({ ...scope, cwd: nonrepo.parent }, logger, execute)).toBe(false);
       expect(execute.execute).not.toHaveBeenCalled();
     } finally {

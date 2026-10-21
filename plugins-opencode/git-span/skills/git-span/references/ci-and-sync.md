@@ -62,7 +62,7 @@ edits, inactive hooks, unsupported tools, and host-level failures can bypass
 that coverage. Run `git span drift` before merge to check every existing span
 regardless of how an edit was made.
 Zero drift validates existing declarations, not undeclared couplings or completion
-of noted commit reviews; use `@cover-commits` for those.
+of noted commit reviews; use `@review-notes` for those.
 
 ```bash
 git span drift                # exits 1 on any drift, 0 when clean

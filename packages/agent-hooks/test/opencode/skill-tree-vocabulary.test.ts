@@ -34,20 +34,7 @@ const FORBIDDEN: { name: string; pattern: RegExp }[] = [
  * to the skills root; values map forbidden-token names to why they are
  * correct there. Anything not listed must be completely clean.
  */
-const ALLOWED: Record<string, Record<string, string>> = {
-  'hook-effect-analysis/references/transcript-record-shape.md': {
-    'Claude PostToolUse event':
-      'documents the record shape of MEASURED host transcripts (data vocabulary of the corpora this skill analyzes), not instructions to the running agent',
-    'Claude PreToolUse event':
-      'documents the record shape of MEASURED host transcripts (data vocabulary of the corpora this skill analyzes), not instructions to the running agent'
-  },
-  'hook-effect-analysis/SKILL.md': {
-    'Claude PostToolUse event':
-      '--hook selector examples over recorded cross-harness corpora; the selectors name the recorded events, not this host',
-    'Claude PreToolUse event':
-      '--hook selector examples over recorded cross-harness corpora; the selectors name the recorded events, not this host'
-  }
-};
+const ALLOWED: Record<string, Record<string, string>> = {};
 
 function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

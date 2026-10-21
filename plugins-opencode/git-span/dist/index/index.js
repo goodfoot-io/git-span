@@ -8928,11 +8928,18 @@ function reviewNotesPrompt(scope) {
   const skill = scope.host === "claude" || scope.host === "codex" ? "git-span:review-notes" : "review-notes";
   return [
     "Dispatch a forked subagent with this prompt:",
-    `"Load ${skill}. Check the notes for items relevant to this session. If any exist, follow the skill instructions to review them, remove completed notes, and report unresolved items."`,
+    `"Load ${skill}. Git Span notes exist for this session. Follow the skill instructions to review them, remove completed notes, and report unresolved items."`,
     `Review scope: ${JSON.stringify(scope)}`,
     "Include other repositories used in this session in the review scope.",
     "Wait for the subagent and include any blockers in your final response."
   ].join("\n");
+}
+function noteBelongsToSession(note, scope) {
+  if (scope.host === "antigravity" || scope.host === "opencode") return true;
+  if (!isRecord(note) || !isRecord(note.document)) return false;
+  const document = note.document;
+  if (document.session_id === scope.sessionId) return true;
+  return document.host === scope.host && document.sessionId === scope.sessionId;
 }
 async function hasReviewNotes(scope, logger, io) {
   const deadline = performance.now() + 5e3;
@@ -8956,12 +8963,12 @@ async function hasReviewNotes(scope, logger, io) {
         throw new Error("notes CLI unavailable, failed, or exceeded lookup bounds");
       const envelope = JSON.parse(result.stdout);
       if (!isRecord(envelope) || !Array.isArray(envelope.notes)) throw new Error("invalid notes list response");
-      if (envelope.notes.length > 0) return true;
+      if (envelope.notes.some((note) => noteBelongsToSession(note, scope))) return true;
     }
     return false;
   } catch (err) {
-    logger.warn("git-span could not confirm empty notes; requesting review", { err });
-    return true;
+    logger.warn("git-span notes lookup failed; skipping note review", { err });
+    return false;
   }
 }
 

@@ -44,9 +44,10 @@ Every leaf accepts `--format human|json` (default human). JSON emits one envelop
 ```
 
 Add/show/remove return one record; remove commits deletion before returning it.
-Empty lists return `"notes":[]`. Missing/invalid IDs and storage errors fail
+Human `notes list`/`show` output omits each note's `document`; pass `--format json` to
+read it. Empty lists return `"notes":[]`. Missing/invalid IDs and storage errors fail
 without a success envelope. Notes remain until removed and have no claims,
-leases, synchronization, or automatic coverage classification. The `cover-commits`
+leases, synchronization, or automatic coverage classification. The `review-notes`
 skill defines the coverage-marker convention and review/validation/commit gate
 before consumption; arbitrary JSON notes must not be treated as coverage work.
 Storage is clone-local, independent of resolver caches and span roots:
@@ -249,7 +250,11 @@ touched span, and its span-wide verdict is the only place span-wide state is
 asserted. After the requested-address lines it prints superseded old anchors
 (`` Old anchor superseded by `<new>`: `<old>` — next: git span remove ... ``),
 old anchors that remain drifted (`` Old anchor remains: `<addr>` (<status>) —
-next: git span remove ... ``), and one span-wide line — `` Span `x`: 0 drift
+next: git span remove ... ``) — **do not follow this `remove` hint blindly**: when you
+re-added only some of the changed anchors, the remaining anchor still sits at its
+correct address and is merely stale, and removing it would retire a live anchor. Re-add
+every anchor you have conformed (`git span add <name> <same-address>`) and `remove` only
+anchors whose relationship is gone. The output then ends with one span-wide line — `` Span `x`: 0 drift
 across 1 span (N anchors checked). ``, `` Span `x`: N anchors drifted — ... ``,
 `` Span `x`: state indeterminate (index changed during check) — re-run the
 command or git span drift x ``, or `` Span `x`: state unverified (<reason>) —
@@ -302,8 +307,8 @@ audit trail is the tracked span file and the TOML-style `show` output.
 
 Resolver options are per-span and live in a `[config]` block inside the span
 file. They are read and shown by `git span show <name>`; edit them by editing
-`.span/<name>` directly and committing it like any other tracked change. There
-is no `git span config` subcommand.
+`.span/<name>` directly and committing it like any other tracked change, or with
+`git span config <name> [<key> <value>]` (see above).
 
 ```toml
 # tail of .span/<name>

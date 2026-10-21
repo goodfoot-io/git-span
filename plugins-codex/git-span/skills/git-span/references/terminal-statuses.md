@@ -30,7 +30,7 @@ ls path/to/file1 path/to/file2   # check existence
    have not confirmed — inspect further or `git span delete <name>`.
 3. **Decide:**
    - Relationship still holds at a new location → re-anchor at the new extent
-     (`git span remove <name> <old>` then `git span add <name> <new>`; see the
+     (`git span replace <name> <old> <new>`; see the
      "Re-anchor + retire" recipe in SKILL.md).
    - The related code diverged → fix it first, then re-anchor. Both sides land
      in the same commit.

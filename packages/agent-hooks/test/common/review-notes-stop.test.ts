@@ -25,7 +25,10 @@ execFileSync('git', [
   'fixture'
 ]);
 const command = resolveGitSpanCommand(['notes', 'add', 'HEAD', '--format', 'json'], temp.parent);
-execFileSync(command.executable, command.argv, { cwd: temp.parent, input: JSON.stringify('opaque note') });
+execFileSync(command.executable, command.argv, {
+  cwd: temp.parent,
+  input: JSON.stringify({ kind: 'git-span/uncovered-commit', schema_version: 1, session_id: 'review-session' })
+});
 const context = { logger: new Logger() };
 const input: StopInput = {
   hook_event_name: 'Stop',
@@ -90,6 +93,17 @@ describe('emitted Stop protocol', () => {
         empty.cleanup();
       }
     });
+    it(`${host} emits no review prompt when the only note belongs to another session`, () => {
+      const directory = host === 'claude' ? bundles.claudeHooksDir : bundles.codexHooksDir;
+      const result = invokeRealHook(
+        join(directory, 'stop.mjs'),
+        { ...input, session_id: 'other-session' },
+        { ...process.env, HOME: temp.parent, XDG_CACHE_HOME: temp.parent }
+      );
+      expect(result.stderr).toBe('');
+      expect(result.output?.decision).not.toBe('block');
+      expect(result.output?.reason).toBeUndefined();
+    });
     it(`${host} emits a scoped fork prompt and allows continuation without another prompt`, () => {
       const directory = host === 'claude' ? bundles.claudeHooksDir : bundles.codexHooksDir;
       const bundle = join(directory, 'stop.mjs');
@@ -99,7 +113,7 @@ describe('emitted Stop protocol', () => {
       expect(result.output?.decision).toBe('block');
       expect(result.output?.reason).toContain('forked subagent');
       expect(result.output?.reason).toContain('git-span:review-notes');
-      expect(result.output?.reason).toContain('If any exist');
+      expect(result.output?.reason).toContain('Git Span notes exist for this session');
       expect(result.output?.reason).toContain(JSON.stringify({ host, sessionId: input.session_id, cwd: input.cwd }));
 
       const continuation = invokeRealHook(bundle, { ...input, stop_hook_active: true }, env);

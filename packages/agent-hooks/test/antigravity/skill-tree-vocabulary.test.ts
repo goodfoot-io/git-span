@@ -24,7 +24,7 @@ const skillsRoot = join(process.cwd(), '..', '..', 'plugins-antigravity', 'git-s
 
 /** token pattern → the foreign vocabulary it detects. */
 const FORBIDDEN: { name: string; pattern: RegExp }[] = [
-  { name: 'plugin-namespace skill dispatch', pattern: /git-span:(git-span|reconcile|hook-effect-analysis)/ },
+  { name: 'plugin-namespace skill dispatch', pattern: /git-span:(git-span|reconcile|review-notes)/ },
   { name: 'opencode $-prefixed skill dispatch', pattern: /\$git-span/ },
   { name: 'Claude Agent-tool XML dispatch', pattern: /<invoke name=/ },
   { name: 'Claude/opencode subagent_type dispatch', pattern: /subagent_type/ },
@@ -44,19 +44,6 @@ const FORBIDDEN: { name: string; pattern: RegExp }[] = [
  * correct there. Anything not listed must be completely clean.
  */
 const ALLOWED: Record<string, Record<string, string>> = {
-  'hook-effect-analysis/SKILL.md': {
-    'Claude home path':
-      'names the transcript corpus the pipeline analyzes as DATA (`~/.claude/projects/**/*.jsonl`); the SKILL.md host-scope note states this host records no such transcripts'
-  },
-  'hook-effect-analysis/references/transcript-record-shape.md': {
-    'Claude home path':
-      'documents the record shape of the MEASURED transcript corpus (data vocabulary), not paths on this host',
-    'bare Claude Read tool name':
-      'documents tool_use record names inside the measured corpus (data vocabulary), not instructions to the running agent'
-  },
-  'hook-effect-analysis/scripts/collect.mjs': {
-    'Claude home path': 'the default --root of the corpus the script parses; data plumbing, not host guidance'
-  },
   'git-span/scripts/mine.mjs': {
     'Claude plugin-manifest dir':
       'mining heuristic over ANALYZED repositories (skip-list entry and an example pair in a comment); the repos being mined may be Claude plugins regardless of this host'
@@ -113,7 +100,5 @@ describe('antigravity skill tree — no foreign vocabulary outside data-vocabula
     expect(install).toContain('`{"decision": "allow"}`');
     const team = readFileSync(join(skillsRoot, 'reconcile', 'references', 'team.md'), 'utf8');
     expect(team).toContain('invoke_subagent');
-    const hookEffect = readFileSync(join(skillsRoot, 'hook-effect-analysis', 'SKILL.md'), 'utf8');
-    expect(hookEffect).toContain('On this host');
   });
 });

@@ -147,8 +147,8 @@ same release: receipt coordination uses the CLI's native lock helper.
 A commit in a repository created or first entered in the same Bash call (`git init`
 then `git commit`, or a repository named only through a shell variable) gets no note,
 because enrollment observes only the hook's cwd and literal paths.
-When notes exist, `Stop` asks the agent to dispatch a forked subagent to load
-`git-span:review-notes` and review relevant session notes. Empty stops proceed silently.
+When notes for the session exist, `Stop` asks the agent to dispatch a forked subagent to load
+`git-span:review-notes` and review the notes that exist for the session. Stops without notes for the session proceed silently, including when the notes lookup fails.
 Stop continuations proceed without another review request. `SessionEnd` on
 Claude and empty stops or stop continuations on Codex retire the session memo and plans;
 opportunistic 30-day cleanup covers crashed sessions.

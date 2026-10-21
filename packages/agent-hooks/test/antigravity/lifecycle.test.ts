@@ -162,7 +162,10 @@ describe('antigravity stop cleanup', () => {
       'fixture'
     ]);
     const command = resolveGitSpanCommand(['notes', 'add', 'HEAD', '--format', 'json'], temp.parent);
-    execFileSync(command.executable, command.argv, { cwd: temp.parent, input: '42' });
+    execFileSync(command.executable, command.argv, {
+      cwd: temp.parent,
+      input: JSON.stringify({ session_id: 'agy-emitted-review' })
+    });
     const bundle = resolve('../../plugins-antigravity/git-span/bin/stop.mjs');
     const run = () =>
       spawnSync(process.execPath, [bundle], {

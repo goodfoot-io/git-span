@@ -1,6 +1,6 @@
 {
   "name": "git-span",
-  "version": "1.1.36",
+  "version": "1.1.37",
   "bin": "bin/git-span.exe",
   "man": [
     "man/git-span.1"
@@ -28,11 +28,11 @@
     "scripts/postinstall.js"
   ],
   "optionalDependencies": {
-    "git-span-darwin-arm64": "1.1.36",
-    "git-span-darwin-x64": "1.1.36",
-    "git-span-linux-arm64": "1.1.36",
-    "git-span-linux-x64": "1.1.36",
-    "git-span-win32-x64": "1.1.36"
+    "git-span-darwin-arm64": "1.1.37",
+    "git-span-darwin-x64": "1.1.37",
+    "git-span-linux-arm64": "1.1.37",
+    "git-span-linux-x64": "1.1.37",
+    "git-span-win32-x64": "1.1.37"
   },
   "repository": {
     "type": "git",

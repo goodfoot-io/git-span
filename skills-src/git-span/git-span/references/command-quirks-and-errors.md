@@ -21,8 +21,11 @@ only see it after the commit lands on a shared branch.
 
 ## `why` never gates on the span existing
 
-A bare `git span why <name>` on an unknown name does not error — it prints
-`` `<name>` has no why recorded. `` at exit 0. Worse, `git span why <name>
+A bare `git span why <name>` is interactive read mode and needs a terminal: with
+non-terminal stdin (every agent run) it exits 1 (`why text is required when stdin
+is not a terminal`). Read a why with `git span show <name>`. On a terminal, an
+unknown name does not error — it prints `` `<name>` has no why recorded. `` at
+exit 0. Worse, `git span why <name>
 "..."` on an unknown name silently **creates** a new, anchor-less span with
 that why instead of failing. A why that looks freshly created (rather than
 updated) usually means the target name was mistyped — check with
@@ -102,4 +105,8 @@ A setup audit, not a semantic-drift check: confirms every visible span file
 under the span root parses, and reports a store-size summary (bytes used).
 Run it when local behavior looks wrong — but see above: a
 single malformed span file makes the whole run fail with an unscoped error
-rather than a clean per-span report.
+rather than a clean per-span report. `doctor` exits 1 on any finding, including the
+two optional merge-driver registration findings (`merge=span` in `.gitattributes`
+and `merge.span.driver` in `.git/config`); a repo that skips the optional
+registration therefore never reaches "no findings" — see
+[storage-model](./storage-model.md).

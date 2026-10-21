@@ -299,7 +299,7 @@ corresponding <%= it.skillRef('git-span:git-span') %> section.
 
 ```bash
 git span drift     # must exit 0 with "0 drift"
-git span doctor    # must report "no findings"
+git span doctor    # no findings other than the optional merge-driver registration (exit 1 until registered)
 git add <changed-anchor-paths> .span
 git commit -o .span <changed-anchor-paths> -m "Bring span whys up to the writing standard"
 ```
@@ -354,7 +354,7 @@ definition, so only the failed unit needs rework.
 - Why, `.span/**`, and comment-only edits require no package checks; scoped
   `git span drift <name>` must still exit 0 after every unit.
 - Behavioral changes require the repository's code validation.
-- End of campaign: full `git span drift` exit 0 and `git span doctor` clean.
+- End of campaign: full `git span drift` exit 0 and `git span doctor` clean apart from the optional merge-driver registration findings.
 
 ## Report
 

@@ -9,7 +9,7 @@ description: Track, declare, reconcile, and clean up implicit semantic couplings
 ```
 git span drift [<name-or-path>] [--fix] [--no-exit-code] [--format human|porcelain|json]
 git span add <name> <anchor>...          # declare or refresh; anchor = path or path#Lstart-Lend
-git span why <name> ["..."]           # terminal bare = read; positional = write
+git span why <name> "..."             # write; bare read needs a terminal — agents use `show`
 git span remove <name> <anchor>...       # retire a superseded anchor (pair with add)
 git span replace <name> <old-anchor> <new-anchor>   # one atomic swap: retire old, install new, or nothing
 git span delete <name>                   # whole span gone; NAME only, no anchor args
@@ -122,7 +122,7 @@ and rejects provable supersession (whole-file vs same-path range); preserve its 
 the logical region changed. Require scoped drift to exit 0.
 
 ## Where to go next
-Uncovered commits recorded in notes → `git-span:cover-commits`.
+Uncovered commits recorded in notes → `git-span:review-notes`.
 Pick the first that fits:
 1. Read-only question, no `.span` mutation intended → `references/inspect.md`.
 2. A `drift`/`show`/`list` finding says `DELETED`, `CONFLICT`, or `SUBMODULE` →

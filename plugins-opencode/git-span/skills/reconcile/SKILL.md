@@ -7,7 +7,7 @@ description: Reconcile drifted/stale git spans surfaced by `git span drift`.
 <instructions>
 
 Read `./references/procedure.md` and complete its four stages. You own the commit
-unless embedded in `@cover-commits`; that owner retains all
+unless embedded in `@review-notes`; that owner retains all
 staging, validation, commits, and note consumption. Reconciliation checks existing
 spans; zero drift does not complete coverage review or authorize note removal.
 

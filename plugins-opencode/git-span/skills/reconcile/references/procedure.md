@@ -35,7 +35,7 @@ stage. Staged renames resolve as `moved to <path>`; otherwise re-anchor manually
 staging first makes the classification authoritative (`deleted in the index`;
 committed, it names the commit). Confirm `--fix`'s `moved to` destination when
 another same-content file exists; it matches by content and may pick the wrong
-copy. If it did, `git span remove` the wrong address and `add` the right one.
+copy. If it did, `git span replace <name> '<wrong-address>' '<right-address>'`.
 
 ```bash
 git span drift --fix
@@ -115,8 +115,8 @@ on with your other spans.
 |---|---|
 | Whole-file anchor CHANGED; the file is still consumed as a unit | `git span add <name> '<path>'` — re-add the same bare path; a whole-file anchor stays whole-file |
 | Range anchor CHANGED at the same address; the logical region did not move | `git span add <name> '<path>#L<start>-L<end>'` — re-add the exact existing range, nothing else |
-| File shrunken below the anchored end; the region still exists | `git span remove <name> '<path>#L<old>'` then `git span add <name> '<path>#L<new>'` — an identity change, the new end line being the file's current line count |
-| Logical region genuinely moved to a new range | `git span remove <name> '<path>#L<old>'` then `git span add <name> '<path>#L<new>'` |
+| File shrunken below the anchored end; the region still exists | `git span replace <name> '<path>#L<old>' '<path>#L<new>'` — an identity change, the new end line being the file's current line count |
+| Logical region genuinely moved to a new range | `git span replace <name> '<path>#L<old>' '<path>#L<new>'` |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor; include the content diff in your report |
 | Content no longer describes relationship | `git span remove <name> '<path>#L<N>'` |
 | Relationship gone entirely | `git span delete <name>` |
@@ -162,7 +162,7 @@ editing per se: surface the stop, never re-anchor over a live disagreement.
 
 ```bash
 git span drift     # must exit 0 with "0 drift"
-git span doctor    # must report "no findings"
+git span doctor    # no findings other than the optional merge-driver registration (exit 1 until registered)
 ```
 
 Run required validation for every behavior change and surface every anchor diff.

@@ -148,7 +148,7 @@ reparses ordinary operations, and applies shell join and post-state gates before
 touching a span. Success, failure, interruption, and duplicate delivery cannot
 reuse a plan. Under Antigravity, an idle, successful model `Stop` requests
 a forked subagent using `review-notes` once per
-conversation when notes exist. Empty stops preserve the review guard. Later stops prune the session's call-scoped plans and stashes;
+conversation when any note exists in the repository. Empty stops preserve the review guard. Later stops prune the session's call-scoped plans and stashes;
 error and step-limit stops do not request review. The surfaced-span memo is deliberately left to its TTL
 sweep (pruning it at a turn boundary would make identical spans re-inject
 every turn), and opportunistic 30-day cleanup covers crashed sessions.

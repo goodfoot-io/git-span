@@ -4,9 +4,7 @@
       "name": "git-span",
       "skillsSrc": "skills-src/git-span",
       "skills": [
-        "cover-commits",
         "git-span",
-        "hook-effect-analysis",
         "reconcile",
         "review-notes"
       ],

@@ -3,7 +3,7 @@
 # Finding span candidates by mining git history
 
 Mine history for broad discovery of relationships unenforced by types, tests,
-builds, or generators. For pending commit notes, use `cover-commits`;
+builds, or generators. For pending commit notes, use `review-notes`;
 direct commit evidence needs no statistical co-change threshold.
 
 ## Scripts

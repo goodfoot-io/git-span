@@ -7,7 +7,7 @@ Once installed (see [Getting started](/docs/getting-started)), the git-span plug
 
 - **A touch hook** — surfaces existing spans after supported reads and writes and repairs mechanically safe positional drift inline.
 - **Static planning and lifecycle hooks** — capture bounded pre-state for supported writes, deduplicate context, warm up the CLI, and clean up session state.
-- **Five skills** — `git-span` for declaration, inspection, and focused reconciliation; `cover-commits` for reviewing noted commits and consuming their notes after validated repairs; `review-notes` for reviewing session notes and removing completed notes; `reconcile` for multi-span triage; and `hook-effect-analysis` for measuring hook emissions.
+- **Three skills** — `git-span` for declaration, inspection, and focused reconciliation; `review-notes` for reviewing session notes and noted commits, repairing couplings, and removing completed notes; and `reconcile` for multi-span triage.
 - **An expert subagent where supported** — Claude Code, Codex, and OpenCode ship one; Antigravity ships skills and hooks without a separate agent artifact.
 
 The integrations use the same scriptable `git span` CLI available in a terminal or CI.
@@ -48,7 +48,7 @@ Loading the plugin disables CLI update checks for the session. Set `OPENCODE_GIT
 
 ## Antigravity specifics
 
-Antigravity installs five skills and the workflow hooks without a marketplace or separate trust-review step. Empty `PreToolUse` responses mean denial on this host, so the retained pre-tool handlers return explicit allow decisions.
+Antigravity installs three skills and the workflow hooks without a marketplace or separate trust-review step. Empty `PreToolUse` responses mean denial on this host, so the retained pre-tool handlers return explicit allow decisions.
 
 Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive no touch attribution; explicit `git span drift` checks or CI verify their changes.
 
@@ -58,13 +58,13 @@ Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive
 
 Claude Code and Codex shell hooks record observed Git commits as session notes. Editing a file alone creates no commit note. Install the CLI and plugin from the same release; receipt coordination uses a native CLI lock helper.
 
-All four hosts check for notes in the current repository and supplied workspace roots before requesting review. Empty results proceed silently; a failed lookup preserves the review request.
+All four hosts check for notes in the current repository and supplied workspace roots before requesting review. Empty results proceed silently, and a failed lookup skips the review.
 
-On Claude Code and Codex, when notes exist, the Stop hook asks the agent to dispatch a forked subagent that loads `review-notes` and follows its instructions when relevant notes exist. The agent waits for the review and reports unresolved items. Stop continuations proceed without another review request. Codex clears session touch state on that continuation or an empty stop; Claude clears it at session end.
+On Claude Code and Codex, when notes for the session exist, the Stop hook asks the agent to dispatch a forked subagent that loads `review-notes` and follows its instructions to review them. The agent waits for the review and reports unresolved items. Stop continuations proceed without another review request. If the notes lookup fails, review is skipped. Codex clears session touch state on that continuation or an empty stop; Claude clears it at session end.
 
-Antigravity requests the same review once per conversation at an idle, successful model stop when notes exist. Empty stops preserve its review guard. Later stops proceed and clean up call state; error and step-limit stops do not request review.
+Antigravity requests the same review once per conversation at an idle, successful model stop when any note exists in the repository. Empty stops preserve its review guard. Later stops proceed and clean up call state; error and step-limit stops do not request review.
 
-OpenCode sends one synthetic review prompt to the root session on `session.status` (idle) after user input when notes exist. Review prompts and child sessions do not trigger another review. OpenCode V2 receives the continuation through `session.synthetic` with `resume: true`.
+OpenCode sends one synthetic review prompt to the root session on `session.status` (idle) after user input when any note exists in the repository. Review prompts and child sessions do not trigger another review. OpenCode V2 receives the continuation through `session.synthetic` with `resume: true`.
 
 ## The enforcement backstop
 
