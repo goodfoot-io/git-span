@@ -1,0 +1,5 @@
+packages/agent-hooks/src/common/commit-limits.ts#L19-L20 rk64:8d2d0bf4e9d92bc4
+packages/agent-hooks/src/common/commit-runtime.ts#L97-L108 rk64:7c1fc7d8dbef130d
+packages/agent-hooks/test/common/commit-runtime.test.ts#L436-L440 rk64:d439c9da76e009a4
+
+The eviction share of the enrollment drain budget must stay below the full budget, so claim acquisition keeps a reserved remainder when eviction runs slow; because eviction is time-bounded, the store reaches its window only over later enrollments, and tests settle over repeated enrollments instead of asserting one-call completion.
