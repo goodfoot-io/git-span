@@ -21,7 +21,7 @@ import { itemAt } from '../helpers.js';
 
 function emptyDocument(requested: boolean): ContextDocument {
   return {
-    schema_version: 1,
+    schema_version: 2,
     scopes: [{ path: 'src/a.ts', extent: { kind: 'lines', start: 2, end: 4 } }],
     mutation: {
       requested,
@@ -90,7 +90,7 @@ describe('default context executor', () => {
     expect(await executors.context(request)).toMatchObject({ ok: false, failure: 'empty_output' });
     capture.stdout = '{';
     expect(await executors.context(request)).toMatchObject({ ok: false, failure: 'malformed_json' });
-    capture.stdout = JSON.stringify({ ...emptyDocument(false), schema_version: 2 });
+    capture.stdout = JSON.stringify({ ...emptyDocument(false), schema_version: 3 });
     expect(await executors.context(request)).toMatchObject({ ok: false, failure: 'schema_rejected' });
     capture.stdout = JSON.stringify(emptyDocument(true));
     expect(await executors.context(request)).toMatchObject({ ok: false, failure: 'schema_rejected' });

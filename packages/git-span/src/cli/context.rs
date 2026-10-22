@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Write;
 use std::path::Path;
 
-pub const CONTEXT_SCHEMA_VERSION: u32 = 1;
+pub const CONTEXT_SCHEMA_VERSION: u32 = 2;
 pub const MAX_CONTEXT_ADDRESSES: usize = 4096;
 pub const MAX_CONTEXT_DETAIL_BYTES: usize = 4096;
 pub const MAX_CONTEXT_JSON_BYTES: usize = 16 * 1024 * 1024;
@@ -129,6 +129,9 @@ pub struct ContextAnchor {
 #[schemars(deny_unknown_fields)]
 pub struct ContextSpan {
     pub name: String,
+    /// Content identity of this definition and its resolved source-layer evidence.
+    /// Independent of query scope, filesystem timestamps, and repository location.
+    pub evidence_revision: String,
     /// Always emitted; `null` when the span has no why prose.
     #[schemars(required, schema_with = "crate::schemas::nullable_schema::<String>")]
     pub why: Option<String>,
@@ -530,7 +533,60 @@ fn context_status(status: &AnchorStatus) -> ContextStatus {
     }
 }
 
-fn context_span_from_resolved(span: SpanResolved, overlaps: Vec<ContextOverlap>) -> ContextSpan {
+/// Reuse the already captured and revalidated content identities: no render-time
+/// filesystem reads, and no repository-wide identity that changes unrelated spans.
+struct EvidencePaths<'a> {
+    staged: BTreeMap<&'a str, &'a crate::resolver::core::token::PathState>,
+    worktree: BTreeMap<&'a str, &'a crate::resolver::core::token::PathState>,
+}
+
+impl<'a> EvidencePaths<'a> {
+    fn new(token: &'a crate::resolver::core::token::StateToken) -> Self {
+        Self {
+            staged: token
+                .staged_state
+                .iter()
+                .map(|entry| (entry.path.as_str(), &entry.state))
+                .collect(),
+            worktree: token
+                .worktree_state
+                .iter()
+                .map(|entry| (entry.path.as_str(), &entry.state))
+                .collect(),
+        }
+    }
+
+    fn revision(&self, span: &SpanResolved) -> String {
+        let mut hash = blake3::Hasher::new();
+        hash.update(&serde_json::to_vec(span).expect("resolved span is serializable"));
+        let paths = span
+            .anchors
+            .iter()
+            .flat_map(|anchor| {
+                std::iter::once(normalized_location_path(&anchor.anchored))
+                    .chain(anchor.current.as_ref().map(normalized_location_path))
+            })
+            .collect::<BTreeSet<_>>();
+        for path in paths {
+            hash.update(
+                &serde_json::to_vec(&(
+                    &path,
+                    self.staged.get(path.as_str()),
+                    self.worktree.get(path.as_str()),
+                ))
+                .expect("path evidence is serializable"),
+            );
+        }
+        hash.finalize().to_hex().to_string()
+    }
+}
+
+fn context_span_from_resolved(
+    span: SpanResolved,
+    overlaps: Vec<ContextOverlap>,
+    evidence: &EvidencePaths<'_>,
+) -> ContextSpan {
+    let evidence_revision = evidence.revision(&span);
     let why = (!span.why.trim().is_empty()).then_some(span.why.clone());
     let anchors = span
         .anchors
@@ -552,6 +608,7 @@ fn context_span_from_resolved(span: SpanResolved, overlaps: Vec<ContextOverlap>)
         .collect();
     ContextSpan {
         name: span.name,
+        evidence_revision,
         why,
         overlaps,
         anchors,
@@ -562,7 +619,9 @@ pub(super) fn select_context(
     scopes: Vec<ContextScope>,
     resolved: Vec<SpanResolved>,
     mutation: ContextMutation,
+    token: &crate::resolver::core::token::StateToken,
 ) -> ContextDocument {
+    let evidence = EvidencePaths::new(token);
     let spans_considered = resolved.len() as u64;
     let mut spans = Vec::new();
     let mut anchors_considered = 0_u64;
@@ -617,7 +676,7 @@ pub(super) fn select_context(
             .map(|overlap| overlap.anchor.ordinal)
             .collect::<HashSet<_>>()
             .len() as u64;
-        spans.push(context_span_from_resolved(span, overlaps));
+        spans.push(context_span_from_resolved(span, overlaps, &evidence));
     }
     spans.sort_by(|left, right| left.name.cmp(&right.name));
     crate::perf::counter("context.spans-considered", spans_considered);
@@ -718,10 +777,11 @@ pub(crate) fn build_service_seed(
         }
     }
 
+    let evidence = EvidencePaths::new(&capture.token);
     let spans = capture
         .resolved
         .into_iter()
-        .map(|span| context_span_from_resolved(span, Vec::new()))
+        .map(|span| context_span_from_resolved(span, Vec::new(), &evidence))
         .collect();
     Ok(ContextServiceSeed {
         resolver_passes: capture.resolver_passes,
@@ -862,11 +922,12 @@ pub(super) fn run_context_read_only(
                 definitions: Vec::new(),
             },
         )?;
-        return Ok(select_context(
+        return Ok(ContextDocument {
+            schema_version: CONTEXT_SCHEMA_VERSION,
             scopes,
-            Vec::new(),
-            ContextMutation::default(),
-        ));
+            spans: Vec::new(),
+            mutation: ContextMutation::default(),
+        });
     };
     let query_paths = raw_query_paths(addresses)?;
     let mut last_error = None;
@@ -880,6 +941,7 @@ pub(super) fn run_context_read_only(
                     scopes,
                     capture.resolved,
                     ContextMutation::default(),
+                    &capture.token,
                 ));
             }
             Err(error) if attempt == 0 => last_error = Some(error),
@@ -1078,6 +1140,7 @@ mod tests {
             mutation: ContextMutation::default(),
             spans: vec![ContextSpan {
                 name: "large".into(),
+                evidence_revision: "0".repeat(64),
                 why: Some("x".repeat(MAX_CONTEXT_JSON_BYTES)),
                 overlaps: Vec::new(),
                 anchors: Vec::new(),

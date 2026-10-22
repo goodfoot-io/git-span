@@ -172,8 +172,8 @@ export const artifacts = [
     render: null
   },
   {
-    path: 'public/schemas/cli/v1/*.json',
-    label: 'the published v1 CLI JSON Schemas',
+    path: 'public/schemas/cli/v*/*.json',
+    label: 'the published CLI JSON Schemas',
     kind: 'committed-generated',
     source: 'the --format json document types in packages/git-span/src',
     generator: 'gen-schemas (packages/git-span/src/schemas/mod.rs artifacts)',

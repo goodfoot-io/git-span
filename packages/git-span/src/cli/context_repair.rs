@@ -5,8 +5,9 @@ use super::context::{
     ContextSnapshot, canonicalize_path, capture_snapshot, close_context_capture, merge_scopes,
     normalize_scopes, parse_context_address, render_document, resolve_snapshot, select_context,
 };
+use super::repair_content::RepairContentCache;
 use anyhow::{Context, Result, ensure};
-use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
+use git_span_core::RK64_ALGORITHM;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -461,6 +462,7 @@ fn plan_repair(
         scopes.clone(),
         capture.resolved.clone(),
         ContextMutation::default(),
+        &capture.token,
     );
     let selected = pre
         .spans
@@ -474,11 +476,24 @@ fn plan_repair(
         ..ContextMutation::default()
     };
 
-    for resolved in capture
-        .resolved
+    let mut content = RepairContentCache::new(repo, crate::git::index_entries(repo)?);
+    let touched_paths = scopes
         .iter()
-        .filter(|span| selected.contains(span.name.as_str()))
-    {
+        .map(|scope| scope.path.as_str())
+        .collect::<BTreeSet<_>>();
+    for resolved in &capture.resolved {
+        let selected_span = selected.contains(resolved.name.as_str());
+        if !selected_span
+            && !resolved.anchors.iter().any(|anchor| {
+                anchor.status == AnchorStatus::Moved
+                    && anchor.fuzzy_successors.is_empty()
+                    && anchor.current.as_ref().is_some_and(|current| {
+                        touched_paths.contains(current.path.to_string_lossy().as_ref())
+                    })
+            })
+        {
+            continue;
+        }
         let target = authority.target(&resolved.name, DirectoryPolicy::Existing)?;
         let original = target.parent.read_optional(&target.leaf)?.ok_or_else(|| {
             anyhow::anyhow!(
@@ -488,7 +503,13 @@ fn plan_repair(
         })?;
         let original = String::from_utf8(original).context("span definition is not UTF-8")?;
         let mut span_file = SpanFile::parse(&original)?;
-        let counts = plan_span(repo, resolved, &mut span_file)?;
+        let counts = plan_span(
+            repo,
+            resolved,
+            &mut span_file,
+            (!selected_span).then_some(&touched_paths),
+            &mut content,
+        )?;
         if counts.updated == 0 && counts.removed == 0 {
             continue;
         }
@@ -516,7 +537,7 @@ fn plan_repair(
             definitions: overlay,
         },
     )?;
-    let response = select_context(scopes, post, mutation);
+    let response = select_context(scopes, post, mutation, &capture.token);
     Ok((planned, response, capture))
 }
 
@@ -537,6 +558,8 @@ fn plan_span(
     repo: &gix::Repository,
     resolved: &crate::types::SpanResolved,
     file: &mut SpanFile,
+    touched_paths: Option<&BTreeSet<&str>>,
+    content: &mut RepairContentCache,
 ) -> Result<PlanCounts> {
     ensure!(
         file.anchors.len() == resolved.anchors.len(),
@@ -550,24 +573,23 @@ fn plan_span(
             "span `{}` ordinal {ordinal} no longer matches its resolved anchor",
             resolved.name
         );
-        let repairable = match anchor.status {
-            AnchorStatus::Moved => anchor.fuzzy_successors.first().is_none_or(|candidate| {
-                candidate.confidence() >= EngineOptions::full().fuzzy_threshold
-            }),
-            AnchorStatus::Changed => anchor.content_equivalent,
-            _ => false,
-        };
-        if !repairable {
+        // Automatic repair refreshes location only. Similarity (including
+        // whitespace equivalence) cannot establish that the recorded bytes survived.
+        if anchor.status != AnchorStatus::Moved || !anchor.fuzzy_successors.is_empty() {
             continue;
         }
         let Some(current) = &anchor.current else {
             continue;
         };
-        let content_hash = match anchor.status {
-            AnchorStatus::Moved if anchor.fuzzy_successors.is_empty() => {
-                record.content_hash.to_string()
-            }
-            _ => repair_hash(repo, anchor)?,
+        if touched_paths
+            .is_some_and(|paths| !paths.contains(current.path.to_string_lossy().as_ref()))
+        {
+            continue;
+        }
+        // Verify destination identity before refreshing its canonical hash.
+        // A path-dependent conversion change must still match the original rules.
+        let Some(content_hash) = repair_hash(repo, anchor, content, &record.content_hash)? else {
+            continue;
         };
         plans[ordinal] = Some(OrdinalPlan {
             destination: location_identity(current),
@@ -592,6 +614,9 @@ fn plan_span(
     let mut remove = BTreeSet::new();
     let mut collapsed = 0;
     for ordinals in final_groups.values().filter(|ordinals| ordinals.len() > 1) {
+        if !ordinals.iter().any(|ordinal| plans[*ordinal].is_some()) {
+            continue;
+        }
         let hashes = ordinals
             .iter()
             .map(|ordinal| {
@@ -641,12 +666,12 @@ fn plan_span(
     Ok(counts)
 }
 
-fn repair_hash(repo: &gix::Repository, anchor: &AnchorResolved) -> Result<String> {
-    let current = anchor
-        .current
-        .as_ref()
-        .context("repairable anchor omitted current location")?;
-    let path = current.path.to_string_lossy();
+fn repair_hash(
+    repo: &gix::Repository,
+    anchor: &AnchorResolved,
+    content: &mut RepairContentCache,
+    stored_hash: &str,
+) -> Result<Option<String>> {
     let source = anchor
         .layer_sources
         .iter()
@@ -658,53 +683,7 @@ fn repair_hash(repo: &gix::Repository, anchor: &AnchorResolved) -> Result<String
         })
         .or(anchor.source)
         .context("repairable anchor omitted source provenance")?;
-    match source {
-        DriftSource::Worktree => Ok(super::commit::hash_anchor_content(
-            repo,
-            &path,
-            &current.extent,
-            None,
-            &crate::git::index_entries(repo)?,
-        )?
-        .1),
-        DriftSource::Head => {
-            let head = repo.rev_parse_single("HEAD")?.detach().to_string();
-            Ok(super::commit::hash_anchor_content(
-                repo,
-                &path,
-                &current.extent,
-                Some(&head),
-                &crate::git::index_entries(repo)?,
-            )?
-            .1)
-        }
-        DriftSource::Index => {
-            let entry = crate::git::index_entries(repo)?
-                .into_iter()
-                .find(|entry| {
-                    entry.path == path && entry.stage == gix::index::entry::Stage::Unconflicted
-                })
-                .context("repair source is absent from the index")?;
-            let bytes = crate::git::read_blob_bytes(repo, &entry.oid.to_string())?;
-            validate_extent(&bytes, &current.extent)?;
-            Ok(rk64_to_hex(cheap_fingerprint_with_extent(
-                &bytes,
-                &current.extent,
-            )))
-        }
-    }
-}
-
-fn validate_extent(bytes: &[u8], extent: &AnchorExtent) -> Result<()> {
-    if let AnchorExtent::LineRange { start, end } = extent {
-        let text = std::str::from_utf8(bytes).context("line repair source is not UTF-8")?;
-        let lines = text.lines().count() as u32;
-        ensure!(
-            *start >= 1 && *end >= *start && *end <= lines,
-            "repair extent is outside its source content"
-        );
-    }
-    Ok(())
+    content.relocation_hash(repo, source, anchor, stored_hash)
 }
 
 fn record_identity(record: &crate::span_file::AnchorRecord) -> (String, u32, u32) {
@@ -776,7 +755,12 @@ fn verify_persisted_response(
         })
         .collect::<Result<Vec<_>>>()?;
     let capture = close_context_capture(repo, span_root, &snapshot, &authority, query_paths)?;
-    let actual = select_context(scopes, capture.resolved, persisted.mutation.clone());
+    let actual = select_context(
+        scopes,
+        capture.resolved,
+        persisted.mutation.clone(),
+        &capture.token,
+    );
     ensure!(
         actual == *persisted,
         "durable context repair state does not match its prepared response"

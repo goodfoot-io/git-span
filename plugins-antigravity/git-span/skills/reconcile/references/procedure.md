@@ -40,7 +40,7 @@ Standalone: commit refreshed span files with every owned uncommitted source they
 record, using explicit `-o` paths. Embedded: leave repairs for the coverage owner's
 validation and commit.
 
-Remaining findings are CHANGED (beyond whitespace) and DELETED. Group them by
+Remaining findings include CHANGED (even whitespace), unverified MOVED, and DELETED. Group them by
 span. If none remain, you are done — skip stages 2–4.
 
 ---

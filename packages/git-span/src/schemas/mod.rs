@@ -66,17 +66,13 @@ impl Family {
 
 /// The URL version for a family, from an explicit mapping — never inferred
 /// from the artifact path string, so a published URL's meaning is a declared
-/// fact rather than an accident of file layout. All six families publish at
-/// `v1`; a breaking change bumps a family's entry here and lands the new
-/// schema at a new path, leaving the old URL's bytes untouched.
+/// fact rather than an accident of file layout. A breaking change bumps a
+/// family's entry here and lands the new schema at a new path, leaving the
+/// old URL's bytes untouched.
 pub fn family_url_version(family: &Family) -> u32 {
     match family {
-        Family::Mutation
-        | Family::Resolve
-        | Family::Context
-        | Family::History
-        | Family::Drift
-        | Family::Notes => 1,
+        Family::Mutation | Family::Resolve | Family::History | Family::Drift | Family::Notes => 1,
+        Family::Context => 2,
     }
 }
 
@@ -716,9 +712,12 @@ mod tests {
     }
 
     #[test]
-    fn every_versioned_family_publishes_v1() {
+    fn versioned_families_publish_the_declared_contract_version() {
         for family in json_command_mappings().iter().filter_map(|m| m.family) {
-            assert_eq!(family_url_version(&family), 1);
+            assert_eq!(
+                family_url_version(&family),
+                if family == Family::Context { 2 } else { 1 }
+            );
         }
     }
 
@@ -757,12 +756,11 @@ mod tests {
             .map(|a| a.path.to_str().expect("utf8 path").to_string())
             .collect();
         paths.sort_unstable();
-        let mut expected: Vec<String> = [
-            "context", "drift", "history", "mutation", "notes", "resolve",
-        ]
-        .into_iter()
-        .map(|key| format!("public/schemas/cli/v1/{key}.json"))
-        .collect();
+        let mut expected: Vec<String> = ["drift", "history", "mutation", "notes", "resolve"]
+            .into_iter()
+            .map(|key| format!("public/schemas/cli/v1/{key}.json"))
+            .collect();
+        expected.push("public/schemas/cli/v2/context.json".to_string());
         expected.push("content/docs/commands.mdx".to_string());
         expected.sort_unstable();
         assert_eq!(paths, expected);
@@ -777,9 +775,14 @@ mod tests {
             let parsed: serde_json::Value =
                 serde_json::from_str(&artifact.content).expect("artifact is valid JSON");
             let id = parsed["$id"].as_str().expect("schema has a string $id");
-            assert!(
-                id.starts_with("https://git-span.com/schemas/cli/v1/") && id.ends_with(".json"),
-                "unexpected $id {id}"
+            let key = artifact
+                .label
+                .strip_prefix("schema ")
+                .expect("schema label");
+            let version = if key == "context" { 2 } else { 1 };
+            assert_eq!(
+                id,
+                format!("https://git-span.com/schemas/cli/v{version}/{key}.json")
             );
         }
     }

@@ -202,8 +202,8 @@ pub struct AnchorResolved {
     pub status: AnchorStatus,
     /// Whether the current content is whitespace-normalized-equal to the
     /// *genuine* anchored content. Only meaningful for `Changed`; `false`
-    /// everywhere else. `--fix` re-anchors a `Changed` anchor only when this
-    /// is `true`, so a meaning-changing edit is left drifting (fail-closed).
+    /// everywhere else. This is similarity evidence, not repair authority:
+    /// normalization can erase meaningful whitespace inside literals.
     pub content_equivalent: bool,
     /// Layer that produced the drift; `None` when `Fresh` or terminal.
     pub source: Option<DriftSource>,

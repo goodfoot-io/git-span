@@ -568,6 +568,7 @@ export interface ContextOverlap {
 
 export interface ContextSpan {
   name: string;
+  evidence_revision: string;
   why: string | null;
   overlaps: ContextOverlap[];
   anchors: ContextAnchor[];
@@ -583,7 +584,7 @@ export interface ContextMutation {
 }
 
 export interface ContextDocument {
-  schema_version: 1;
+  schema_version: 2;
   scopes: ContextScope[];
   mutation: ContextMutation;
   spans: ContextSpan[];
@@ -771,13 +772,13 @@ function intersectExtents(left: ContextExtent, right: ContextExtent): ContextExt
   return start <= end ? { kind: 'lines', start, end } : null;
 }
 
-/** Decode the complete schema-v1 context document or reject it atomically. */
+/** Decode the complete schema-v2 context document or reject it atomically. */
 export function decodeContextDocument(stdout: string): ContextDocument {
   if (Buffer.byteLength(stdout) > MAX_CONTEXT_JSON_BYTES) throw new Error('context document exceeds the size limit');
   const parsed: unknown = JSON.parse(stdout);
   const root = record(parsed, 'context document');
   exactKeys(root, ['schema_version', 'scopes', 'mutation', 'spans'], 'context document');
-  if (root.schema_version !== 1) throw new Error('unsupported context schema version');
+  if (root.schema_version !== 2) throw new Error('unsupported context schema version');
   const scopes = arrayField(root.scopes, 'context document.scopes').map((scope, index): ContextScope => {
     const object = record(scope, `context document.scopes[${index}]`);
     exactKeys(object, ['path', 'extent'], `context document.scopes[${index}]`);
@@ -806,11 +807,15 @@ export function decodeContextDocument(stdout: string): ContextDocument {
   const spans = arrayField(root.spans, 'context document.spans').map((span, index): ContextSpan => {
     const label = `context document.spans[${index}]`;
     const object = record(span, label);
-    exactKeys(object, ['name', 'why', 'overlaps', 'anchors'], label);
+    exactKeys(object, ['name', 'evidence_revision', 'why', 'overlaps', 'anchors'], label);
+    const evidenceRevision = stringField(object.evidence_revision, `${label}.evidence_revision`);
+    if (!/^[0-9a-f]{64}$/.test(evidenceRevision))
+      throw new Error(`${label}.evidence_revision must be a 64-digit hex digest`);
     const why = object.why;
     if (why !== null && typeof why !== 'string') throw new Error(`${label}.why must be a string or null`);
     return {
       name: stringField(object.name, `${label}.name`),
+      evidence_revision: evidenceRevision,
       why,
       overlaps: arrayField(object.overlaps, `${label}.overlaps`).map((overlap, overlapIndex) =>
         decodeOverlap(overlap, `${label}.overlaps[${overlapIndex}]`)
@@ -841,7 +846,7 @@ export function decodeContextDocument(stdout: string): ContextDocument {
         throw new Error(`${label}.intersection is not the exact scope/location intersection`);
     }
   }
-  return { schema_version: 1, scopes, mutation, spans };
+  return { schema_version: 2, scopes, mutation, spans };
 }
 
 // ---------------------------------------------------------------------------
@@ -867,11 +872,11 @@ export interface TouchOutput {
 // Merged-block assembly
 // ---------------------------------------------------------------------------
 
-/** The memo key under which a span's render for a given drift status is deduped. */
-function driftKey(name: string, status: PorcelainStatus): string {
-  // Span names come from tab-delimited porcelain, so they never contain a tab;
-  // a tab-joined key can never collide with a bare span name (the surfacing key).
-  return `${name}\t${status}`;
+/** Separate stable repository/span identity from its latest evidence revision. */
+function deliveryIdentity(repoRoot: string, name: string): string {
+  return `touch:${createHash('sha256')
+    .update(JSON.stringify([repoRoot, name]))
+    .digest('hex')}`;
 }
 
 /** The `path#Lstart-Lend` (or bare-path, whole-file) anchor text for a row. */
@@ -1101,12 +1106,17 @@ function spanTouchesInput(
 function renderContextTouch(
   input: TouchInput,
   document: ContextDocument,
+  repoRoot: string,
   repoPath: string,
   ranges: LineRange[] | 'whole-file',
   memo: MemoStore,
   logger: CoreLogger | undefined
 ): string | null {
   const surfaced = memo.getSurfaced(input.sessionId);
+  const latest = new Map<string, string>();
+  for (const key of surfaced) {
+    if (/^touch:[0-9a-f]{64}:[0-9a-f]{64}$/.test(key)) latest.set(key.slice(0, 70), key);
+  }
   const sections: string[] = [];
   const toRecord: string[] = [];
   const driftedNames: string[] = [];
@@ -1118,14 +1128,14 @@ function renderContextTouch(
       .map((anchor) => contextDriftRow(span.name, anchor));
     const debtRows = drift.filter((row) => isDebt(row.status));
     if (drift.length > 0 && debtRows.length === 0) continue;
-    const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
-    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(span.name, status)));
-    const isNewName = !surfaced.has(span.name);
-    if (!isNewName && unsurfacedDebt.length === 0) continue;
+    const identity = deliveryIdentity(repoRoot, span.name);
+    const key = `${identity}:${span.evidence_revision}`;
+    if (surfaced.has(key)) continue;
+    const prior = latest.get(identity);
+    if (prior !== undefined) surfaced.delete(prior);
     sections.push(renderSpanSection(span.name, anchors, debtRows, span.why, logger));
-    if (debtStatuses.length > 0) driftedNames.push(span.name);
-    if (isNewName) toRecord.push(span.name);
-    for (const status of unsurfacedDebt) toRecord.push(driftKey(span.name, status));
+    if (debtRows.length > 0) driftedNames.push(span.name);
+    toRecord.push(key);
   }
   if (sections.length === 0) return null;
   memo.addSurfaced(input.sessionId, toRecord, surfaced);
@@ -1304,7 +1314,15 @@ export async function runTouchHooks(
     const singleTouchMutation =
       (partitions.get(touch.partitionKey)?.length ?? 0) === 1 && rewrittenPartitions.has(touch.partitionKey);
     try {
-      const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo, logger);
+      const additionalContext = renderContextTouch(
+        touch.input,
+        document,
+        touch.repoRoot,
+        touch.repoPath,
+        touch.ranges,
+        memo,
+        logger
+      );
       outputs[touch.index] = { additionalContext, treeModified: singleTouchMutation };
     } catch (err) {
       // Fail-open per touch — one broken rendering must never take the whole

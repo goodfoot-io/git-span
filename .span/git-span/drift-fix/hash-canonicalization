@@ -1,5 +1,7 @@
 packages/git-span/src/cli/commit.rs#L90-L229 rk64:b9d9e2cb0eeb28f3
-packages/git-span/src/cli/drift_fix.rs#L1166-L1352 rk64:2e43501786077408
-packages/git-span/src/cli/drift_fix.rs#L1381-L1507 rk64:f4894c955f9e6cc3
+packages/git-span/src/cli/drift_fix.rs#L1159-L1334 rk64:1476a4d810886ecd
+packages/git-span/src/cli/drift_fix.rs#L1363-L1410 rk64:91aa3b2a4421aeab
+packages/git-span/src/cli/repair_content.rs#L47-L192 rk64:7868d11a9e55e1b2
+packages/git-span/src/resolver/layers/worktree.rs#L77-L124 rk64:3ea6c07145d430bb
 
-Add-time hashing and drift --fix's per-layer recomputation share the resolver's single git-normalized canonicalization, so a freshly added anchor never reads Changed or Moved in repos with EOL normalization or clean/smudge filters.
+Add-time hashing and automatic repair verification must use the resolver's git-normalized canonicalization and line-count validation. RepairContentCache captures each physical file once, normalizes that same snapshot under each required path-rule context, and supplies context and drift repair. Exact relocation normally retains the recorded hash; changing it for destination-path normalization is valid only when the same physical bytes still match the recorded identity under the original path's rules. commit.rs and the captured-byte normalizer in resolver/layers/worktree.rs must preserve that canonical byte and extent identity across EOL normalization, ident expansion, and clean/smudge filters.

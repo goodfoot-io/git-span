@@ -36,6 +36,7 @@ pub mod notes;
 pub mod receipt_lock;
 pub(crate) mod recovery_domain;
 pub(crate) mod repair_domain;
+mod repair_content;
 pub mod resolve;
 pub mod show;
 pub mod tree;
@@ -100,12 +101,11 @@ pub enum Commands {
     /// `paths` may be file paths, globs, or span names; omit them to scan
     /// all spans.
     ///
-    /// With `--fix`, also re-anchors `Moved` anchors unconditionally and
-    /// whitespace-equivalent `Changed` anchors in place, and resolves
-    /// `.span/` merge conflicts structurally. A `Changed` anchor whose
-    /// content differs beyond whitespace is left drifting so the coupling
-    /// resurfaces for human confirmation — the operator reviews the
-    /// rewritten spans with `git diff` and stages only what they agree with.
+    /// With `--fix`, re-anchors verified exact-content relocations and
+    /// resolves `.span/` merge conflicts structurally. `Changed` anchors,
+    /// including whitespace edits, and fuzzy relocation candidates remain
+    /// drifting for review. Inspect rewritten spans with `git diff` before
+    /// staging them.
     /// Conflict resolution splits Git textual conflict markers into
     /// ours/theirs, enforces a clean-source precondition (all referenced
     /// source files must be conflict-free), and calls the structural merge
@@ -132,14 +132,11 @@ pub enum Commands {
     /// scan carries `"clean": false` plus the findings. `--format
     /// porcelain` prints nothing on a clean scan (no header row).
     ///
-    /// WARNING: `--fix` re-anchors `Moved` anchors unconditionally — pure
-    /// line shifts and file renames alike — and whitespace-equivalent
-    /// `Changed` anchors (indentation-only edits), tagging them
-    /// `resolved, pending commit — auto-updated` on the run that fixes
-    /// them. Meaning-altering `Changed` drift — content differs beyond
-    /// whitespace — is always left for you to resolve with `git span
-    /// add`; re-running `--fix` will not touch it. After `--fix`, re-run
-    /// `git span drift` and re-anchor anything still drifting yourself.
+    /// WARNING: `--fix` refreshes only relocations verified against the
+    /// recorded bytes or fingerprint, tagging them `resolved, pending
+    /// commit — auto-updated` on that run. Whitespace edits and fuzzy
+    /// matches require review and explicit re-anchoring. After `--fix`,
+    /// re-run `git span drift` and review anything still drifting.
     /// `--fix` never commits; it only rewrites `.span/` worktree files —
     /// stage and commit with `git add .span && git commit`.
     ///
@@ -155,10 +152,12 @@ pub enum Commands {
     /// Return exact dependency context for repository-relative paths or
     /// inclusive line ranges as one versioned JSON document.
     ///
-    /// With `--fix`, position-only or whitespace-equivalent drift is
-    /// repaired before reporting, and `--operation-id` keys a repair
-    /// retry so the same attempt is idempotent. Output is always the
-    /// versioned context document.
+    /// With `--fix`, verified exact-content relocations are refreshed in
+    /// selected spans and elsewhere in the addressed files before reporting.
+    /// Response selection still follows the requested ranges.
+    /// Whitespace edits and fuzzy matches remain drifting. `--operation-id`
+    /// makes repair retries idempotent. Output is always the versioned
+    /// context document.
     Context(ContextArgs),
 
     #[command(name = "__context-service", hide = true)]
@@ -480,7 +479,7 @@ pub struct ContextArgs {
     #[arg(long, value_enum, default_value_t = ContextFormat::Json)]
     pub format: ContextFormat,
 
-    /// Repair position-only or whitespace-equivalent drift before reporting.
+    /// Refresh verified exact-content relocations in the addressed files before reporting.
     #[arg(long)]
     pub fix: bool,
 
@@ -540,13 +539,11 @@ pub struct DriftArgs {
     #[arg(long, value_name = "PATH")]
     pub perf_trace: Option<std::path::PathBuf>,
 
-    /// Re-anchor `Moved` anchors unconditionally and whitespace-equivalent
-    /// `Changed` anchors in place by rewriting the span worktree files. A
-    /// `Changed` anchor whose content differs beyond whitespace is left
-    /// drifting — the stored hash gates on content-equivalence so that
-    /// meaning-altering edits keep surfacing until the operator confirms
-    /// them. Each surfacing anchor is re-hashed against the deepest drifting
-    /// layer (`Worktree > Index > HEAD`). Also resolves `.span/` merge
+    /// Re-anchor relocations verified against recorded bytes or fingerprints
+    /// by rewriting the span worktree files. `Changed` anchors, including
+    /// whitespace edits, and fuzzy candidates remain drifting for review.
+    /// Verified relocations are re-hashed against the deepest drifting layer
+    /// (`Worktree > Index > HEAD`). Also resolves `.span/` merge
     /// conflicts structurally: splits conflict markers into ours/theirs,
     /// enforces a clean-source precondition (all referenced source files
     /// must be conflict-free), and calls the structural merge kernel. Fully

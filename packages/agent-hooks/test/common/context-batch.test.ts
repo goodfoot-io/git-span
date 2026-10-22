@@ -24,7 +24,7 @@ function memoStore(): MemoStore {
 
 function document(path: string, status: ContextStatus = { code: 'FRESH' }, rewritten = false): ContextDocument {
   return {
-    schema_version: 1,
+    schema_version: 2,
     scopes: [{ path, extent: { kind: 'whole' } }],
     mutation: {
       requested: rewritten,
@@ -37,6 +37,7 @@ function document(path: string, status: ContextStatus = { code: 'FRESH' }, rewri
     spans: [
       {
         name: `span/${path}`,
+        evidence_revision: '0'.repeat(64),
         why: `Keep ${path} aligned.`,
         overlaps: [
           {
@@ -63,7 +64,7 @@ function document(path: string, status: ContextStatus = { code: 'FRESH' }, rewri
   };
 }
 
-describe('schema-v1 context decoder', () => {
+describe('schema-v2 context decoder', () => {
   it('accepts every status, source, and unavailable-reason token', () => {
     const statuses: ContextStatus[] = [
       { code: 'FRESH' },
@@ -95,10 +96,19 @@ describe('schema-v1 context decoder', () => {
     expect(decodeContextDocument(JSON.stringify(empty))).toEqual(empty);
     expect(() => decodeContextDocument('{')).toThrow();
     expect(() => decodeContextDocument(JSON.stringify({ ...empty, mutation: undefined }))).toThrow();
-    expect(() => decodeContextDocument(JSON.stringify({ ...empty, schema_version: 2 }))).toThrow();
+    expect(() => decodeContextDocument(JSON.stringify({ ...empty, schema_version: 3 }))).toThrow();
     const unknown = document('src/app.ts');
     itemAt(itemAt(unknown.spans, 0).anchors, 0).status = { code: 'FUTURE' } as unknown as ContextStatus;
     expect(() => decodeContextDocument(JSON.stringify(unknown))).toThrow();
+  });
+
+  it('requires a complete evidence revision rather than accepting old or malformed span identities', () => {
+    for (const revision of [undefined, '', '0'.repeat(63), 'g'.repeat(64)]) {
+      const value = document('src/app.ts');
+      const span = itemAt(value.spans, 0);
+      const encoded = JSON.stringify({ ...value, spans: [{ ...span, evidence_revision: revision }] });
+      expect(() => decodeContextDocument(encoded)).toThrow();
+    }
   });
 
   it('rejects nested overlap contradictions across basis, location, and intersection', () => {
@@ -282,6 +292,40 @@ describe('plural touch execution', () => {
       expect(itemAt(first.outputs, 0).additionalContext).not.toBeNull();
       expect(repeated.diagnostics.selectedResultCount).toBe(2);
       expect(itemAt(repeated.outputs, 0).additionalContext).toBeNull();
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('keeps only the latest span revision and re-delivers an earlier state when it returns', async () => {
+    const repo = makeTempRepo();
+    try {
+      writeFileSync(join(repo.root, 'a.ts'), 'a\n');
+      const selected = document('a.ts');
+      const span = itemAt(selected.spans, 0);
+      const executors: TouchExecutors = {
+        context: async () => ({ ok: true, document: selected, elapsedMs: 1 })
+      };
+      const touch: TouchInput = {
+        kind: 'read',
+        sessionId: 'session',
+        cwd: repo.root,
+        filePath: join(repo.root, 'a.ts')
+      };
+      const memo = memoStore();
+      const run = async () =>
+        itemAt((await runTouchHooks([touch], executors, memo, null)).outputs, 0).additionalContext;
+      expect(await run()).not.toBeNull();
+      expect(await run()).toBeNull();
+      span.evidence_revision = '1'.repeat(64);
+      itemAt(span.anchors, 0).status = { code: 'CHANGED' };
+      expect(await run()).toContain('— changed');
+      expect(await run()).toBeNull();
+      span.evidence_revision = '0'.repeat(64);
+      itemAt(span.anchors, 0).status = { code: 'FRESH' };
+      expect(await run()).not.toBeNull();
+      expect(await run()).toBeNull();
+      expect(memo.getSurfaced('session').size).toBe(1);
     } finally {
       repo.cleanup();
     }

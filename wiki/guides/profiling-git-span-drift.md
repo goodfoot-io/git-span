@@ -2,7 +2,7 @@
 title: Profiling git span drift
 summary: How to profile `git span drift` — flame-graph capture with `perf record` + inferno, the opt-in `--perf-trace` per-anchor wall-clock CSV emitter, and the `--perf` / `GIT_SPAN_PERF=1` cache-path counters that say which cache path a run took and why.
 aliases: [git-span profiling, perf trace, cache-path counters, immutable counters, perf-trace]
-links-reviewed: 5
+links-reviewed: 6
 ---
 
 # Profiling `git span drift`
@@ -55,7 +55,7 @@ Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/
 | `span` | string | Span name (e.g. `wiki/architecture/refs`) |
 | `anchor_id` | string | Anchor identifier within the span |
 | `path` | string | File path the anchor references |
-| `wall_us` | u128 | Wall-clock microseconds spent in [`resolve_anchor_inner`](../../packages/git-span/src/resolver/engine/anchor.rs#L651-L1667) |
+| `wall_us` | u128 | Wall-clock microseconds spent in [`resolve_anchor_inner`](../../packages/git-span/src/resolver/engine/anchor.rs#L651-L657) |
 | `status` | enum | One of `Fresh`, `ResolvedPendingCommit`, `Moved`, `Changed`, `Deleted`, `MergeConflict`, `Submodule`, `ContentUnavailable` |
 
 Values containing `,`, `"`, newline (`\n`), or carriage return (`\r`) are RFC-4180-escaped (wrapped in `"`, internal `"` doubled).

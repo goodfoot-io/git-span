@@ -114,11 +114,12 @@ file, missing span name, unmatched literal glob) — see `references/inspect.md`
 `git span context` accepts one or more exact repository-relative paths or
 inclusive `path#L<start>-L<end>` ranges. A bare path is whole-file scope.
 Inputs are unioned, duplicate and overlapping ranges are normalized, and the
-command returns deterministic schema-v1 JSON with:
+command returns deterministic schema-v2 JSON with:
 
 - normalized `scopes`;
 - a `mutation` object (`requested`, `rewritten`, and exact span/anchor counts);
-- every exactly overlapping span, ordered by name, with nullable `why`;
+- every exactly overlapping span, ordered by name, with nullable `why` and a
+  required `evidence_revision` digest of its definition and relevant file state;
 - the anchored/current overlap(s) that selected it, including scope index,
   final anchor ordinal and ID, basis, matched location, and intersection; and
 - the selected span's complete ordered anchor set, including anchored/current
@@ -140,12 +141,13 @@ nonzero, diagnose on stderr, and leave stdout empty. Context accepts exact
 paths only—no globs or span names—and never expands the transitive graph that
 `tree` reports.
 
-`--fix` repairs only position drift and whitespace-equivalent changes. It
-plans the exact post-state response and checks its size before the first span
-rename, then journals original/planned bytes and publishes durable span bytes,
-the committed response, and the service's immutable post-generation before
-replying. Meaning-changing edits remain `CHANGED`. Cycles and swaps are
-planned by final ordinal rather than mutation order.
+`--fix` refreshes verified exact-content relocations in selected spans and
+elsewhere in the addressed files; response selection remains scoped. Whitespace
+edits and fuzzy matches stay drifting. It plans the exact post-state response
+and checks its size before the first span rename, then journals original/planned
+bytes and publishes durable span bytes, the committed response, and the service's
+immutable post-generation before replying. Cycles and swaps are planned by final
+ordinal rather than mutation order.
 
 For retryable automation, supply `--operation-id <uuid>` with `--fix`. The
 same UUID and identical normalized request returns the originally committed
@@ -373,11 +375,10 @@ git span drift --fix              # authoritative resolver (also re-anchors drif
 git span merge-driver <BASE> <OURS> <THEIRS> <MARKER_LEN>   # git-invoked accelerator, never run by hand
 ```
 
-`git span drift --fix` is the authoritative finisher. It re-anchors every
-`Moved` anchor and whitespace-equivalent `Changed` anchor in place (re-hashing
-each against the deepest drifting layer, Worktree > Index > HEAD) — a
-`Changed` anchor whose content differs beyond whitespace is left drifting so
-the coupling resurfaces for human confirmation. Beyond re-anchoring, it
+`git span drift --fix` is the authoritative finisher. It refreshes relocations
+verified against recorded bytes or fingerprints, re-hashing against the deepest
+drifting layer (Worktree > Index > HEAD). Whitespace edits and fuzzy matches
+remain drifting for review. Beyond re-anchoring, it
 rewrites conflict-markered `.span/` files into one clean version: splits the
 markers into ours/theirs, **enforces a clean-source precondition** — every
 source file an affected span anchors must itself be conflict-free — reads the

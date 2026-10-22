@@ -4,7 +4,7 @@ summary: The current constraints on git-span's commercial claims — drift is no
 aliases: [Commercial Risks]
 tags: [marketing, use-cases]
 keywords: [risks, boundaries, correctness, authoring cost, prompt injection, cross-repository, efficacy evidence]
-links-reviewed: 2
+links-reviewed: 3
 ---
 
 # Boundaries and risks

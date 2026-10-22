@@ -533,9 +533,9 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
     // they came from a full scan, positional args, or staging-only discovery.
     sort_spans_by_anchor_path(&mut spans);
 
-    // `--fix`: re-anchor drifted Moved records (unconditional) and
-    // whitespace-equivalent Changed records in the span worktree files, then
-    // re-resolve so the rendered post-fix view reflects the new statuses.
+    // `--fix`: refresh exact relocated records in the span worktree files,
+    // retaining changed content and fuzzy candidates for review. Re-resolve
+    // so the rendered post-fix view reflects the new statuses.
     // The set of anchor ids actually rewritten drives the "auto-updated" tag
     // and the exit-code subtraction.
     let (fix_result, post_region_corpus): (
@@ -639,7 +639,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
             pre_fix_source_layers = Some(crate::resolver::build_source_layers(repo, options)?);
         }
         let apply_start = crate::perf::enabled().then(std::time::Instant::now);
-        let fr = super::drift_fix::apply_fix(repo, &fix_input, span_root, options.fuzzy_threshold)?;
+        let fr = super::drift_fix::apply_fix(repo, &fix_input, span_root)?;
         if let Some(start) = apply_start {
             crate::perf::record_fix_apply_ns(start.elapsed().as_nanos() as u64);
         }

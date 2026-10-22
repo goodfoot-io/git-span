@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import {
   type DriftPorcelainRow,
@@ -93,51 +94,57 @@ async function query(fake: SurfaceFake, request: ContextQueryRequest) {
     }
     const scopes = parsed.map(({ path, extent }) => ({ path, extent }));
     const spans = await Promise.all(
-      [...byName].map(async ([name, rows]) => ({
-        name,
-        why: await fake.why(name, request.repoRoot),
-        overlaps: rows.flatMap((row, ordinal) =>
-          scopes.flatMap((scope, scopeIndex) => {
-            if (scope.path !== row.path) return [];
-            const overlap = intersection(scope.extent, row);
-            if (overlap === null) return [];
-            return [
-              {
-                scope: scopeIndex,
-                anchor: { ordinal, id: `${name}:${ordinal}` },
-                basis: 'anchored' as const,
-                location: {
-                  path: row.path,
-                  extent:
-                    row.start === 0 && row.end === 0
-                      ? ({ kind: 'whole' } as const)
-                      : ({ kind: 'lines', start: row.start, end: row.end } as const)
-                },
-                intersection: overlap
-              }
-            ];
-          })
-        ),
-        anchors: rows.map((row, ordinal) => ({
-          ordinal,
-          id: `${name}:${ordinal}`,
-          anchored: {
-            path: row.path,
-            extent:
-              row.start === 0 && row.end === 0
-                ? ({ kind: 'whole' } as const)
-                : ({ kind: 'lines', start: row.start, end: row.end } as const)
-          },
-          current: null,
-          status: status(row, drift, rows),
-          source: 'WORKTREE' as const,
-          sources: ['WORKTREE' as const]
-        }))
-      }))
+      [...byName].map(async ([name, rows]) => {
+        const why = await fake.why(name, request.repoRoot);
+        return {
+          name,
+          evidence_revision: createHash('sha256')
+            .update(JSON.stringify([name, rows, drift.filter((row) => row.name === name), why]))
+            .digest('hex'),
+          why,
+          overlaps: rows.flatMap((row, ordinal) =>
+            scopes.flatMap((scope, scopeIndex) => {
+              if (scope.path !== row.path) return [];
+              const overlap = intersection(scope.extent, row);
+              if (overlap === null) return [];
+              return [
+                {
+                  scope: scopeIndex,
+                  anchor: { ordinal, id: `${name}:${ordinal}` },
+                  basis: 'anchored' as const,
+                  location: {
+                    path: row.path,
+                    extent:
+                      row.start === 0 && row.end === 0
+                        ? ({ kind: 'whole' } as const)
+                        : ({ kind: 'lines', start: row.start, end: row.end } as const)
+                  },
+                  intersection: overlap
+                }
+              ];
+            })
+          ),
+          anchors: rows.map((row, ordinal) => ({
+            ordinal,
+            id: `${name}:${ordinal}`,
+            anchored: {
+              path: row.path,
+              extent:
+                row.start === 0 && row.end === 0
+                  ? ({ kind: 'whole' } as const)
+                  : ({ kind: 'lines', start: row.start, end: row.end } as const)
+            },
+            current: null,
+            status: status(row, drift, rows),
+            source: 'WORKTREE' as const,
+            sources: ['WORKTREE' as const]
+          }))
+        };
+      })
     );
     const rewritten = fixes.some(({ modified }) => modified);
     const document: ContextDocument = {
-      schema_version: 1,
+      schema_version: 2,
       scopes,
       mutation: {
         requested: request.repair,

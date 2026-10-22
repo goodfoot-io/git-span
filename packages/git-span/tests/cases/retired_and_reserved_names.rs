@@ -359,7 +359,7 @@ fn pre_existing_context_span_has_a_precise_bare_routing_matrix() -> Result<()> {
         String::from_utf8_lossy(&query.stderr)
     );
     let document: serde_json::Value = serde_json::from_slice(&query.stdout)?;
-    assert_eq!(document["schema_version"], 1);
+    assert_eq!(document["schema_version"], 2);
 
     let option_without_address = repo.run_span(["context", "--format", "json"])?;
     let stderr = String::from_utf8_lossy(&option_without_address.stderr);

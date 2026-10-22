@@ -363,7 +363,7 @@ pub(crate) fn resolve_whole_file(
                         status,
                         source,
                         layer_sources,
-                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                        content_equivalent: false, // whole-file anchors do not compute whitespace similarity
                         locus: None,
                         fuzzy_successors: vec![],
                         moved_uncommitted: false,
@@ -390,7 +390,7 @@ pub(crate) fn resolve_whole_file(
                         status,
                         source: None,
                         layer_sources: vec![],
-                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                        content_equivalent: false, // whole-file anchors do not compute whitespace similarity
                         locus: None,
                         fuzzy_successors: vec![],
                         moved_uncommitted: false,
@@ -436,7 +436,7 @@ pub(crate) fn resolve_whole_file(
                                         status: AnchorStatus::Moved,
                                         source: Some(deepest),
                                         layer_sources: vec![deepest],
-                                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                                        content_equivalent: false, // whole-file anchors do not compute whitespace similarity
                                         locus: None,
                                         fuzzy_successors: vec![],
                                         moved_uncommitted: true,
@@ -484,7 +484,7 @@ pub(crate) fn resolve_whole_file(
                         status: AnchorStatus::Changed,
                         source: Some(removed_layer),
                         layer_sources: vec![removed_layer],
-                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                        content_equivalent: false, // whole-file anchors do not compute whitespace similarity
                         locus: None,
                         fuzzy_successors,
                         moved_uncommitted,
@@ -517,7 +517,7 @@ pub(crate) fn resolve_whole_file(
                             status: AnchorStatus::Moved,
                             source: Some(deepest),
                             layer_sources: vec![deepest],
-                            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                            content_equivalent: false, // whole-file anchors do not compute whitespace similarity
                             locus: None,
                             fuzzy_successors: vec![],
                             moved_uncommitted: false,
@@ -557,7 +557,7 @@ pub(crate) fn resolve_whole_file(
                             status,
                             source: None,
                             layer_sources: vec![],
-                            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                            content_equivalent: false, // whole-file anchors do not compute whitespace similarity
                             locus: None,
                             fuzzy_successors,
                             moved_uncommitted: false,
@@ -581,7 +581,7 @@ pub(crate) fn resolve_whole_file(
                         status: AnchorStatus::Changed,
                         source: Some(removed_layer),
                         layer_sources: vec![removed_layer],
-                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                        content_equivalent: false, // whole-file anchors do not compute whitespace similarity
                         locus: None,
                         fuzzy_successors,
                         moved_uncommitted: false,
@@ -732,7 +732,7 @@ pub(crate) fn resolve_whole_file(
         status,
         source,
         layer_sources,
-        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+        content_equivalent: false, // whole-file anchors do not compute whitespace similarity
         locus: None,
         fuzzy_successors,
         moved_uncommitted: false,

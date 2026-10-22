@@ -21,7 +21,7 @@ beforeEach(() => {
   mkdirSync(gitDirectory);
   selected = join(pathDirectory, 'git-span');
   const document = JSON.stringify({
-    schema_version: 1,
+    schema_version: 2,
     scopes: [],
     mutation: {
       requested: false,
@@ -68,7 +68,7 @@ describe('git-span selected on PATH', () => {
 
   it('uses PATH for strict context requests', async () => {
     const result = await createDefaultTouchExecutors().context({ repoRoot: scratch, addresses: [], repair: false });
-    expect(result).toMatchObject({ ok: true, document: { schema_version: 1 } });
+    expect(result).toMatchObject({ ok: true, document: { schema_version: 2 } });
   });
 
   it('uses PATH for detached warmup clients', () => {

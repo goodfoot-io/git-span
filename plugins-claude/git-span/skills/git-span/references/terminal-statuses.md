@@ -55,8 +55,8 @@ progress and this file is unresolved (`git status` shows it unmerged, e.g.
 
 **Fix.** Resolve the conflict in the **source** file first (`git add` it).
 Once every source file an affected span anchors is conflict-free, run
-`git span drift --fix` — it re-anchors `Moved` and whitespace-only `Changed`
-anchors in place and structurally resolves any `.span/` file git itself left
+`git span drift --fix` — it refreshes verified exact-content relocations
+and structurally resolves any `.span/` file git itself left
 marker-laden (anchors unioned, re-pointed, re-hashed against the resolved
 worktree). You never hand-edit an `rk64:` hash. `--fix` fails closed —
 reporting instead of guessing — when:

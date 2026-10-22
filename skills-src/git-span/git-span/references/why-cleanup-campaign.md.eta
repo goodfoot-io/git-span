@@ -78,7 +78,7 @@ commit. Otherwise continue.
 | single-file | list | every anchor is a range in one file | add the counterparty the why names; delete only if none exists |
 | drift-claim | confirm | asserts a fact about code that may have changed (a mechanism, a count, a "fixed" problem) | verify against current anchor bytes; rewrite or use `git span history <name>` if creation-vs-current is unclear |
 | lifecycle-gate | confirm | behavior is conditional on named evidence | verify the evidence; preserve behavior and why when unmet, invalidated, or unavailable; when satisfied, make the change, then revise or retire the why and every superseded anchor |
-| drift-range | confirm | anchor content shifted but still the same logical site | `drift --fix` (Moved / whitespace-only Changed) or manual re-anchor (real content drift) |
+| drift-range | confirm | anchor content shifted but still the same logical site | `drift --fix` (verified exact-content relocation) or review and manual re-anchor |
 | mis-anchored | confirm | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `drift` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `drift` alone | find the real site, then swap the old range for the new one with `git span replace` |
 | duplicate/overlap | confirm | two spans assert the same coupling | consolidate (Operations table) |
 | generated-output | confirm | a script or generator writes an anchored path and nobody hand-edits it | drop the output anchors, keep the producer↔consumer contract |
@@ -86,8 +86,8 @@ commit. Otherwise continue.
 | open-set registry | confirm | one anchor's content is a *list* of the other anchors — tells: "and others", "when ⟨members⟩ are added", "enumerating", "documents each" | **advisory, never auto-reject.** Distinguish a shared obligation ("every X must …" — keep) from a listing obligation ("every X is enumerated here" — narrow to the co-varying core, or hand the list to the tooling that owns it) |
 
 Then run `git span drift` once (read-only) to pre-mark remaining drift-range
-candidates — `--fix` already cleared Moved and whitespace-only Changed, so what
-remains is real content drift. **STOP if a DELETED anchor's file no longer
+candidates — `--fix` cleared verified exact-content relocations; review remaining
+changes and fuzzy candidates. **STOP if a DELETED anchor's file no longer
 exists on disk** — a fork cannot investigate a deleted file; the main agent
 resolves it inline: remove the anchor if the remaining anchors still describe
 the relationship, else delete the span.

@@ -1,4 +1,4 @@
-//! Executable contract for the schema-v1 context query.
+//! Executable contract for the schema-v2 context query.
 
 use crate::support::TestRepo;
 use anyhow::{Context, Result};
@@ -43,7 +43,7 @@ fn ignored_contract_case() -> Result<()> {
     let output = repo.run_span(["context", "file1.txt#L1-L3", "--format", "json"])?;
     assert!(output.status.success());
     let document: git_span::cli::context::ContextDocument = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document.schema_version, 1);
+    assert_eq!(document.schema_version, 2);
     Ok(())
 }
 
@@ -398,14 +398,22 @@ fn no_op_repair_never_prepares_recovery_and_replays_after_repository_changes() -
         &operation,
     ];
     let fixed = repo.run_span_with_envs(args, &[("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")])?;
-    assert!(fixed.status.success(), "{}", String::from_utf8_lossy(&fixed.stderr));
+    assert!(
+        fixed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fixed.stderr)
+    );
     let document: serde_json::Value = serde_json::from_slice(&fixed.stdout)?;
     assert_eq!(document["mutation"]["rewritten"], false);
     assert!(!repo.path().join(".git/span/recovery.pending").exists());
 
     repo.write_file("file1.txt", "changed\nmeaning\nnow\n")?;
     let replay = repo.run_span_with_envs(args, &[("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")])?;
-    assert!(replay.status.success(), "{}", String::from_utf8_lossy(&replay.stderr));
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
     assert_eq!(replay.stdout, fixed.stdout);
     assert!(!repo.path().join(".git/span/recovery.pending").exists());
     Ok(())
@@ -432,11 +440,15 @@ fn reader_clears_legacy_prepared_no_op_after_repository_changes() -> Result<()> 
         ],
         &[("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")],
     )?;
-    assert!(fixed.status.success(), "{}", String::from_utf8_lossy(&fixed.stderr));
+    assert!(
+        fixed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fixed.stderr)
+    );
 
-    let journal_path = repo
-        .path()
-        .join(format!(".git/span/context/recovery/journal/operation-{operation}.json"));
+    let journal_path = repo.path().join(format!(
+        ".git/span/context/recovery/journal/operation-{operation}.json"
+    ));
     let mut journal: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_path)?)?;
     assert_eq!(journal["entries"].as_array().map(Vec::len), Some(0));
     journal["state"] = serde_json::Value::String("prepared".into());
@@ -1531,7 +1543,13 @@ fn controlled_repair_epoch() -> Result<()> {
     assert_eq!(fixed_json["mutation"]["rewritten"], true);
     assert_eq!(fixed_json["mutation"]["anchors_updated"], 1);
     let replay = repo.run_span([
-        "context", "file1.txt", "--format", "json", "--fix", "--operation-id", &operation,
+        "context",
+        "file1.txt",
+        "--format",
+        "json",
+        "--fix",
+        "--operation-id",
+        &operation,
     ])?;
     assert!(replay.status.success());
     assert_eq!(replay.stdout, fixed.stdout);
@@ -1899,5 +1917,89 @@ fn production_perf_counters_and_acceptance_harness() -> Result<()> {
             "missing perf counter {counter}: {stderr}"
         );
     }
+    Ok(())
+}
+
+fn evidence_revision(repo: &TestRepo, address: &str) -> Result<String> {
+    let output = repo.run_span_with_env(
+        ["context", address, "--format", "json"],
+        "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+        "1",
+    )?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let revision = document["spans"][0]["evidence_revision"]
+        .as_str()
+        .context("span revision")?;
+    assert_eq!(revision.len(), 64);
+    assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    Ok(revision.to_owned())
+}
+
+#[test]
+fn evidence_revision_is_scope_independent_and_ignores_unrelated_files() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "revision", "file1.txt#L1-L2"])?
+            .status
+            .success()
+    );
+    let first = evidence_revision(&repo, "file1.txt#L1-L1")?;
+    assert_eq!(first, evidence_revision(&repo, "file1.txt")?);
+    repo.write_file("file2.txt", "unrelated new revision\n")?;
+    assert_eq!(first, evidence_revision(&repo, "file1.txt#L2-L2")?);
+    assert!(
+        repo.run_span(["why", "revision", "A changed obligation."])?
+            .status
+            .success()
+    );
+    let revised_why = evidence_revision(&repo, "file1.txt")?;
+    assert_ne!(first, revised_why);
+    assert!(
+        repo.run_span(["add", "revision", "file2.txt#L1-L1"])?
+            .status
+            .success()
+    );
+    assert_ne!(revised_why, evidence_revision(&repo, "file1.txt")?);
+    Ok(())
+}
+
+#[test]
+fn evidence_revision_tracks_index_and_head_changes_with_unchanged_worktree() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "revision", "file1.txt#L1-L2"])?
+            .status
+            .success()
+    );
+    assert!(repo.run_git(["add", ".span"])?.status.success());
+    assert!(
+        repo.run_git(["commit", "-m", "definition"])?
+            .status
+            .success()
+    );
+    // Keep the effective worktree bytes and CHANGED classification constant
+    // while changing the intermediate index and then committed source layers.
+    repo.write_file("file1.txt", "index_one\nline2\n")?;
+    assert!(repo.run_git(["add", "file1.txt"])?.status.success());
+    repo.write_file("file1.txt", "effective\nline2\n")?;
+    let index_one = evidence_revision(&repo, "file1.txt")?;
+    repo.write_file("file1.txt", "index_two\nline2\n")?;
+    assert!(repo.run_git(["add", "file1.txt"])?.status.success());
+    repo.write_file("file1.txt", "effective\nline2\n")?;
+    let index_two = evidence_revision(&repo, "file1.txt")?;
+    assert_ne!(index_one, index_two);
+    assert!(
+        repo.run_git(["commit", "-m", "changed index"])?
+            .status
+            .success()
+    );
+    let committed_two = evidence_revision(&repo, "file1.txt")?;
+    assert_ne!(index_two, committed_two);
+    assert_eq!(committed_two, evidence_revision(&repo, "file1.txt")?);
     Ok(())
 }

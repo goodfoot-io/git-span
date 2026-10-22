@@ -70,9 +70,9 @@ const HISTORY_WALK_LIMIT: u32 = 64;
 /// whose line range `[start, end]` still hashes to `stored_hash` — i.e. the
 /// last point before HEAD where the anchor's genuine original bytes are
 /// recoverable. Used only when HEAD itself no longer carries the original
-/// (the drifting edit was committed), so a committed whitespace-only reshape
-/// can still be proven content-equivalent instead of being left drifting
-/// merely because the true original fell out of HEAD.
+/// (the drifting edit was committed), so informational whitespace similarity
+/// still compares with the genuine original. Normalization does not prove
+/// semantic equivalence or authorize automatic repair.
 ///
 /// Returns the historical `[start, end]` lines (owned, since the backing
 /// blob text does not outlive this scan). `None` on a rename, deletion, or
@@ -1592,9 +1592,9 @@ pub(crate) fn resolve_anchor_inner(
                             } else {
                                 computed_layer_sources
                             };
-                            // Content-equivalence gate for `--fix`. `content_equivalent`
-                            // is true only when the current slice is a whitespace-only
-                            // reshaping of the *genuine* original anchored slice.
+                            // Informational whitespace similarity. This cannot authorize
+                            // repair: whitespace inside literals may carry meaning.
+                            // Compare against the *genuine* original anchored slice.
                             // `a_slice` reads the HEAD blob, which may already carry
                             // the change (HEAD-layer drift); verify it is the true
                             // original by hashing it against `stored_hash`.

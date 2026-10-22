@@ -1,7 +1,7 @@
-//! `git span drift --fix` — rewrite `Moved` anchors and whitespace-equivalent
-//! `Changed` anchors in place by editing the span worktree files. No commit is
-//! produced; the operator inspects the rewrite with `git diff` and stages it
-//! manually.
+//! `git span drift --fix` — refresh exact relocated anchors in the span
+//! worktree files. Changed content and fuzzy candidates remain unresolved.
+//! No commit is produced; the operator inspects the rewrite with `git diff`
+//! and stages it manually.
 //!
 //! The per-layer hashing rule (Worktree > Index > HEAD) drives both
 //! which layer's content to read and which hashing convention to use.
@@ -9,15 +9,13 @@
 //! `notes/current-blob-unreliable-for-fix.md`), so we read content per
 //! surfacing layer rather than via `current.blob`.
 
-use crate::cli::commit::{
-    hash_anchor_content, write_worktree_span,
-};
-use crate::descriptor_authority::{DirectoryPolicy, SpanRootAuthority};
+use crate::cli::commit::{hash_anchor_content, write_worktree_span};
 use crate::cli::duplicate_identity::{AddAvailability, AddRefusal};
 use crate::cli::format::{
     collapse_is_unverified, format_anchor_address, format_same_side_collapse,
     format_sentinel_preserved,
 };
+use crate::descriptor_authority::{DirectoryPolicy, SpanRootAuthority};
 use crate::git::IndexEntrySnapshot;
 use crate::span_file::{AnchorRecord, SpanFile, has_conflict_markers};
 use crate::types::{AnchorExtent, AnchorStatus, DriftSource, SpanResolved};
@@ -25,7 +23,7 @@ use anyhow::Result;
 use git_span_core::span_file::merge_span_files;
 use git_span_core::{
     CollapsedIdentity, RK64_ALGORITHM, RK64_UNMATCHED_SENTINEL_HASH, SpanConfig, SpanMergeResult,
-    carried_sentinel, cheap_fingerprint_with_extent, collapse_duplicate_identities, rk64_to_hex,
+    carried_sentinel, collapse_duplicate_identities,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -1086,11 +1084,11 @@ fn resolve_conflicted_span(
     Ok(())
 }
 
-/// Re-anchor every `Moved` anchor and whitespace-equivalent `Changed` anchor
-/// in `spans` by rewriting the matching span worktree files. A `Changed`
-/// anchor whose content differs beyond whitespace is left drifting. Returns a
-/// [`FixResult`] carrying the set of `anchor_id`s actually rewritten and the
-/// set of span names whose files were written to disk.
+/// Refresh exact relocated anchors in `spans` by rewriting their locations
+/// in the matching span worktree files. Changed content and fuzzy successors
+/// remain drifting; similarity never authorizes acknowledging new bytes.
+/// Returns a [`FixResult`] carrying the set of `anchor_id`s actually rewritten
+/// and the set of span names whose files were written to disk.
 ///
 /// Terminal statuses (`Deleted`, `ContentUnavailable`, `MergeConflict`,
 /// `Submodule`) are left untouched. `Fresh` anchors are not candidates
@@ -1123,7 +1121,6 @@ pub(crate) fn apply_fix(
     repo: &gix::Repository,
     spans: &[SpanResolved],
     span_root: &str,
-    fuzzy_threshold: f64,
 ) -> Result<FixResult> {
     let mut fix = FixResult {
         residue_span_names: BTreeSet::new(),
@@ -1135,14 +1132,6 @@ pub(crate) fn apply_fix(
         identities_collapsed: Vec::new(),
     };
 
-    // Resolve HEAD once for HEAD-layer rewrites. Some test scenarios may
-    // have no HEAD yet (unborn branch); in that case we simply skip
-    // HEAD-layer rewrites and leave the affected anchors as-is.
-    let head_oid: Option<String> = repo
-        .rev_parse_single("HEAD")
-        .ok()
-        .map(|id| id.detach().to_string());
-
     // The shared "can `add` actually run here?" predicate, probed once for
     // the sweep. Every line this function prints that names a repair command
     // asks it, so `--fix`, the drift report, and `doctor` cannot give one
@@ -1152,6 +1141,10 @@ pub(crate) fn apply_fix(
     // Materialize the index snapshot once — shared by every
     // hash_anchor_content call and the Index-layer hash path below.
     let index_snapshot: Option<Vec<IndexEntrySnapshot>> = crate::git::index_entries(repo).ok();
+    let mut repair_content = super::repair_content::RepairContentCache::new(
+        repo,
+        index_snapshot.clone().unwrap_or_default(),
+    );
 
     for m in spans {
         // `drift --fix` is dispatched under `Mode::Exclusive`, so the
@@ -1306,23 +1299,12 @@ pub(crate) fn apply_fix(
                     && carried_sentinel(r)
             });
 
-            // Re-anchor `Moved` unconditionally (bytes are identical, only
-            // relocated). Re-anchor `Changed` only when the change preserved
-            // the anchored content (whitespace/formatting-equivalent); a
-            // meaning-changing edit is left drifting so the coupling
-            // resurfaces. Everything else (Fresh, terminal) is skipped.
+            // Refresh established identity only. Neither normalized whitespace
+            // nor a fuzzy successor proves that the reviewed bytes survived.
+            // Sentinel records retain their separate position-only recovery path.
             let reanchor = match resolved.status {
-                AnchorStatus::Moved => {
-                    // Exact-match MOVED (fuzzy_successors empty): always
-                    // re-anchor. Fuzzy MOVED: only re-anchor when confidence
-                    // meets or exceeds the threshold.
-                    match resolved.fuzzy_successors.first() {
-                        Some(best) => best.confidence() >= fuzzy_threshold,
-                        None => true,
-                    }
-                }
-                AnchorStatus::Changed => resolved.content_equivalent || record_carries_sentinel,
-                AnchorStatus::ResolvedPendingCommit => false, // already synced with worktree
+                AnchorStatus::Moved => resolved.fuzzy_successors.is_empty(),
+                AnchorStatus::Changed => record_carries_sentinel,
                 _ => false,
             };
 
@@ -1382,106 +1364,27 @@ pub(crate) fn apply_fix(
             // the span record instead of re-hashing, which would compute
             // a hash against a potentially different layer's content at
             // the tracked position (card main-148).
-            // Cross-file (rename) and fuzzy relocations must re-hash:
-            // the content is at a different path or has changed.
-            let idx = index_snapshot.as_deref().unwrap_or(&[]);
-            let hash_hex: String = if matches!(resolved.status, AnchorStatus::Moved)
-                && resolved.fuzzy_successors.is_empty()
-                && resolved
-                    .current
-                    .as_ref()
-                    .is_some_and(|c| c.path == resolved.anchored.path)
-            {
-                match span_file
-                    .anchors
-                    .iter()
-                    .find(|r| {
-                        *r.path == *anc_path && r.start_line == anc_start && r.end_line == anc_end
-                    })
-                    .map(|r| r.content_hash.clone())
-                {
-                    Some(h) => h.to_string(),
-                    None => continue,
-                }
+            // Cross-file relocation verifies the destination's canonical hash;
+            // it may refresh coordinates only if the stored content survived.
+            let Some(stored_hash) = span_file
+                .anchors
+                .iter()
+                .find(|record| {
+                    *record.path == *anc_path
+                        && record.start_line == anc_start
+                        && record.end_line == anc_end
+                })
+                .map(|record| record.content_hash.to_string())
+            else {
+                continue;
+            };
+            let hash_hex = if current.path == resolved.anchored.path {
+                stored_hash
             } else {
-                // Compute the canonical hash from the surfacing layer.
-                match layer {
-                    DriftSource::Worktree => {
-                        crate::perf::record_fix_hash_call();
-                        match hash_anchor_content(repo, &cur_path_str, &cur_extent, None, idx) {
-                            Ok((_alg, h)) => h,
-                            Err(_) => continue,
-                        }
-                    }
-                    DriftSource::Head => {
-                        let oid = match head_oid.as_deref() {
-                            Some(o) => o,
-                            None => continue,
-                        };
-                        crate::perf::record_fix_hash_call();
-                        let head_result =
-                            hash_anchor_content(repo, &cur_path_str, &cur_extent, Some(oid), idx);
-                        match head_result {
-                            Ok((_alg, h)) => h,
-                            Err(_) => {
-                                let entry = match index_snapshot
-                                    .as_deref()
-                                    .unwrap_or(&[])
-                                    .iter()
-                                    .find(|en| {
-                                        en.path == cur_path_str
-                                            && en.stage == gix::index::entry::Stage::Unconflicted
-                                    }) {
-                                    Some(e) => e,
-                                    None => continue,
-                                };
-                                let blob_oid_hex = entry.oid.to_string();
-                                let bytes = match crate::git::read_blob_bytes(repo, &blob_oid_hex) {
-                                    Ok(b) => b,
-                                    Err(_) => continue,
-                                };
-                                if let AnchorExtent::LineRange { start, end } = cur_extent {
-                                    let line_count = std::str::from_utf8(&bytes)
-                                        .map(|s| s.lines().count() as u32)
-                                        .unwrap_or(0);
-                                    if start < 1 || end < start || end > line_count {
-                                        continue;
-                                    }
-                                    if std::str::from_utf8(&bytes).is_err() {
-                                        continue;
-                                    }
-                                }
-                                rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &cur_extent))
-                            }
-                        }
-                    }
-                    DriftSource::Index => {
-                        let entry =
-                            match index_snapshot.as_deref().unwrap_or(&[]).iter().find(|en| {
-                                en.path == cur_path_str
-                                    && en.stage == gix::index::entry::Stage::Unconflicted
-                            }) {
-                                Some(e) => e,
-                                None => continue,
-                            };
-                        let blob_oid_hex = entry.oid.to_string();
-                        let bytes = match crate::git::read_blob_bytes(repo, &blob_oid_hex) {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                        if let AnchorExtent::LineRange { start, end } = cur_extent {
-                            let line_count = std::str::from_utf8(&bytes)
-                                .map(|s| s.lines().count() as u32)
-                                .unwrap_or(0);
-                            if start < 1 || end < start || end > line_count {
-                                continue;
-                            }
-                            if std::str::from_utf8(&bytes).is_err() {
-                                continue;
-                            }
-                        }
-                        rk64_to_hex(cheap_fingerprint_with_extent(&bytes, &cur_extent))
-                    }
+                crate::perf::record_fix_hash_call();
+                match repair_content.relocation_hash(repo, layer, resolved, &stored_hash) {
+                    Ok(Some(hash)) => hash,
+                    _ => continue,
                 }
             };
 

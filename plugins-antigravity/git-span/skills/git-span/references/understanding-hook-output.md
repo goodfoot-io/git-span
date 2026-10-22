@@ -82,28 +82,22 @@ span and use `git span drift <name>` for the final zero-drift check. The block c
 everything needed to act — anchors, statuses, and the description — so no
 follow-up `git span` read is required.
 
-### Positional drift is healed, not surfaced
+### Verified relocations are refreshed before delivery
 
-Before computing what to show, the hook first runs the equivalent of `git
-span drift --fix` scoped to the touched file, re-anchoring any pure line-shift
-drift (`MOVED`, whitespace-only `CHANGED`) against the edit's real post-edit
-range. This happens silently — no block, nothing in the transcript — because
-there is nothing left to act on by the time the agent sees output. Only what
-survives that heal (genuine content drift) can earn an anchor its status
-suffix. This is the touch hook's whole reason for existing: it
-collapses the old "edit now, reconcile in a separate pass later" flow into
-"edit now, healed now" — a positional re-anchor never needs its own commit.
+Before delivery, the hook runs `git span context --fix` for the touched file
+or range. It refreshes verified exact-content relocations in selected spans and
+elsewhere in addressed files; response selection stays scoped.
+Whitespace edits and fuzzy matches remain drifting for review. Repairs update
+`.span/` worktree files; include them with the source change when committing.
+
 
 ### When a span surfaces (and resurfaces)
 
-A span renders when its name has not been surfaced this session, or when it
-carries a drift status not yet surfaced for it — the hook tracks what it has
-already shown under `~/.cache/git-span/session/<id>/`. Every render is the
-full span section; there is no bare drift line without anchors. A span
-already surfaced healthy re-renders in full when drift later appears, and a
-status *change* (e.g. `changed` → a terminal status) is a new pair and
-surfaces again. If the same span keeps coming up `changed` across several
-edits in one session, it renders once, not on every touch.
+A span renders when its evidence revision differs from the latest one delivered
+for that repository and span in this session. The revision covers its definition
+and relevant file state. Identical repeats are suppressed; a different change
+renders again even with the same status. Returning to an earlier revision after
+another change also renders again. Every render includes the full span section.
 
 ### What never produces a block
 
@@ -114,7 +108,7 @@ edits in one session, it renders once, not on every touch.
   what's on disk).
 - Whole-file anchors (no `#L…` range) — excluded from intersection matching.
 - Gitignored or non-repo files.
-- A span whose name and current drift statuses were all surfaced earlier
+- A span whose repository and evidence revision match its latest delivery
   this session.
 
 ## Bash intent attribution

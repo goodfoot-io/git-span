@@ -60,7 +60,7 @@ fn run_fix<'a>(
 //
 // Fixture:
 //   - anchor A: Moved  (file renamed, bytes identical)
-//   - anchor B: Changed whitespace-only  (content-equivalent → re-anchored)
+//   - anchor B: Changed whitespace-only  (left unresolved)
 //   - anchor C: Deleted  (terminal → left untouched)
 //   - two contiguous same-path anchors D1/D2 that --fix coalesces
 //
@@ -113,7 +113,7 @@ fn equivalence_bare_scan_arm() -> Result<()> {
     repo.run_git(["mv", "src.txt", "dst.txt"])?;
     repo.run_git(["commit", "-m", "rename src.txt to dst.txt"])?;
 
-    // B: whitespace-only worktree change on file1.txt (Changed, content-equivalent)
+    // B: whitespace-only worktree change on file1.txt (Changed, left unresolved)
     repo.write_file(
         "file1.txt",
         "  line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",

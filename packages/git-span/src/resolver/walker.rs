@@ -27,7 +27,10 @@ pub(crate) fn apply_hunks_to_range(
 ) -> (u32, u32) {
     let mut s = start as i64;
     let mut e = end as i64;
-    for (os, oc, _ns, nc) in hunks {
+    // Hunks are ordered in the original file's coordinates. Replay them
+    // bottom-up so an earlier edit cannot move the range across a later
+    // hunk's original position before that hunk has been considered.
+    for (os, oc, _ns, nc) in hunks.iter().rev() {
         let os = *os as i64;
         let oc = *oc as i64;
         let nc = *nc as i64;
@@ -106,3 +109,62 @@ pub(crate) fn tree_all_paths(tree: &gix::Tree<'_>) -> Result<std::collections::H
     Ok(out)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::apply_hunks_to_range;
+
+    #[test]
+    fn multiple_hunks_keep_the_original_coordinate_space() {
+        let cases = [
+            // Only the first insertion precedes the range; the replacement
+            // is inside it and the second insertion is after it.
+            (
+                vec![(0, 0, 1, 100), (55, 1, 155, 1), (99, 0, 200, 100)],
+                (150, 160),
+            ),
+            // Both deletions precede the range even though the first one
+            // shifts the projected range above the second old position.
+            (
+                vec![
+                    (10, 20, 9, 0),
+                    (40, 5, 19, 0),
+                    (55, 1, 30, 1),
+                    (100, 5, 74, 0),
+                ],
+                (25, 35),
+            ),
+            // An interior insertion extends the range, but an insertion
+            // immediately after its original end does not.
+            (
+                vec![(0, 0, 1, 100), (59, 0, 160, 3), (60, 0, 164, 7)],
+                (150, 163),
+            ),
+            // Replacements crossing either boundary retain the existing
+            // covering-range semantics after preceding edits.
+            (
+                vec![(0, 0, 1, 100), (45, 10, 145, 2), (58, 10, 150, 2)],
+                (145, 151),
+            ),
+        ];
+        for (hunks, expected) in cases {
+            assert_eq!(apply_hunks_to_range(&hunks, 50, 60), expected, "{hunks:?}");
+        }
+    }
+
+    #[test]
+    fn single_hunk_boundaries_and_deletions_keep_their_semantics() {
+        let cases = [
+            ((49, 0, 50, 3), (53, 63)),
+            ((50, 0, 51, 3), (50, 63)),
+            ((59, 0, 60, 3), (50, 63)),
+            ((60, 0, 61, 3), (50, 60)),
+            ((45, 10, 45, 2), (45, 52)),
+            ((58, 10, 58, 2), (50, 59)),
+            ((53, 2, 52, 0), (50, 58)),
+            ((40, 30, 39, 0), (40, 40)),
+        ];
+        for (hunk, expected) in cases {
+            assert_eq!(apply_hunks_to_range(&[hunk], 50, 60), expected, "{hunk:?}");
+        }
+    }
+}

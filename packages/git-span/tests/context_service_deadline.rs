@@ -55,7 +55,7 @@ fn delayed_service_leaves_hook_budget_for_direct_context_and_repair() -> Result<
         );
         let document: serde_json::Value = serde_json::from_slice(&output.stdout)
             .context("deadline fallback must produce context JSON")?;
-        assert_eq!(document["schema_version"], 1);
+        assert_eq!(document["schema_version"], 2);
         // Measure the complete CLI request and leave two seconds for the
         // surrounding five-second hook. A tighter wall-clock ceiling would
         // mistake ordinary scheduling pressure for a service budget failure.

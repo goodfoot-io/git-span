@@ -16,7 +16,7 @@ The integrations use the same scriptable `git span` CLI available in a terminal 
 
 The touch pipeline observes supported file-affecting tools: Claude Code covers `Read`, `Edit`, `Write`, and `Bash`; Codex covers `apply_patch` and its shell/exec family; OpenCode covers `bash`, `read`, `edit`, `write`, and `apply_patch`; Antigravity covers `run_command`.
 
-When a supported range intersects an existing anchor, the hook repairs mechanically safe positional drift and surfaces bounded context identifying the span, its anchors, and its why. Remaining semantic drift requires a decision about the coupled artifacts; see [Reconcile drifted spans](/docs/guides/reconcile-drifted-spans). Session deduplication suppresses context already shown with the same span status.
+When a supported range intersects an existing anchor, the hook repairs mechanically safe positional drift and surfaces bounded context identifying the span, its anchors, and its why. Remaining semantic drift requires a decision about the coupled artifacts; see [Reconcile drifted spans](/docs/guides/reconcile-drifted-spans). Session deduplication tracks each repository and span's latest evidence revision. Identical repeats are suppressed; new changes are delivered again, even when the status is unchanged.
 
 Shell attribution uses bounded literal command intent and post-state evidence. Static planning captures only the pre-state needed for supported operations. Unproven dynamic paths, unsupported syntax, and inconclusive failed writes stay silent. Failed commands can surface a write only when the supported parser provides decisive post-state evidence; interrupted calls suppress attribution.
 

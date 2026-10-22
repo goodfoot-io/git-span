@@ -25,7 +25,10 @@ const SENTINELS: &[(&str, &str)] = &[
     ("history", "rename-aware by content similarity"),
     ("history scoped output", "Treat scoped JSON output as a partial record"),
     ("drift clean shape", "does not imply `findings: []`"),
-    ("drift fix callout", "will not touch it"),
+    (
+        "drift fix callout",
+        "Whitespace edits and fuzzy matches require review and explicit re-anchoring",
+    ),
     ("drift exit codes", "never maskable by"),
     ("doctor", "store-size summary (bytes used)"),
     ("merge-driver", "Same-anchor range/hash divergence is deferred"),

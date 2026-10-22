@@ -35,10 +35,10 @@ Run `git span drift --fix` to re-anchor what's mechanically safe:
 git span drift --fix
 ```
 
-`--fix` re-anchors `Moved` anchors — the same content at a shifted line range or a renamed path — and whitespace-equivalent `Changed` anchors, cases where the anchored content was reformatted (indentation, whitespace) but is otherwise identical. The equivalence is judged on the whole anchor: if the range mixes a reformat with even one non-whitespace edit, the anchor counts as meaning-altering and `--fix` leaves all of it alone. Those anchors report `resolved, pending commit — auto-updated` on the `--fix` run itself, and `resolved, pending commit` on later `drift` runs until you commit the `.span/` rewrite. That status is not drift — it's tallied with fresh anchors and does not affect the exit code.
+`--fix` re-anchors relocations verified against the recorded bytes or fingerprint. Whitespace edits and fuzzy matches remain drifting for review. Those anchors report `resolved, pending commit — auto-updated` on the `--fix` run itself, and `resolved, pending commit` on later `drift` runs until you commit the `.span/` rewrite. That status is not drift — it's tallied with fresh anchors and does not affect the exit code.
 
 <Callout type="warn">
-`--fix` never touches meaning-altering `Changed` drift — content that differs beyond whitespace is left for you to resolve by hand, and re-running `--fix` again does not help. `--fix` only works with `--format human`, and it never commits: it just rewrites `.span/` in the worktree.
+`Changed` anchors, including formatting changes, require review and explicit re-anchoring. Re-running `--fix` does not acknowledge them. `--fix` only works with `--format human`, and it never commits: it just rewrites `.span/` in the worktree.
 </Callout>
 
 After running `--fix`, re-run `git span drift` and treat anything still listed as drift as needing manual re-anchoring. See [Re-anchor after an edit](/docs/guides/re-anchor-after-an-edit) for the `git span add` / `git span remove` steps.

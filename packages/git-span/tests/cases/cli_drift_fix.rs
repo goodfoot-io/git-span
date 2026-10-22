@@ -253,11 +253,11 @@ fn fix_leaves_changed_at_head_layer() -> Result<()> {
     Ok(())
 }
 
-// Whitespace-only `Changed` edits ARE content-equivalent and must still be
-// re-anchored (the gate's GREEN path) at the worktree and index layers.
+// Whitespace changes can affect literals or indentation-sensitive languages.
+// Automatic repair preserves recorded bytes at every layer.
 
 #[test]
-fn fix_reanchors_whitespace_only_changed_at_worktree_layer() -> Result<()> {
+fn fix_leaves_whitespace_only_changed_at_worktree_layer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
@@ -268,16 +268,22 @@ fn fix_reanchors_whitespace_only_changed_at_worktree_layer() -> Result<()> {
     repo.run_span(["drift", "--fix", "--no-exit-code"])?;
 
     let span = read_span(&repo, "m")?;
-    let expected = line_slice_hash(reindented, 1, 5);
+    let original = line_slice_hash(ORIGINAL, 1, 5);
     assert!(
-        span.contains(&format!("file1.txt#L1-L5 rk64:{expected}")),
-        "whitespace-only change must be re-anchored to current content; got:\n{span}"
+        span.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
+        "whitespace changes require review and must retain the recorded bytes; got:\n{span}"
+    );
+    let out = repo.run_span(["drift", "m"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "changed content remains drifting"
     );
     Ok(())
 }
 
 #[test]
-fn fix_reanchors_whitespace_only_changed_at_index_layer() -> Result<()> {
+fn fix_leaves_whitespace_only_changed_at_index_layer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
@@ -289,25 +295,27 @@ fn fix_reanchors_whitespace_only_changed_at_index_layer() -> Result<()> {
     repo.run_span(["drift", "--fix", "--no-exit-code"])?;
 
     let span = read_span(&repo, "m")?;
-    let expected = line_slice_hash(reindented, 1, 5);
+    let original = line_slice_hash(ORIGINAL, 1, 5);
     assert!(
-        span.contains(&format!("file1.txt#L1-L5 rk64:{expected}")),
-        "whitespace-only staged change must be re-anchored; got:\n{span}"
+        span.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
+        "whitespace changes require review and must retain the recorded bytes; got:\n{span}"
+    );
+    let out = repo.run_span(["drift", "m"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "changed content remains drifting"
     );
     Ok(())
 }
 
 #[test]
-fn fix_reanchors_whitespace_only_changed_at_head_layer() -> Result<()> {
+fn fix_leaves_whitespace_only_changed_at_head_layer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
-    // Commit a whitespace-only edit. The visible text is a pure reshaping
-    // of the original — no meaning changed — so `--fix` must re-anchor it
-    // just as it does at the worktree/index layers, not silently no-op.
-    // The genuine original bytes are still recoverable one commit back
-    // (HEAD~1), so the resolver can walk back to prove equivalence even
-    // though HEAD itself now carries the edited content.
+    // Committed whitespace edits remain unresolved even when the original
+    // bytes can be recovered from history: equivalence is not identity.
     let reindented = "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
     repo.write_file("file1.txt", reindented)?;
     repo.run_git(["add", "file1.txt"])?;
@@ -317,28 +325,21 @@ fn fix_reanchors_whitespace_only_changed_at_head_layer() -> Result<()> {
 
     let span = read_span(&repo, "m")?;
     let original = line_slice_hash(ORIGINAL, 1, 5);
-    let reanchored = line_slice_hash(reindented, 1, 5);
     assert!(
-        !span.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
-        "HEAD-layer whitespace-only change must not keep the drifted original hash; got:\n{span}"
+        span.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
+        "whitespace changes require review and must retain the recorded bytes; got:\n{span}"
     );
-    assert!(
-        span.contains(&format!("file1.txt#L1-L5 rk64:{reanchored}")),
-        "HEAD-layer whitespace-only change must be re-anchored to current content; got:\n{span}"
-    );
-
-    // A follow-up scan reports no drift.
-    let out = repo.run_span(["drift", "--no-exit-code"])?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("0 drift"),
-        "anchor must be clean after re-anchoring; stdout=\n{stdout}"
+    let out = repo.run_span(["drift", "m"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "changed content remains drifting"
     );
     Ok(())
 }
 
 #[test]
-fn fix_reanchors_whitespace_only_changed_several_commits_back_at_head_layer() -> Result<()> {
+fn fix_leaves_whitespace_only_changed_several_commits_back_at_head_layer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
@@ -369,21 +370,15 @@ fn fix_reanchors_whitespace_only_changed_several_commits_back_at_head_layer() ->
 
     let span = read_span(&repo, "m")?;
     let original = line_slice_hash(ORIGINAL, 1, 5);
-    let reanchored = line_slice_hash(v3, 1, 5);
     assert!(
-        !span.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
-        "multi-commit-back whitespace-only change must not keep the drifted original hash; got:\n{span}"
+        span.contains(&format!("file1.txt#L1-L5 rk64:{original}")),
+        "whitespace changes require review and must retain the recorded bytes; got:\n{span}"
     );
-    assert!(
-        span.contains(&format!("file1.txt#L1-L5 rk64:{reanchored}")),
-        "multi-commit-back whitespace-only change must be re-anchored to current content; got:\n{span}"
-    );
-
-    let out = repo.run_span(["drift", "--no-exit-code"])?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("0 drift"),
-        "anchor must be clean after re-anchoring; stdout=\n{stdout}"
+    let out = repo.run_span(["drift", "m"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "changed content remains drifting"
     );
     Ok(())
 }
@@ -530,11 +525,10 @@ fn fix_rejected_with_json_format() -> Result<()> {
 fn fix_no_commit_produced() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
-    // Whitespace-only edit so the anchor is re-anchored (content-equivalent)
-    // and the span file actually changes on disk.
+    // Exact relocation makes repair update the span without acknowledging new content.
     repo.write_file(
         "file1.txt",
-        "    line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        "inserted\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     let head_before = repo.head_sha()?;
     repo.run_span(["drift", "--fix", "--no-exit-code"])?;
@@ -740,9 +734,8 @@ fn fix_leaves_whole_file_anchor_inert() -> Result<()> {
         &git_span_core::AnchorExtent::WholeFile,
     ));
     let range_hash = line_slice_hash(file1, 1, 5);
-    let span_content = format!(
-        "file1.txt rk64:{whole_hash}\nfile1.txt#L1-L5 rk64:{range_hash}\n\nmixed\n"
-    );
+    let span_content =
+        format!("file1.txt rk64:{whole_hash}\nfile1.txt#L1-L5 rk64:{range_hash}\n\nmixed\n");
     repo.write_file(".span/m", &span_content)?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
@@ -1671,14 +1664,14 @@ fn fix_moved_with_worktree_shifts_reanchors_against_head() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn fix_reanchors_equivalent_change_and_converges() -> Result<()> {
+fn fix_reanchors_exact_relocation_and_converges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
-    // Whitespace-only worktree edit → content-equivalent Changed → re-anchored.
+    // A prefix insertion relocates the unchanged anchor, which can be refreshed.
     repo.write_file(
         "file1.txt",
-        "  line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        "inserted\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
 
     let before = read_span(&repo, "m")?;
@@ -1688,12 +1681,12 @@ fn fix_reanchors_equivalent_change_and_converges() -> Result<()> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let after = read_span(&repo, "m")?;
     let edited = std::fs::read_to_string(repo.path().join("file1.txt"))?;
-    let edited_hash = line_slice_hash(&edited, 1, 5);
-    assert_ne!(
+    let edited_hash = line_slice_hash(&edited, 2, 6);
+    assert_eq!(
         edited_hash, original_hash,
-        "fixture must change the recorded bytes"
+        "relocation preserves recorded bytes"
     );
-    assert!(after.contains(&format!("file1.txt#L1-L5 rk64:{edited_hash}")));
+    assert!(after.contains(&format!("file1.txt#L2-L6 rk64:{edited_hash}")));
     assert_ne!(after, before, "fix must update the span artifact");
     assert!(
         stdout.contains("Reconciled 1 span, 1 anchor (1 updated, 0 removed)."),
@@ -1745,10 +1738,10 @@ fn fix_updates_fixable_anchor_and_preserves_deleted_residue() -> Result<()> {
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
-    // file1: fixable whitespace-only Changed.
+    // file1: exact relocation, repairable without changing the recorded hash.
     repo.write_file(
         "file1.txt",
-        "  line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        "inserted\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     // file2: unfixable Deleted.
     std::fs::remove_file(repo.path().join("file2.txt"))?;
@@ -1757,8 +1750,8 @@ fn fix_updates_fixable_anchor_and_preserves_deleted_residue() -> Result<()> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let after = read_span(&repo, "m")?;
     let edited = std::fs::read_to_string(repo.path().join("file1.txt"))?;
-    let edited_hash = line_slice_hash(&edited, 1, 5);
-    assert!(after.contains(&format!("file1.txt#L1-L5 rk64:{edited_hash}")));
+    let edited_hash = line_slice_hash(&edited, 2, 6);
+    assert!(after.contains(&format!("file1.txt#L2-L6 rk64:{edited_hash}")));
     assert!(
         after.contains("file2.txt#L1-L5"),
         "deleted anchor must remain as residue"

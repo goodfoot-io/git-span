@@ -14,4 +14,4 @@ pub(crate) use diff::{
 };
 pub(crate) use filter_process::{CustomFilters, is_custom_filter_configured};
 pub(crate) use lfs::{LfsState, resolve_lfs_anchor};
-pub(crate) use worktree::read_worktree_normalized;
+pub(crate) use worktree::{normalize_worktree_bytes, read_worktree_normalized};

@@ -16,10 +16,9 @@ pub(crate) fn read_worktree_normalized(
     rel_path: &str,
 ) -> Result<Vec<u8>> {
     let workdir = git::work_dir(repo)?;
-    if let Some(name) = types::path_filter_attribute_lenient_with_repo(
-        repo,
-        std::path::Path::new(rel_path),
-    )? && !types::is_core_filter(&name)
+    if let Some(name) =
+        types::path_filter_attribute_lenient_with_repo(repo, std::path::Path::new(rel_path))?
+        && !types::is_core_filter(&name)
     {
         let abs = workdir.join(rel_path);
         let raw = match std::fs::read(&abs) {
@@ -70,6 +69,55 @@ pub(crate) fn read_worktree_normalized(
         ToGitOutcome::Buffer(buf) => out.extend_from_slice(buf),
         ToGitOutcome::Process(mut r) => {
             r.read_to_end(&mut out)?;
+        }
+    }
+    Ok(out)
+}
+
+/// Normalize one captured physical snapshot under a path's conversion rules.
+/// Repair uses the same bytes for old-path identity and new-path representation,
+/// so concurrent file changes cannot mix proof and destination snapshots.
+pub(crate) fn normalize_worktree_bytes(
+    repo: &gix::Repository,
+    custom_filters: &mut CustomFilters,
+    rules_path: &str,
+    bytes: &[u8],
+) -> Result<Vec<u8>> {
+    if let Some(name) =
+        types::path_filter_attribute_lenient_with_repo(repo, std::path::Path::new(rules_path))?
+        && !types::is_core_filter(&name)
+    {
+        return match custom_filter_smudge(
+            custom_filters,
+            git::work_dir(repo)?,
+            &name,
+            rules_path,
+            bytes,
+        ) {
+            CustomFilterOutcome::Bytes(bytes) => Ok(bytes),
+            CustomFilterOutcome::FilterFailed => Err(Error::FilterFailed { filter: name }),
+        };
+    }
+    let (mut pipeline, index) = repo
+        .filter_pipeline(None)
+        .map_err(|error| Error::Git(format!("cannot construct repair clean pipeline: {error}")))?;
+    let outcome = pipeline
+        .convert_to_git(
+            std::io::Cursor::new(bytes),
+            std::path::Path::new(rules_path),
+            &index,
+        )
+        .map_err(|error| Error::Git(format!("cannot clean repair snapshot: {error}")))?;
+    use gix::filter::plumbing::pipeline::convert::ToGitOutcome;
+    use std::io::Read;
+    let mut out = Vec::new();
+    match outcome {
+        ToGitOutcome::Unchanged(mut reader) => {
+            reader.read_to_end(&mut out)?;
+        }
+        ToGitOutcome::Buffer(buffer) => out.extend_from_slice(buffer),
+        ToGitOutcome::Process(mut reader) => {
+            reader.read_to_end(&mut out)?;
         }
     }
     Ok(out)

@@ -75,12 +75,14 @@ Every subcommand that accepts `--format json` publishes its output family as a J
 |---|---|---|
 | mutation | `https://git-span.com/schemas/cli/v1/mutation.json` | `add`, `why` |
 | resolve | `https://git-span.com/schemas/cli/v1/resolve.json` | `resolve` |
-| context | `https://git-span.com/schemas/cli/v1/context.json` | `context` |
+| context | `https://git-span.com/schemas/cli/v2/context.json` | `context` |
 | history | `https://git-span.com/schemas/cli/v1/history.json` | `history` |
 | drift | `https://git-span.com/schemas/cli/v1/drift.json` | `drift` |
 | notes | `https://git-span.com/schemas/cli/v1/notes.json` | `notes add`, `notes list`, `notes show`, `notes remove` |
 
-Each schema's `$id` is its URL, and the URL is the version: v1 is immutable. A committed `sha256-manifest.txt` beside the schemas pins every published file's digest, and CI recomputes and compares it — the manifest is never regenerated, so published bytes cannot drift. A breaking change to a family's shape lands at a `v2` URL; the v1 bytes stay byte-for-byte what they were. The frozen bytes freeze the key set with them: a validator cached against a v1 schema stays correct for every output that family produces, because a round-trip test validates real CLI stdout against the committed schemas — a schema the binary violates fails CI, not a consumer's validator.
+Context v2 requires an `evidence_revision` digest on each selected span so consumers can detect changes to its definition and relevant file state.
+
+Each schema's `$id` is its URL, and the URL is the version: v1 is immutable. A committed `sha256-manifest.txt` beside the schemas pins every published file's digest, and CI recomputes and compares it — the manifest is never regenerated, so published bytes cannot drift. A breaking change to a family's shape lands at a `v2` URL; the v1 bytes stay byte-for-byte what they were. Consumers select the published family URL from the table above. URL versions are distinct from document `schema_version` values: drift documents use version 3 at the v1 URL, while context documents use version 2 at the v2 URL. Cached validators remain valid for the immutable schema URL they target. Round-trip tests validate CLI stdout against the published schema for its family.
 
 `replace` and `tree` also accept `--format json`, but their output is unversioned and unpublished: publishing would require adding a `schema_version` key to it, a change to an existing output shape. Their JSON remains an internal interface.
 

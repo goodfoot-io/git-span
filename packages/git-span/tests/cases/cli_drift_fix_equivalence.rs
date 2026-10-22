@@ -1,10 +1,8 @@
 //! CLI: `git span drift --fix` content-equivalence gate.
 //!
-//! `--fix` must re-anchor only anchors whose change preserves the anchored
-//! content — `Moved` (bytes identical, relocated) and whitespace/formatting
-//! -equivalent `Changed` edits. A `Changed` anchor whose *meaningful*
-//! (non-whitespace) bytes differ must be left drifting so the coupling
-//! resurfaces for confirmation. Card main-90.
+//! `--fix` refreshes only verified relocations. Changed content, including
+//! whitespace, remains drifting because textual similarity does not establish
+//! semantic equivalence across arbitrary languages.
 
 use crate::support;
 
@@ -77,11 +75,9 @@ fn fix_leaves_meaning_changed_worktree_anchor_drifting() -> Result<()> {
     Ok(())
 }
 
-/// Regression guard (must stay GREEN): a whitespace-only worktree edit at an
-/// anchored line is content-equivalent and must still be re-anchored and
-/// cleared by `--fix` — its original, legitimate purpose.
+/// Whitespace may change literals or program structure; do not acknowledge it.
 #[test]
-fn fix_reanchors_whitespace_only_worktree_change() -> Result<()> {
+fn fix_leaves_whitespace_only_worktree_change() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
@@ -92,17 +88,17 @@ fn fix_reanchors_whitespace_only_worktree_change() -> Result<()> {
     repo.run_span(["drift", "--fix", "--no-exit-code"])?;
 
     let span = read_span(&repo, "m")?;
-    let new_hash = line_slice_hash(reindented, 1, 5);
+    let original_hash = line_slice_hash(ORIGINAL, 1, 5);
     assert!(
-        span.contains(&format!("file1.txt#L1-L5 rk64:{new_hash}")),
-        "whitespace-only change must be re-anchored to the current content; got:\n{span}"
+        span.contains(&format!("file1.txt#L1-L5 rk64:{original_hash}")),
+        "whitespace-only change must retain the original content hash; got:\n{span}"
     );
 
     let out = repo.run_span(["drift", "m"])?;
     assert_eq!(
         out.status.code(),
-        Some(0),
-        "whitespace-only change must report fresh after --fix; stdout=\n{}",
+        Some(1),
+        "whitespace-only change must remain drifting after --fix; stdout=\n{}",
         String::from_utf8_lossy(&out.stdout)
     );
     Ok(())
