@@ -42,6 +42,11 @@ decision that none is needed; then the note is removed.
   not see, and quote only short decisive phrases from licensed standards.
 - Names are lowercase kebab-case segments joined by `/` (`config/retry-docs`).
 
+Message the agent that dispatched you about code quality issues it would want to act on: a
+bug, duplicated logic, or contradiction in the code; a spec that disagrees with the code; a
+coupling you can't anchor or whose authority is unclear. Cite file and lines. Keep reviewing,
+and repeat unresolved items in your final report.
+
 ## 1. Select notes
 
 In each repository used in this session:

@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-span-core",
-  "version": "1.1.39",
+  "version": "1.1.40",
   "private": true,
   "scripts": {
     "test": "yarn run -T turbo run test:uncached --filter=@goodfoot/git-span-core --cwd \"$PROJECT_CWD\" --",

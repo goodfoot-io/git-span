@@ -992,7 +992,7 @@ function reviewNotesPrompt(scope) {
   const skill = scope.host === "claude" || scope.host === "codex" ? "git-span:review-notes" : "review-notes";
   return [
     "Dispatch a forked subagent with this prompt:",
-    `"Load the ${skill} skill then follow the instructions to document implicit couplings and specifications using \`git-span\`."`,
+    `"Load the ${skill} skill then follow the instructions to document implicit couplings and specifications using \`git-span\`. Message agents if you identify code quality issues."`,
     "Wait for the subagent and include any blockers in your final response."
   ].join("\n");
 }

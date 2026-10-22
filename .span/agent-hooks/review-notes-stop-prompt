@@ -1,5 +1,5 @@
-packages/agent-hooks/src/common/review-notes-stop.ts#L15-L24 rk64:8b2d8053721c25ee
+packages/agent-hooks/src/common/review-notes-stop.ts#L15-L24 rk64:366d9f7d7ef67271
 packages/website/content/docs/agent-integration.mdx#L63-L63 rk64:9662772b99314dff
-skills-src/git-span/review-notes/SKILL.md.eta#L45-L49 rk64:4117963f654363ed
+skills-src/git-span/review-notes/SKILL.md.eta#L50-L54 rk64:4117963f654363ed
 
 The stop prompt is authoritative and passes no session id or review scope, so the review-notes skill selects notes across each repository used in this session, and the integration guide describes the hook as asking for a forked subagent that loads that skill. Changing what the prompt passes or when it fires requires matching the skill step and the guide.

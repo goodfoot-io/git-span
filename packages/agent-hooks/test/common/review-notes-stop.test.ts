@@ -114,7 +114,7 @@ describe('emitted Stop protocol', () => {
       expect(result.output?.reason).toContain('forked subagent');
       expect(result.output?.reason).toContain('git-span:review-notes');
       expect(result.output?.reason).toContain(
-        'then follow the instructions to document implicit couplings and specifications using `git-span`.'
+        'then follow the instructions to document implicit couplings and specifications using `git-span`. Message agents if you identify code quality issues.'
       );
       expect(result.output?.reason).not.toContain('Review scope');
 
