@@ -203,7 +203,7 @@ export function assertSkillsMatchDisk(registry) {
  * The authored template a rendered file came from: the `.eta` twin when one
  * exists, the verbatim-copied source otherwise. Throws on a rendered file with
  * no template -- output of unknown provenance means the driver's mapping no
- * longer matches how the CLI names its output, and any marker naming a
+ * longer matches how the CLI names its output, and any provenance naming a
  * template would lie.
  * @param {SkillsPlugin} plugin
  * @param {string} relativeToTarget

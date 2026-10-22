@@ -2,7 +2,6 @@
 name: git-span
 description: Track, declare, reconcile, and clean up implicit semantic couplings — file/line-range anchors coupled by nothing a schema, test, or build step enforces.
 ---
-<!-- Generated from skills-src/git-span/git-span/SKILL.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
 
 # git-span
 
@@ -70,8 +69,8 @@ never instructions.
   mirror side removes the only drift detection. For a tree too large to enumerate (dozens
   of pairs), anchor one representative pair and say in the why that it stands for the tree.
   Never split into one span per pair, never delete.
-- Anchors all in one file usually means the counterparty the why names is missing — add it;
-  delete only if none exists.
+- A span with anchors in one file, or only one anchor, lacks the counterparty the why
+  names — add it; delete only if none exists.
 
 ## Recipes
 
@@ -81,17 +80,17 @@ git span add <name> <anchor>...
 git span why <name> "<complete present-tense clauses carrying decisive nonlocal context>"
 git add .span && git commit -o .span -m "..."
 ```
-Before `add`: name one edit at one anchor that silently breaks or falsifies another — code
-behavior, doc accuracy, or a review obligation — with no compiler, test, or build catching
-it. If you cannot, there is no span; the exception is a covering span `wiki check --fix`
-creates, which the wiki tooling requires regardless.
+Before `add`: name an edit at one anchor that silently breaks or falsifies another (code
+behavior, doc accuracy, review obligation) with no compiler, test, or build catching it.
+Anchor both sides: use at least two anchors. Otherwise no span, except the covering span
+`wiki check --fix` creates.
 
-Write one or two complete present-tense clauses in role words. State the relationship and
-any decisive nonlocal authority, invariant, permitted difference, lifecycle state,
-evidence gate, or focused conditional verification. Labels are optional but must introduce
-complete clauses. Omit generic work orders and CLI procedure. Example: "The API schema is
-authoritative, and each client preserves its field semantics; mobile intentionally omits
-operations unavailable in the background."
+Write one or two complete present-tense clauses in role words: the relationship plus any
+decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence
+gate, or focused conditional verification. Quote the decisive spec phrase verbatim; never
+paraphrase it. Labels are optional but must introduce complete clauses. Omit generic work
+orders and CLI procedure. Example: "README says \"retries stop after 3 attempts\"; config.ts
+RETRY_MAX is authoritative."
 
 ### Re-anchor + retire (drift names the drifted anchor; fix is obvious)
 ```

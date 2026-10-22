@@ -1,5 +1,3 @@
-<!-- Generated from skills-src/git-span/git-span/references/terminal-statuses.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
-
 # Terminal statuses
 
 Terminal statuses short-circuit the resolver — no slice math, no diff. The

@@ -1,9 +1,9 @@
 packages/agent-hooks/src/common/touch-core.ts#L883-L912 rk64:2ebd57907c32ae1e
 packages/website/content/docs/agent-integration.mdx rk64:8ecb53838c9522ee
-plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:dc7a5b72f6a9d516
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:f5a9a5fce94a9408
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:2a86f30757ed676d
-plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:11082196d3f1467d
+plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:fa0fcbaf5eee324d
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:5260af6f68a9f30f
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:b162ffcd4fedcc64
+plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:0d59ad1a06a45dda
 skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:e08f56e36e0b1128
 
 The shared touch-core messages are authoritative. The understanding-hook-output template and its four generated references preserve their examples and user-facing meaning, while the website guide summarizes the same touch behavior and coverage boundary; the template is the edit surface for all four generated copies.

@@ -1,5 +1,3 @@
-<!-- Generated from skills-src/git-span/git-span/references/understanding-hook-output.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
-
 # Understanding hook output
 
 The touch pipeline runs after supported reads and writes. Static planning runs

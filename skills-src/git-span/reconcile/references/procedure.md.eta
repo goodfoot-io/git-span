@@ -21,8 +21,6 @@ reconciliation only, not coverage review.
 
 ## Stage 1 — Prelude
 
-The only mutating research step.
-
 First scan the bare drift output for `deleted in the working tree` anchors that
 are renames in progress: old-path deletion plus a new path in `git status --short`,
 matched by content (`git hash-object <new>` = `git rev-parse HEAD:<old>`). The owner
@@ -32,8 +30,7 @@ stage. Staged renames resolve as `moved to <path>`; otherwise re-anchor manually
 `--fix` never clears a deletion — stage 2's STOP case governs those — but
 staging first makes the classification authoritative (`deleted in the index`;
 committed, it names the commit). Confirm `--fix`'s `moved to` destination when
-another same-content file exists; it matches by content and may pick the wrong
-copy. If it did, `git span replace <name> '<wrong-address>' '<right-address>'`.
+another same-content file exists. If wrong, `git span replace <name> '<wrong-address>' '<right-address>'`.
 
 ```bash
 git span drift --fix
@@ -62,9 +59,8 @@ ones into distinct top-level trees. Never one call per file.
 git span tree '<shared-file-1>' '<shared-file-N>' --depth 1
 ```
 
-The output is the adjacency list: each top-level tree covers one shared file (or
-a clique co-occurring on a span), and each child line is one span anchoring it,
-shown by its *other* anchored paths. Drifted spans under the same top-level tree
+Each top-level tree covers one shared file (or a clique co-occurring on a span); each
+child line is one span anchoring it, shown by its *other* anchored paths. Drifted spans under the same top-level tree
 form one **component** — one unit of work. A drifted span whose files each
 appear in only one drifted span is a component of size one. Non-drifted spans in
 the output are context telling you what the correct ranges should be.
@@ -75,8 +71,7 @@ non-drifted spans anchoring the same files, and one hop beyond.
 Record per component: every span; every drifted anchor (path, range,
 CHANGED/DELETED); each span's why, taken from the drift output; shared files and
 the non-drifted spans anchoring them; and a flag on any anchors whose ranges
-overlap on a shared file. This is structural — what is drifted, not why it
-drifted.
+overlap on a shared file.
 
 Never separate spans with overlapping ranges on a shared file — neither across
 delegated units nor across sub-batches. Split an oversized component into
@@ -116,7 +111,7 @@ on with your other spans.
 | File shrunken below the anchored end; the region still exists | `git span replace <name> '<path>#L<old>' '<path>#L<new>'` — an identity change, the new end line being the file's current line count |
 | Logical region genuinely moved to a new range | `git span replace <name> '<path>#L<old>' '<path>#L<new>'` |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor; include the content diff in your report |
-| Content no longer describes relationship | `git span remove <name> '<path>#L<N>'` |
+| Content no longer describes relationship | `git span remove <name> '<path>#L<N>'`; if fewer than two anchors remain, add the counterparty or `delete` |
 | Relationship gone entirely | `git span delete <name>` |
 | Span has no why | Invoke the core skill's why rules, then use `git span why` |
 | Lifecycle gate is satisfied | Make the authorized behavior change, revise or retire the substantive why, and reconcile or retire every superseded anchor |
@@ -137,13 +132,10 @@ whichever no longer reflects the logical region and keep exactly one.
 Confirm each CHANGED finding individually; never bulk re-add anchors. `add` does
 not retire a different address. Stop on unconfirmed findings.
 
-Every `add`/`why` write ends with a post-write span-wide check sharing `drift`'s
-exit contract: exit 0 = clean, exit 1 = actionable drift remains or the check
-errored (the output says which: remains lines vs `state unverified`), exit 2 =
-indeterminate — the resolver's `index_changed` verdict, retryable. Read the
-mutation's span-wide line (`0 drift across ...`, `N anchors drifted — ...`,
-`state indeterminate`, `state unverified`) before the trailing scoped `drift`.
-Drift's own 0/1/2 semantics are unchanged.
+Every `add`/`why` write ends with a span-wide check sharing `drift`'s exit contract: 0 =
+clean, 1 = drift remains or the check errored (`state unverified`), 2 = indeterminate
+(`index_changed`), retryable. Read its span-wide line (`0 drift across ...`, `N anchors
+drifted — ...`, `state indeterminate`, `state unverified`) before the scoped `drift`.
 
 ### Deciding authority
 
@@ -151,7 +143,8 @@ A doc drifting behind a deliberate, committed code change is wrong — conform i
 A code change with no coherent commit story may be a regression — the doc may be
 the truth. Docs follow deliberate committed code and describe current reality —
 never "we used to" framing. Keep the why across routine re-anchors; write a new
-one only when the subsystem itself changed. Fail closed on ambiguity, not on
+one only when the subsystem itself changed. Check a quoted phrase in the why against the
+authority; update it only when the spec was deliberately reworded. Fail closed on ambiguity, not on
 editing per se: surface the stop, never re-anchor over a live disagreement.
 
 ---

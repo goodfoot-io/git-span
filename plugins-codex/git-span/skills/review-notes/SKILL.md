@@ -2,7 +2,6 @@
 name: review-notes
 description: Review Git Span notes, update spans, remove consumed notes.
 ---
-<!-- Generated from skills-src/git-span/review-notes/SKILL.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
 
 ## Goal
 
@@ -25,12 +24,12 @@ decision that none is needed; then the note is removed.
 - Extend an existing span covering the relationship rather than declaring a parallel one.
 - Anchor only the coupled lines. Use whole-file anchors only for files consumed as a
   unit. Anchor generators' inputs, not their output.
-- Anchors all in one file usually mean the counterparty is missing.
+- Declare with two or more anchors. One anchor, or all in one file, means the counterparty is missing: find it first.
 - The why is one or two present-tense clauses in role words: the relationship plus
-  any decisive authority, invariant, permitted difference, or lifecycle gate. Omit
-  the span name, CLI procedure, and incidental detail. Example: "README's Behaviour
-  section restates the retry limit and timeout that config.ts defines; config.ts
-  is authoritative."
+  any decisive authority, invariant, permitted difference, or lifecycle gate. Quote the
+  decisive spec phrase verbatim; never paraphrase it. Omit the span name, CLI procedure,
+  and incidental detail. Example: "README says \"retries stop after 3 attempts\"; config.ts
+  RETRY_MAX is authoritative."
 - Names are lowercase kebab-case segments joined by `/` (`config/retry-docs`).
 
 ## 1. Select notes
@@ -64,7 +63,7 @@ git log --oneline <sha>..HEAD -- <paths>
 ```
 
 Read the transcript (`transcriptLocator` or `transcript`) when the diff leaves intent
-unclear. Judge against the current tree; leave the noted commit as it is.
+unclear. Judge against the current tree.
 
 ## 3. Find candidate spans
 
@@ -88,7 +87,7 @@ An empty result does not prove no relevant span exists. Read whys with `show` or
 | A span's relationship applies but a coupled location is unanchored | 5c |
 | An anchored region moved, was renamed, or changed extent | 5d replace |
 | Anchored sides now disagree | 5a, then 5d |
-| The why's relationship, authority, or lifecycle changed | 5e |
+| The why's relationship, authority, lifecycle, or quoted phrase changed | 5e |
 | Unenforced coupling with no span | 5b |
 | Enforced or no coupling | Record the reason |
 
@@ -121,7 +120,7 @@ conflict; use `replace`. Revise the why if the anchor adds a role.
 | Content changed in place and sides agree | `git span add <name> '<a1>' '<a2>'`, every changed anchor |
 | Same content moved (`moved to`) | `git span drift --fix <name>` |
 | New range, path, or whole-file ↔ range | `git span replace <name> '<old>' '<new>'` |
-| Anchor no longer participates | `git span remove <name> '<anchor>'` |
+| Anchor no longer participates | `git span remove <name> '<anchor>'`; `delete` the span if fewer than two anchors remain |
 | Relationship gone | `git span delete <name>` |
 
 Preserve shape: whole-file stays whole-file; an unchanged range keeps its bounds.
@@ -129,8 +128,6 @@ Preserve shape: whole-file stays whole-file; an unchanged range keeps its bounds
 **5e. Why.** `git span why <name> "<text>"` only when meaning changed.
 
 ## 6. Validate and commit
-
-`add`/`why` exit 0 when clean, 1 when drift remains or the check failed, 2 to retry.
 
 ```bash
 git span drift <name>                    # each touched span; exit 0

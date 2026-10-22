@@ -4,8 +4,9 @@ This directory is the single source of truth for every git-span agent skill.
 The `skills/` subtrees under `plugins-claude/git-span`, `plugins-codex/git-span`,
 `plugins-opencode/git-span`, and `plugins-antigravity/git-span` are **generated
 build output** of this tree — committed for install-ability, never edited by
-hand. Every rendered file carries a `Generated from skills-src/...` marker
-naming the template it came from.
+hand. A rendered file's template is its path under `skills-src/git-span/`
+(`.md.eta` for templates); the build restores and refuses hand-edits, and the
+pre-commit hook rejects a rendered-tree commit that stages no build input.
 
 ## How to change a skill
 
@@ -17,8 +18,7 @@ naming the template it came from.
    compared against the `lintBaseline` in `scripts/agent-skills-plugins.json`,
    exact in both directions).
 3. Build: `node scripts/build-agent-skills.mjs`. This renders all four platform
-   trees, stamps each rendered file with its generated-from marker, and
-   verifies from the CLI's own output that every declared target and skill was
+   trees and verifies from the CLI's own output that every declared target and skill was
    actually written.
 4. Commit the template change and the rebuilt trees together. `scripts/validate.sh`
    and the release workflow both refuse a tree that does not rebuild

@@ -1,5 +1,3 @@
-<!-- Generated from skills-src/git-span/git-span/references/finding-span-candidates.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
-
 # Finding span candidates by mining git history
 
 Mine history for broad discovery of relationships unenforced by types, tests,

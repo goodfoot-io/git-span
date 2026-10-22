@@ -1,5 +1,3 @@
-<!-- Generated from skills-src/git-span/git-span/references/whole-file-and-lfs.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
-
 # Whole-file anchors and LFS-tracked paths
 
 ## Whole-file anchors

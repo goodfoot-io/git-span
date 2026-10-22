@@ -38,9 +38,6 @@
         "control": "build refuses a registry skill with no directory on disk",
         "suite": "scripts/agent-skills-drivers.test.mjs"
       },
-      "no-marker-syntax": {
-        "accepted": "Tripping it requires the CLI to render a file type injectMarker() does not know, which the fixture CLI stubs cannot produce without also failing render verification first. Candidate for a future control."
-      },
       "git-diff-failed": {
         "accepted": "Infrastructure refusal: git itself failing inside a valid repository is not reproducible hermetically without breaking every other assertion in the same fixture."
       },

@@ -161,7 +161,7 @@ function stub(root, name, body) {
   return file;
 }
 
-test('build renders through a symlinked node_modules and stamps generated-from markers', () => {
+test('build renders through a symlinked node_modules and leaves rendered files unstamped', () => {
   const root = fixture();
   try {
     const result = run('build-agent-skills.mjs', root);
@@ -169,16 +169,10 @@ test('build renders through a symlinked node_modules and stamps generated-from m
 
     for (const target of ['plugins-claude/demo/skills', 'plugins-codex/demo/skills']) {
       const skillMd = readFileSync(join(root, target, 'alpha/SKILL.md'), 'utf8');
-      assert.match(
-        skillMd,
-        /^---\nname: alpha\ndescription: A demo skill\.\n---\n<!-- Generated from skills-src\/demo\/alpha\/SKILL\.md\.eta by scripts\/build-agent-skills\.mjs/,
-        `marker missing after frontmatter in ${target}`
-      );
+      assert.match(skillMd, /^---\nname: alpha\ndescription: A demo skill\.\n---\n/);
+      assert.doesNotMatch(skillMd, /Generated from/, `unexpected marker in ${target}`);
       const notes = readFileSync(join(root, target, 'alpha/references/notes.md'), 'utf8');
-      assert.match(
-        notes,
-        /^<!-- Generated from skills-src\/demo\/alpha\/references\/notes\.md by scripts\/build-agent-skills\.mjs/
-      );
+      assert.equal(notes, readFileSync(join(root, 'skills-src/demo/alpha/references/notes.md'), 'utf8'));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

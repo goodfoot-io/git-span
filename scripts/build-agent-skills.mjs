@@ -78,51 +78,6 @@ function walkFiles(dir) {
 }
 
 /**
- * Stamp one rendered file with the template it was generated from, so a
- * reader about to hand-edit it is told where the edit actually belongs. The
- * placement is host-tolerated: after the frontmatter for SKILL.md files,
- * after the shebang for scripts, at the top otherwise. Injection is
- * deterministic, so rebuilt trees stay byte-identical to committed ones.
- * @param {SkillsPlugin} plugin
- * @param {SkillsTarget} target
- * @param {string} file repo-relative path of the rendered file
- */
-function injectMarker(plugin, target, file) {
-  const relativeToTarget = file.slice(target.path.length + 1);
-  const marker = `Generated from ${templateFor(plugin, relativeToTarget)} by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.`;
-  const absolute = path.join(repo, file);
-  const content = readFileSync(absolute, 'utf8');
-  if (file.endsWith('.md')) {
-    const comment = `<!-- ${marker} -->\n`;
-    if (content.startsWith('---\n')) {
-      const close = content.indexOf('\n---\n', 3);
-      if (close !== -1) {
-        const cut = close + '\n---\n'.length;
-        writeFileSync(absolute, `${content.slice(0, cut)}${comment}${content.slice(cut)}`);
-        return;
-      }
-    }
-    writeFileSync(absolute, `${comment}\n${content}`);
-    return;
-  }
-  if (file.endsWith('.mjs')) {
-    const comment = `// ${marker}\n`;
-    if (content.startsWith('#!')) {
-      const eol = content.indexOf('\n') + 1;
-      writeFileSync(absolute, `${content.slice(0, eol)}${comment}${content.slice(eol)}`);
-      return;
-    }
-    writeFileSync(absolute, `${comment}${content}`);
-    return;
-  }
-  // refusal: no-marker-syntax
-  throw new Error(
-    `${plugin.name}: no generated-from marker syntax is defined for ${file} — ` +
-      `teach injectMarker() this file type before shipping it in a rendered tree.`
-  );
-}
-
-/**
  * The tracked files inside a plugin's targets that differ from HEAD before
  * the build runs, with their exact worktree bytes. Publishing replaces the
  * whole tree; whatever these files held is what a publish could destroy.
@@ -256,9 +211,7 @@ for (const plugin of registry.plugins) {
             // this reads what was actually written. Git cannot commit an
             // empty directory, so an empty tree would exist only here.
             failures.push(`${plugin.name}: ${target.path} is empty after publishing.`);
-            continue;
           }
-          for (const file of files) injectMarker(plugin, target, file);
         }
       } catch (error) {
         failures.push(error instanceof Error ? error.message : String(error));
