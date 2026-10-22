@@ -870,35 +870,50 @@ function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git",
   }
 }
 
-// packages/agent-hooks/src/common/review-notes-stop.ts
-function reviewNotesPrompt(scope) {
-  const skill = scope.host === "claude" || scope.host === "codex" ? "git-span:review-notes" : "review-notes";
-  return [
-    "Dispatch a forked subagent with this prompt:",
-    `"Load the ${skill} skill then follow the instructions to document implicit couplings and specifications using \`git-span\`. Message agents if you identify code quality issues."`,
-    "Wait for the subagent and include any blockers in your final response."
-  ].join("\n");
+// packages/agent-hooks/src/common/review-lookup.ts
+function reviewError(err) {
+  return (err instanceof Error ? err.message : "could not read commit notes").slice(0, 512);
+}
+function decodeReviewNotes(envelope) {
+  if (!isRecord(envelope) || envelope.schema_version !== 1 || envelope.operation !== "list" || Object.keys(envelope).some((key) => !["schema_version", "operation", "notes"].includes(key)))
+    throw new Error("invalid versioned notes list envelope");
+  return decodeReviewNoteArray(envelope.notes);
+}
+function decodeReviewNoteArray(value) {
+  if (!Array.isArray(value)) throw new Error("invalid captured notes");
+  const ids = /* @__PURE__ */ new Set();
+  return value.map((note) => {
+    if (!isRecord(note) || Object.keys(note).length !== 3 || !Number.isSafeInteger(note.id) || typeof note.id !== "number" || note.id <= 0 || typeof note.commit_sha !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(note.commit_sha) || !Object.hasOwn(note, "document") || ids.has(note.id))
+      throw new Error("invalid captured note tuple");
+    ids.add(note.id);
+    return { id: note.id, commit_sha: note.commit_sha, document: note.document };
+  });
 }
 function noteBelongsToSession(note, scope) {
   if (scope.host === "antigravity" || scope.host === "opencode") return true;
-  if (!isRecord(note) || !isRecord(note.document)) return false;
-  const document = note.document;
-  if (document.session_id === scope.sessionId) return true;
-  return document.host === scope.host && document.sessionId === scope.sessionId;
+  if (!isRecord(note.document)) return false;
+  const doc = note.document;
+  return doc.schemaVersion === 1 && doc.host === scope.host && doc.sessionId === scope.sessionId || doc.kind === "git-span/uncovered-commit" && doc.schema_version === 1 && doc.session_id === scope.sessionId && (doc.host === void 0 || doc.host === scope.host);
+}
+function reviewRepositories(scope) {
+  const repositories = /* @__PURE__ */ new Set();
+  for (const directory of /* @__PURE__ */ new Set([scope.cwd, ...scope.workspacePaths ?? []])) {
+    if (!directory) continue;
+    const root = resolveRepoRoot(directory);
+    if (root) repositories.add(root);
+    if (repositories.size > 32) throw new Error("review repository budget exceeded");
+  }
+  return [...repositories];
 }
 async function hasReviewNotes(scope, logger2, io) {
   const deadline = performance.now() + 5e3;
-  const repositories = /* @__PURE__ */ new Set();
   try {
-    for (const directory of /* @__PURE__ */ new Set([scope.cwd, ...scope.workspacePaths ?? []])) {
-      if (!directory) continue;
+    const repositories = [];
+    for (const cwd of reviewRepositories(scope)) {
       if (performance.now() >= deadline) throw new Error("note lookup deadline exhausted");
-      const repository = resolveRepoRoot(directory);
-      if (!repository || repositories.has(repository)) continue;
-      repositories.add(repository);
-      const resolved = resolveGitSpanCommand(["notes", "list", "--format", "json"], repository);
+      const resolved = resolveGitSpanCommand(["notes", "list", "--format", "json"], cwd);
       const command = {
-        cwd: repository,
+        cwd,
         argv: resolved.argv,
         timeoutMs: Math.max(1, Math.floor(deadline - performance.now())),
         maxOutputBytes: 1048576
@@ -906,15 +921,25 @@ async function hasReviewNotes(scope, logger2, io) {
       const result = await (io?.execute(command) ?? executeCommitNotes(resolved.executable, command));
       if (result.exitCode !== 0 || result.signal !== null || result.timedOut || result.outputExceeded)
         throw new Error("notes CLI unavailable, failed, or exceeded lookup bounds");
-      const envelope = JSON.parse(result.stdout);
-      if (!isRecord(envelope) || !Array.isArray(envelope.notes)) throw new Error("invalid notes list response");
-      if (envelope.notes.some((note) => noteBelongsToSession(note, scope))) return true;
+      const notes = decodeReviewNotes(JSON.parse(result.stdout)).filter((note) => noteBelongsToSession(note, scope));
+      if (notes.length) repositories.push({ cwd, notes });
     }
-    return false;
+    return repositories.length ? { kind: "matching", repositories } : { kind: "empty" };
   } catch (err) {
-    logger2.warn("git-span notes lookup failed; skipping note review", { err });
-    return false;
+    logger2.warn("git-span could not read commit notes", { err });
+    return { kind: "failure", reason: reviewError(err) };
   }
+}
+
+// packages/agent-hooks/src/common/review-notes-stop.ts
+function reviewNotesPrompt(scope) {
+  const skill = scope.host === "claude" || scope.host === "codex" ? "git-span:review-notes" : "review-notes";
+  const worker = `Load the ${skill} skill. Review changed behavior and its consumers, then document residual implicit couplings using git-span. Return findings or patches to the parent; do not independently edit production requirements, stage, or commit. Intentional code does not supersede a requirement. Report metadata completion separately from material findings; retain disputed consequences.`;
+  return [
+    "Dispatch a forked subagent with this prompt:",
+    JSON.stringify(worker),
+    "Wait for the subagent. Include unresolved findings, incomplete scope and lookup failures in your final response. Review completion is not semantic approval."
+  ].join("\n");
 }
 
 // packages/agent-hooks/src/common/update-check-env.ts
@@ -962,7 +987,13 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT, check = hasReviewNotes) 
       cwd: input.workspacePaths[0] ?? "",
       workspacePaths: input.workspacePaths
     };
-    if (input.terminationReason === "model_stop" && !input.error && input.fullyIdle && await check(scope, ctx.logger)) {
+    let failure;
+    const outcome = input.terminationReason === "model_stop" && !input.error && input.fullyIdle ? await check(scope, ctx.logger).catch((err) => ({
+      kind: "failure",
+      reason: err instanceof Error ? err.message.slice(0, 512) : "lookup unavailable"
+    })) : { kind: "empty" };
+    if (outcome.kind === "failure") failure = `git-span could not read commit notes: ${outcome.reason}`;
+    if (outcome.kind === "matching") {
       try {
         mkdirSync4(layout.dir(input.conversationId), { recursive: true, mode: 448 });
         writeFileSync2(join4(layout.dir(input.conversationId), "antigravity-note-review-requested"), "", {
@@ -979,7 +1010,7 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT, check = hasReviewNotes) 
     }
     try {
       cleanupCallScopedState(layout, input.conversationId);
-      return void 0;
+      return failure ? stopOutput({ reason: failure }) : void 0;
     } catch (err) {
       ctx.logger.warn("git-span stop cleanup failed open on an uncaught error", { err });
       return void 0;

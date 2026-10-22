@@ -49,6 +49,7 @@ impl SuppressionSignals {
 /// not a flag enumeration.
 fn is_machine_output(command: &Commands) -> bool {
     match command {
+        Commands::Preflight(args) => args.format == crate::cli::preflight::PreflightFormat::Json,
         Commands::Notes(args) => args.command.format() == crate::cli::notes::NotesFormat::Json,
         Commands::List(args) => args.porcelain || args.oneline,
         Commands::Drift(args) => args.format != DriftFormat::Human,

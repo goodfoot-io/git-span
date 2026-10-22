@@ -1,4 +1,4 @@
-plugins-claude/git-span/skills/git-span/references/command-reference.md#L364-L445 rk64:a180e379979ef58f
+plugins-claude/git-span/skills/git-span/references/command-reference.md#L382-L463 rk64:a180e379979ef58f
 plugins-claude/git-span/skills/git-span/references/terminal-statuses.md#L50-L71 rk64:5170573da27bd1b7
 
 The CONFLICT status's fix steps summarize the merge-conflict-resolution contract the command reference specifies in full — drift --fix as the authoritative finisher, the optional merge-driver accelerator, and their shared fail-closed cases.

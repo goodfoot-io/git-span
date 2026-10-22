@@ -32,6 +32,17 @@ import {
   resolveRepoRoot
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
+import {
+  BROAD_READ_BYTES,
+  type DeliverySnapshot,
+  inlineCode,
+  readSnapshots,
+  recordSnapshots,
+  shellArgument,
+  showRoute,
+  snapshot,
+  TARGETED_BYTES
+} from './delivery-presentation.js';
 import { flushFailOpen, reportFailOpen } from './fail-open.js';
 import { resolveGitSpanCommand } from './git-span-command.js';
 import { caughtProperty, errnoCode, isOneOf, isRecord } from './guards.js';
@@ -123,11 +134,19 @@ interface TouchInputBase {
   filePath: string;
   /** Stable identity of this host tool invocation, used for repair replay. */
   invocationId?: string;
+  /** Host has a wired, trustworthy lifecycle reset for this session's recipient. */
+  recipientResetSupported?: boolean;
+  /** Stable host transcript/recipient identity; absent hosts retain session scoping. */
+  recipientId?: string;
 }
 
 /** A read touch (Claude `Read`, or a read-shaped Codex event). */
 export interface TouchReadInput extends TouchInputBase {
   kind: 'read';
+  /** Explicit host-visible extent; null means unknown or empty, never fully exposed. */
+  observedRange?: LineRange | null;
+  /** Discover relationships across the path without claiming all lines were read. */
+  broadDiscovery?: boolean;
   /**
    * 1-based starting line of the read, from the Claude `Read` tool's `offset`
    * input. `undefined` when the read had no `offset` (reads from line 1).
@@ -873,9 +892,9 @@ export interface TouchOutput {
 // ---------------------------------------------------------------------------
 
 /** Separate stable repository/span identity from its latest evidence revision. */
-function deliveryIdentity(repoRoot: string, name: string): string {
+function deliveryIdentity(repoRoot: string, name: string, recipient = ''): string {
   return `touch:${createHash('sha256')
-    .update(JSON.stringify([repoRoot, name]))
+    .update(JSON.stringify([repoRoot, name, recipient]))
     .digest('hex')}`;
 }
 
@@ -909,9 +928,9 @@ function driftHeader(driftedCount: number, kind: TouchInput['kind']): string {
 }
 
 function driftFooter(driftedNames: string[]): string {
-  if (driftedNames.length === 1) {
+  if (driftedNames.length === 1 && (driftedNames[0]?.length ?? 0) <= 200) {
     const name = driftedNames[0];
-    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require \`git span drift ${name}\` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
+    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require ${inlineCode(`git span drift -- ${shellArgument(name ?? '')}`)} to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
   }
   return 'For each out-of-date span: restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.';
 }
@@ -1031,14 +1050,11 @@ function recoverRangeFromDisk(written: string, filePath: string): LineRange | 'w
 export const DEFAULT_READ_LIMIT = 2000;
 
 /**
- * Compute the touched range for a read from the Claude `Read` tool's
- * `offset`/`limit` inputs. Neither present means a genuine whole-file read —
- * every covering span stays in scope, matching today's behavior. Otherwise
- * the range starts at `offset` (default line 1) and runs for `limit` lines
- * (default {@link DEFAULT_READ_LIMIT}), clamped to the file's actual line
- * count so a short file with a large `offset`/`limit` doesn't overshoot.
- * Clamping requires reading the file; an unreadable file degrades to
- * `'whole-file'` — the same fail-open behavior the write path uses.
+ * Legacy/static shell read range recovery. Structured host adapters provide an
+ * explicit observed range or unknown marker before this branch; they never
+ * infer visible tool output from a physical file read after execution.
+ * Whole-file static intent remains discovery across the path. Numeric shell
+ * windows retain their existing post-state clamping behavior.
  */
 function recoverReadRange(
   offset: number | undefined,
@@ -1060,6 +1076,15 @@ function recoverReadRange(
 
 function rangesForInput(input: TouchInput): LineRange[] | 'whole-file' {
   if (input.kind === 'read') {
+    if (input.broadDiscovery === true) return 'whole-file';
+    if (input.observedRange === null) {
+      if (input.offset !== undefined || input.limit !== undefined) {
+        const start = input.offset ?? 1;
+        if (input.limit !== undefined) return [{ start, end: start + input.limit - 1 }];
+      }
+      return 'whole-file';
+    }
+    if (input.observedRange !== undefined) return [input.observedRange];
     const recovered = recoverReadRange(input.offset, input.limit, input.filePath);
     return recovered === 'whole-file' ? 'whole-file' : [recovered];
   }
@@ -1112,37 +1137,128 @@ function renderContextTouch(
   memo: MemoStore,
   logger: CoreLogger | undefined
 ): string | null {
+  const recipient = createHash('sha256')
+    .update(input.recipientId ?? '')
+    .digest('hex');
   const surfaced = memo.getSurfaced(input.sessionId);
-  const latest = new Map<string, string>();
-  for (const key of surfaced) {
-    if (/^touch:[0-9a-f]{64}:[0-9a-f]{64}$/.test(key)) latest.set(key.slice(0, 70), key);
-  }
-  const sections: string[] = [];
-  const toRecord: string[] = [];
-  const driftedNames: string[] = [];
-  for (const span of document.spans) {
-    if (!spanTouchesInput(span, document, repoPath, ranges)) continue;
-    const anchors = span.anchors.map((anchor) => contextAnchorRow(span.name, anchor));
-    const drift = span.anchors
-      .filter((anchor) => anchor.status.code !== 'FRESH')
-      .map((anchor) => contextDriftRow(span.name, anchor));
-    const debtRows = drift.filter((row) => isDebt(row.status));
-    if (drift.length > 0 && debtRows.length === 0) continue;
-    const identity = deliveryIdentity(repoRoot, span.name);
-    const key = `${identity}:${span.evidence_revision}`;
-    if (surfaced.has(key)) continue;
-    const prior = latest.get(identity);
-    if (prior !== undefined) surfaced.delete(prior);
-    sections.push(renderSpanSection(span.name, anchors, debtRows, span.why, logger));
-    if (debtRows.length > 0) driftedNames.push(span.name);
-    toRecord.push(key);
-  }
-  if (sections.length === 0) return null;
-  memo.addSurfaced(input.sessionId, toRecord, surfaced);
+  const previous = readSnapshots(surfaced);
+  const candidates = document.spans
+    .filter((span) => {
+      if (!spanTouchesInput(span, document, repoPath, ranges)) return false;
+      const statuses = span.anchors.map((anchor) => contextStatusToken(anchor.status));
+      return statuses.every((status) => status === 'FRESH') || statuses.some(isDebt);
+    })
+    .sort((a, b) => {
+      const debt = (span: ContextSpan) => span.anchors.some((anchor) => isDebt(contextStatusToken(anchor.status)));
+      return Number(debt(b)) - Number(debt(a)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    });
+  const eligible = candidates.filter(
+    (span) =>
+      previous.get(deliveryIdentity(repoRoot, span.name, input.recipientId))?.value.revision !== span.evidence_revision
+  );
+  if (eligible.length === 0) return null;
+  const broad = input.kind === 'read' && input.broadDiscovery === true;
+  const unknown = input.kind === 'read' && input.observedRange === null;
+  const discoveryOnly = unknown && (broad || ranges === 'whole-file');
+  const observed =
+    input.kind === 'read' && input.observedRange !== undefined && input.observedRange !== null
+      ? [input.observedRange]
+      : ranges;
+  const full = (span: ContextSpan): string =>
+    renderSpanSection(
+      span.name,
+      span.anchors.map((anchor) => contextAnchorRow(span.name, anchor)),
+      span.anchors
+        .filter((anchor) => isDebt(contextStatusToken(anchor.status)))
+        .map((anchor) => contextDriftRow(span.name, anchor)),
+      span.why,
+      logger
+    );
+  const qualifier = eligible.every((span) => span.anchors.every((anchor) => anchor.status.code === 'FRESH'))
+    ? 'Anchors located; relationship review not recorded in this context.'
+    : 'Tracked evidence shown; relationship review not recorded in this context. Match provenance is not reported here.';
+  const discovery = (): string => {
+    const lines: string[] = [];
+    const header = `Discovery only — ${eligible.length} relationships; ${unknown ? 'read extent unknown' : 'full details not delivered'}.`;
+    const route = 'Retrieve omitted relationships with `git span list`; use `git span show <name>` for details.';
+    for (const span of eligible) {
+      const prior = previous.get(deliveryIdentity(repoRoot, span.name, input.recipientId));
+      const line = `- ${inlineCode(span.name)} — ${prior === undefined ? 'not fully shown' : 'evidence changed'}; ${new Set(span.anchors.map((anchor) => anchor.anchored.path)).size} files; ${showRoute(span.name)}`;
+      const omitted = eligible.length - lines.length - 1;
+      const result = buildBlock([...lines, line], header, `${omitted} spans omitted. ${route}`);
+      if (Buffer.byteLength(result) > BROAD_READ_BYTES) break;
+      lines.push(line);
+    }
+    return buildBlock(lines, header, `${eligible.length - lines.length} spans omitted. ${route}`);
+  };
+  const fullFooterSeen =
+    input.recipientResetSupported === true &&
+    [...previous.values()].some(({ value }) => value.recipient === recipient && value.fullFooter);
+  const shortFooter =
+    'Check the coupled evidence before committing; zero drift does not establish relationship review.';
   const fileName = basename(input.filePath);
-  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
-  const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
-  return buildBlock(sections, header, footer);
+  const driftedNames = eligible
+    .filter((span) => span.anchors.some((anchor) => isDebt(contextStatusToken(anchor.status))))
+    .map((span) => span.name);
+  const header = `${unknown ? 'Tool read extent unknown; hook details target the requested lines.\n' : ''}${driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName)}\n${qualifier}`;
+  const footer = fullFooterSeen
+    ? shortFooter
+    : `${driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName)}\nTo move an address: \`git span replace <name> <old-anchor> <new-anchor>\`. To explicitly accept content at the same address: \`git span add <name> <anchor>\`. Zero drift does not establish relationship review.`;
+  // Discovery never consumes full exposure, including spans outside the tool's actual visible range.
+  if (
+    discoveryOnly ||
+    (broad &&
+      (eligible.length > 3 ||
+        eligible.some((span) => !spanTouchesInput(span, document, repoPath, observed)) ||
+        Buffer.byteLength(buildBlock(eligible.map(full), header, footer)) > BROAD_READ_BYTES))
+  )
+    return discovery();
+  const sections: string[] = [];
+  const updates = new Map<string, DeliverySnapshot>();
+  let incomplete = 0;
+  for (const [spanIndex, span] of eligible.entries()) {
+    const identity = deliveryIdentity(repoRoot, span.name, input.recipientId);
+    const prior = previous.get(identity)?.value;
+    const current = snapshot(span, input.recipientResetSupported === true, recipient);
+    let section = full(span);
+    if (prior !== undefined) {
+      const changed = span.anchors.filter((_anchor, index) => prior.anchors[index] !== current.anchors[index]);
+      const removed = Math.max(0, prior.anchors.length - current.anchors.length);
+      const why = prior.why !== span.why ? span.why : (span.why?.split(/(?<=[.!?])\s/)[0] ?? null);
+      const rows = changed.map((anchor) => contextAnchorRow(span.name, anchor));
+      const debtRows = changed
+        .filter((anchor) => isDebt(contextStatusToken(anchor.status)))
+        .map((anchor) => contextDriftRow(span.name, anchor));
+      // The producer's evidence revision includes source identities absent
+      // from the visible anchor metadata. Preserve source/status context when
+      // those identities change instead of emitting a rowless delta.
+      section =
+        changed.length === 0 && removed === 0 && prior.why === span.why
+          ? `${section}\nEvidence revision changed; visible anchor metadata is unchanged. ${showRoute(span.name)}`
+          : `${renderSpanSection(span.name, rows, debtRows, why, logger)}\nEvidence changed since full exposure.${removed > 0 ? ` ${removed} anchor(s) removed.` : ''} ${showRoute(span.name)}`;
+    }
+    const omissionReserve = `\n${eligible.length - spanIndex - 1} additional relationships incomplete; retrieve with \`git span list\` and \`git span show <name>\`.`;
+    if (Buffer.byteLength(buildBlock([...sections, section], header, footer + omissionReserve)) > TARGETED_BYTES) {
+      // Keep the evidence identity and a complete retrieval route; reserve all remaining count.
+      incomplete = eligible.length - spanIndex;
+      const detail = `Incomplete relationship details; evidence ${inlineCode(span.evidence_revision)}. ${showRoute(span.name)}`;
+      if (Buffer.byteLength(buildBlock([...sections, detail], header, footer + omissionReserve)) <= TARGETED_BYTES)
+        sections.push(detail);
+      break;
+    }
+    sections.push(section);
+    updates.set(identity, current);
+  }
+  recordSnapshots(surfaced, updates);
+  memo.addSurfaced(input.sessionId, [], surfaced);
+  return buildBlock(
+    sections,
+    header,
+    footer +
+      (incomplete > 0
+        ? `\n${incomplete} relationships incomplete; retrieve with \`git span list\` and \`git span show <name>\`.`
+        : '')
+  );
 }
 
 interface PreparedTouch {

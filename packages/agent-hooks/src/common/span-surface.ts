@@ -15,6 +15,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import {
@@ -33,7 +34,7 @@ import {
   toPosix
 } from './agent-hooks-common.js';
 import { resolveGitSpanCommand } from './git-span-command.js';
-import { caughtProperty, isRecord } from './guards.js';
+import { caughtProperty, errnoCode, isRecord } from './guards.js';
 import { type HookIgnoreLoader, isSpanSuppressed } from './span-ignore.js';
 
 /**
@@ -108,9 +109,9 @@ export interface MemoStore {
    * Record `names` as surfaced, merging into `known` — the set the caller
    * read via {@link getSurfaced} earlier in the same pipeline. The caller's
    * read is authoritative: implementations must write the merge without
-   * re-reading the memo, so one rendered block costs one read (the caller's)
-   * and one write. Requiring the parameter keeps that freshness contract a
-   * type error to bypass.
+   * re-reading the memo payload: one block reads the small epoch pointer and
+   * payload once, then writes its captured epoch destination. Requiring the
+   * parameter keeps that freshness contract a type error to bypass.
    */
   addSurfaced(sessionId: string, names: string[], known: ReadonlySet<string>): void;
 }
@@ -121,47 +122,107 @@ export type MemoLogger = CoreLogger;
  * The disk-backed memo, under the per-session state directory the caller's
  * {@link SessionLayout} names (agent-hooks-common.ts) — relocated from
  * os.tmpdir()/agent-hooks-git-span/ so per-session state has one home and is
- * covered by pruneStaleSessions's opportunistic >30-day pruning.
+ * covered by pruneStaleSessions's opportunistic >30-day pruning. Each read
+ * captures an epoch-specific destination so late writes cannot resurrect a
+ * baseline after an explicit lifecycle reset.
  */
+/** Resolve a private exposure epoch. Missing pointer is the initial epoch. */
+function exposureDestination(layout: SessionLayout, sessionId: string): string {
+  const base = layout.memoFile(sessionId);
+  let epoch: string;
+  try {
+    epoch = fs.readFileSync(`${base}.epoch`, 'utf8');
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') return base;
+    throw err;
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(epoch))
+    throw new Error('invalid exposure epoch');
+  return `${base}.${epoch}`;
+}
+
 export function createDiskMemoStore(logger: MemoLogger, layout: SessionLayout): MemoStore {
+  // A write belongs to the epoch of its caller-known set, even across reset.
+  const destinations = new WeakMap<ReadonlySet<string>, string>();
   return {
     getSurfaced(sessionId) {
       pruneStaleSessionsThrottled(layout);
+      const empty = new Set<string>();
       try {
-        const raw = fs.readFileSync(layout.memoFile(sessionId), 'utf8');
+        const destination = exposureDestination(layout, sessionId);
+        destinations.set(empty, destination);
+        const raw = fs.readFileSync(destination, 'utf8');
         const parsed: unknown = JSON.parse(raw);
         const surfaced = isRecord(parsed) ? parsed.surfaced : undefined;
         if (Array.isArray(surfaced) && surfaced.every((name): name is string => typeof name === 'string')) {
-          return new Set(surfaced);
+          const result = new Set(surfaced);
+          destinations.set(result, destination);
+          return result;
         }
         throw new Error('memo file is not a { surfaced: string[] } document');
       } catch (err) {
         logger.warn('memo read failed (treating as empty)', { err });
       }
-      return new Set();
+      return empty;
     },
     addSurfaced(sessionId, names, known) {
-      // The caller's just-read set is authoritative — merging into it instead
-      // of re-reading keeps one surface pipeline at one memo read (the
-      // caller's) and one write. The read-modify-write window this opens is
-      // the gap between the caller's getSurfaced and here: adjacent statements
-      // in the live render pipeline.
       const existing = new Set(known);
       for (const n of names) existing.add(n);
-      const memoDir = layout.dir(sessionId);
-      const memoPath = layout.memoFile(sessionId);
-      const tmpPath = `${memoPath}.tmp`;
+      let tmpPath: string | undefined;
       try {
-        // The memo and plan stores can each create the shared session dir
-        // first, so both enforce the same restrictive mode.
-        fs.mkdirSync(memoDir, { recursive: true, mode: 0o700 });
-        fs.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), 'utf8');
+        // No state re-read. Direct writers without getSurfaced start in the
+        // current epoch; normal renderers retain their captured destination.
+        const memoPath = destinations.get(known) ?? exposureDestination(layout, sessionId);
+        tmpPath = `${memoPath}.${randomUUID()}.tmp`;
+        fs.mkdirSync(layout.dir(sessionId), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), { encoding: 'utf8', mode: 0o600 });
         fs.renameSync(tmpPath, memoPath);
       } catch (err) {
         logger.warn('memo write failed', { err });
+      } finally {
+        if (tmpPath !== undefined) {
+          try {
+            fs.rmSync(tmpPath, { force: true });
+          } catch {
+            /* already reported if write failed */
+          }
+        }
       }
     }
   };
+}
+
+/** Atomically advance the recipient epoch; old writers cannot restore its baseline. */
+export function resetExposure(layout: SessionLayout, sessionId: string, logger: CoreLogger): void {
+  const base = layout.memoFile(sessionId);
+  const pointer = `${base}.epoch`;
+  const epoch = randomUUID();
+  const temporary = `${pointer}.${epoch}.tmp`;
+  try {
+    fs.mkdirSync(layout.dir(sessionId), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(temporary, epoch, { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temporary, pointer);
+    // Clean retired epochs. A concurrent old writer may recreate its obsolete
+    // file, which new readers ignore and the next reset/session cleanup reaps.
+    const stem = nodePath.basename(base);
+    for (const name of fs.readdirSync(layout.dir(sessionId))) {
+      if (
+        name === stem ||
+        (name.startsWith(`${stem}.`) &&
+          /^[0-9a-f-]{36}$/.test(name.slice(stem.length + 1)) &&
+          name !== `${stem}.${epoch}`)
+      )
+        fs.rmSync(nodePath.join(layout.dir(sessionId), name), { force: true });
+    }
+  } catch (err) {
+    logger.warn('git-span recipient exposure reset failed', { err });
+  } finally {
+    try {
+      fs.rmSync(temporary, { force: true });
+    } catch {
+      /* reset failure already reported */
+    }
+  }
 }
 
 /** Factory function that creates a MemoStore given a logger and a layout. */

@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 /// Subcommands and reserved tokens that cannot be used as span names.
 pub const RESERVED_SPAN_NAMES: &[&str] = &[
     "notes",
+    "preflight",
     "add",
     "show",
     "remove",

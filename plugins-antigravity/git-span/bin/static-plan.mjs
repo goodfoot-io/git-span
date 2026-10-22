@@ -897,12 +897,13 @@ function pruneStaleSessionsThrottled(layout, now = Date.now()) {
 }
 
 // packages/agent-hooks/src/common/bash-attribution.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import * as fs6 from "node:fs";
 import * as nodePath5 from "node:path";
 
 // packages/agent-hooks/src/common/span-surface.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs3 from "node:fs";
 import * as nodePath3 from "node:path";
 
@@ -938,7 +939,7 @@ import * as nodePath4 from "node:path";
 
 // packages/agent-hooks/src/common/parse-command.ts
 import { readFileSync as readFileSync4, statSync as statSync4 } from "node:fs";
-import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
+import { basename as basename3, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
 // packages/agent-hooks/src/common/command-resolve.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
@@ -2431,7 +2432,7 @@ function teeOperandParts(argv) {
   }
   return { append, operands };
 }
-function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join8, results) {
+function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join9, results) {
   const parts = teeOperandParts(argv);
   if (parts === null) return;
   for (const operand of parts.operands) {
@@ -2444,23 +2445,23 @@ function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex,
         operation: "create-overwrite",
         absolutePath,
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       } : {
         operation: "append",
         absolutePath,
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       }
     });
   }
 }
-function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join8, results) {
+function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join9, results) {
   const contentRedirects = redirects.filter(isContentRedirect);
   const host = argv[0];
   if (contentRedirects.length === 0) {
-    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join8, results);
+    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join9, results);
     return;
   }
   if (host === void 0 || host === ":" || host === "exec") {
@@ -2471,7 +2472,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
       results.push({
         status: "resolved",
         idiom: "truncate-write",
-        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join8 }
+        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join9 }
       });
     }
     return;
@@ -2495,7 +2496,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "append",
           absolutePath,
           simpleCommandIndex,
-          join: join8,
+          join: join9,
           ...threadedAppend !== void 0 ? { written: threadedAppend } : {}
         }
       });
@@ -2507,13 +2508,13 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "create-overwrite",
           absolutePath,
           simpleCommandIndex,
-          join: join8,
+          join: join9,
           ...threadedOverwrite !== void 0 ? { written: threadedOverwrite } : {}
         }
       });
     }
   }
-  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join8, results);
+  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join9, results);
 }
 var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time", "nice", "doas"]);
 var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -2623,12 +2624,12 @@ function copyMoveParts(args, spec) {
   }
   return { operands, targetDir };
 }
-function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join8) {
+function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join9) {
   if (spec.sourceOperation === "delete") {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join8 }
+      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join9 }
     });
     return;
   }
@@ -2636,17 +2637,17 @@ function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join8) 
   results.push({
     status: "resolved",
     idiom: spec.idiom,
-    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join8 } : {
+    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join9 } : {
       operation: "read",
       lineStart: range.lineStart,
       lineEnd: range.lineEnd,
       absolutePath,
       simpleCommandIndex,
-      join: join8
+      join: join9
     }
   });
 }
-function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   let spec = null;
@@ -2697,7 +2698,7 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join8, 
       return;
     }
     const targetAbs = resolvePath(dir, parts.targetDir);
-    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename2(p)));
+    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename3(p)));
   } else {
     const dest = parts.operands.at(-1);
     if (dest === void 0) return;
@@ -2711,23 +2712,23 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join8, 
       pushUnresolved(results, spec.idiom, dest, "a multi-source copy/move needs a directory destination");
       return;
     }
-    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename2(p))) : [destAbs];
+    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename3(p))) : [destAbs];
   }
   for (const sourcePath of sourcePaths) {
-    emitSourceSpan(results, spec, sourcePath, simpleCommandIndex, join8);
+    emitSourceSpan(results, spec, sourcePath, simpleCommandIndex, join9);
   }
   for (const destPath of destPaths) {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPath, simpleCommandIndex, join: join8 }
+      span: { operation: spec.destOperation, absolutePath: destPath, simpleCommandIndex, join: join9 }
     });
   }
 }
 var RM_NO_VALUE = /* @__PURE__ */ new Set(["-f", "-i", "-v"]);
 var RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d"]);
 var GIT_RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d", "-n", "--dry-run"]);
-function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join8, results) {
+function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join9, results) {
   let afterDashDash = false;
   const operands = [];
   for (const a of args) {
@@ -2753,7 +2754,7 @@ function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex,
     results.push({
       status: "resolved",
       idiom: "rm-write",
-      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join8 }
+      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join9 }
     });
   }
 }
@@ -2766,7 +2767,7 @@ function evaluateStaticSize(value) {
   const mult = suffix === "K" ? 1024 : suffix === "M" ? 1024 ** 2 : suffix === "G" ? 1024 ** 3 : 1;
   return base * mult;
 }
-function matchTruncateOperands(args, dir, simpleCommandIndex, join8, results) {
+function matchTruncateOperands(args, dir, simpleCommandIndex, join9, results) {
   let sawSizeFlag = false;
   let afterDashDash = false;
   let staticSize;
@@ -2812,21 +2813,21 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join8, results) {
         operation: "truncate",
         absolutePath: resolvePath(dir, operand.path),
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...operand.size !== void 0 ? { size: operand.size } : {}
       }
     });
   }
 }
-function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "rm") {
-    matchRmOperands(commandArgs, RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join8, results);
+    matchRmOperands(commandArgs, RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join9, results);
     return;
   }
   if (command === "truncate") {
-    matchTruncateOperands(commandArgs, dirForResolution, simpleCommandIndex, join8, results);
+    matchTruncateOperands(commandArgs, dirForResolution, simpleCommandIndex, join9, results);
     return;
   }
   if (command === "git") {
@@ -2842,7 +2843,7 @@ function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join8, resu
         true,
         sub.cDir ?? dirForResolution,
         simpleCommandIndex,
-        join8,
+        join9,
         results
       );
     }
@@ -2870,7 +2871,7 @@ function heredocBodyIsLiteral(body) {
   }
   return true;
 }
-function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join8, results) {
+function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join9, results) {
   const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
   const tokens = tokenize(stripLeadingAssignments(opener).trim());
   if (tokens === null) return;
@@ -2895,7 +2896,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
             operation: "append",
             absolutePath,
             simpleCommandIndex,
-            join: join8,
+            join: join9,
             ...singlePlainAppend && r.op === ">>" && bodyLiteral ? { written: body } : {}
           }
         });
@@ -2903,11 +2904,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
         results.push({
           status: "resolved",
           idiom: "heredoc-write",
-          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join8 } : {
+          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join9 } : {
             operation: "create-overwrite",
             absolutePath,
             simpleCommandIndex,
-            join: join8,
+            join: join9,
             // The exact gate compares full file bytes, so the trailing
             // `\n` the extraction stripped comes back on the overwrite.
             ...singlePlainOverwrite && bodyLiteral ? { written: `${body}
@@ -2936,7 +2937,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
               operation: "append",
               absolutePath,
               simpleCommandIndex,
-              join: join8,
+              join: join9,
               ...contentRedirects.length === 0 && bodyLiteral ? { written: body } : {}
             }
           });
@@ -2944,11 +2945,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
           results.push({
             status: "resolved",
             idiom: "heredoc-write",
-            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join8 } : {
+            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join9 } : {
               operation: "create-overwrite",
               absolutePath,
               simpleCommandIndex,
-              join: join8,
+              join: join9,
               // Same restored-`\n` exact body as the redirect branch; a
               // tee operand with a content redirect present keeps the
               // redirect's threading only (mirror of the append branch).
@@ -2963,17 +2964,17 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
     return;
   }
   if (host === "patch" || host === "git") {
-    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join8, results);
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join9, results);
     return;
   }
 }
 var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
-function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "sed") {
-    matchSedInplaceArgs(commandArgs, dirForResolution, simpleCommandIndex, join8, results);
+    matchSedInplaceArgs(commandArgs, dirForResolution, simpleCommandIndex, join9, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -2984,7 +2985,7 @@ function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join8, resu
   }
 }
 var SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
-function matchSedInplaceArgs(args, dir, simpleCommandIndex, join8, results) {
+function matchSedInplaceArgs(args, dir, simpleCommandIndex, join9, results) {
   let suffix = null;
   let sawInplace = false;
   let i = 0;
@@ -3109,20 +3110,20 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join8, results) {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join8 }
+        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join9 }
       });
     } else {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join8 }
+        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join9 }
       });
     }
     if (suffix !== null && suffix !== "") {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join8 }
+        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join9 }
       });
     }
   }
@@ -3208,7 +3209,7 @@ function readPatchFile(absolutePath) {
     return null;
   }
 }
-function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join8, results) {
+function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join9, results) {
   const parts = patchApplyParts(args, isGitApply);
   if (parts.readOnly || parts.cachedOnly) return;
   if (parts.directory) {
@@ -3266,13 +3267,13 @@ function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
   }
 }
-function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join8, results) {
+function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join9, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "patch") {
@@ -3284,7 +3285,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join8,
+      join9,
       results
     );
     return;
@@ -3304,7 +3305,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join8,
+      join9,
       results
     );
     return;
@@ -3316,7 +3317,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     }
   }
 }
-function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join8, results) {
+function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join9, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   let isGitApply = false;
@@ -3358,7 +3359,7 @@ function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join8,
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
@@ -3430,7 +3431,7 @@ function stripPackageRunner(argv) {
   if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
   return { kind: "stripped", stripped: rest };
 }
-function matchFormatter(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchFormatter(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const unwrapped = stripTransparentWrapper(argv);
   const [command] = unwrapped;
   if (command === void 0) return;
@@ -3495,12 +3496,12 @@ function matchFormatter(argv, dirForResolution, simpleCommandIndex, join8, resul
     results.push({
       status: "resolved",
       idiom: "formatter-write",
-      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join8 }
+      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join9 }
     });
   }
 }
 var RESTORE_NO_VALUE = /* @__PURE__ */ new Set(["-q", "-f", "-u"]);
-function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join8) {
+function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join9) {
   if (looksUnresolvable(operand)) {
     pushUnresolved(results, idiom, operand, "path contains an unexpanded shell variable or glob");
     return;
@@ -3518,10 +3519,10 @@ function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommand
   results.push({
     status: "resolved",
     idiom,
-    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join8 }
+    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join9 }
   });
 }
-function matchRestoreOperands(args, dir, simpleCommandIndex, join8, results) {
+function matchRestoreOperands(args, dir, simpleCommandIndex, join9, results) {
   let staged = false;
   let worktree = false;
   let afterDashDash = false;
@@ -3566,10 +3567,10 @@ function matchRestoreOperands(args, dir, simpleCommandIndex, join8, results) {
   }
   if (staged && !worktree) return;
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join8);
+    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join9);
   }
 }
-function matchCheckoutOperands(args, dir, simpleCommandIndex, join8, results) {
+function matchCheckoutOperands(args, dir, simpleCommandIndex, join9, results) {
   let afterDashDash = false;
   const operands = [];
   for (let i = 0; i < args.length; i++) {
@@ -3600,10 +3601,10 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join8, results) {
     if (a.startsWith("-")) continue;
   }
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join8);
+    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join9);
   }
 }
-function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "git") {
@@ -3620,8 +3621,8 @@ function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, joi
     }
     const dir = sub.cDir ?? dirForResolution;
     const args = commandArgs.slice(sub.subIdx + 1);
-    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join8, results);
-    else matchCheckoutOperands(args, dir, simpleCommandIndex, join8, results);
+    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join9, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join9, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -3672,7 +3673,7 @@ function parseCommandDetailed(command, opts = {}) {
     if (isAbsolute2(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
-  const emitCandidate = (c, frame, simpleCommandIndex, join8) => {
+  const emitCandidate = (c, frame, simpleCommandIndex, join9) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: "unresolved",
@@ -3728,7 +3729,7 @@ function parseCommandDetailed(command, opts = {}) {
         lineEnd: range.lineEnd,
         absolutePath,
         simpleCommandIndex,
-        join: join8
+        join: join9
       }
     });
   };
@@ -5985,11 +5986,11 @@ function parseCompoundStages(command, split, options, maxCandidates, parse) {
     const stage = split.stages[index];
     if (stage === void 0) break;
     const child = parse(stage.text, options);
-    const join8 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
+    const join9 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
     resolved.push(
       ...child.resolved.map((match) => ({
         ...match,
-        span: { ...match.span, simpleCommandIndex: index, join: join8 }
+        span: { ...match.span, simpleCommandIndex: index, join: join9 }
       }))
     );
     unresolvedMatches.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
@@ -6426,14 +6427,20 @@ function filterTrackedEligibility(candidates, options) {
 
 // packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import * as fs5 from "node:fs";
-import { basename as basename4, dirname as dirname6, join as join5 } from "node:path";
+import { basename as basename5, dirname as dirname6, join as join6 } from "node:path";
+
+// packages/agent-hooks/src/common/delivery-presentation.ts
+import { createHash as createHash2 } from "node:crypto";
+var MAX_MEMO_BYTES = 256 * 1024;
+
+// packages/agent-hooks/src/common/touch-core.ts
 var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 
 // packages/agent-hooks/src/common/parse-response.ts
 import { existsSync as existsSync5, statSync as statSync6 } from "node:fs";
-import { dirname as dirname7, join as join6, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
 
 // packages/agent-hooks/src/common/bash-attribution.ts
 function createDefaultPlannedTouchStore(layout) {
@@ -6462,7 +6469,7 @@ function planEvidence(matches, requirements) {
     return {
       kind: "content-digest",
       algorithm: "sha256",
-      digest: createHash3("sha256").update(expectedContent).digest("hex"),
+      digest: createHash4("sha256").update(expectedContent).digest("hex"),
       range: unionRange(ranges)
     };
   }

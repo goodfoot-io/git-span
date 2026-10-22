@@ -33,10 +33,11 @@ pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
 pub mod notes;
+pub mod preflight;
 pub mod receipt_lock;
 pub(crate) mod recovery_domain;
-pub(crate) mod repair_domain;
 mod repair_content;
+pub(crate) mod repair_domain;
 pub mod resolve;
 pub mod show;
 pub mod tree;
@@ -80,6 +81,9 @@ pub struct Cli {
 pub enum Commands {
     /// Attach, inspect, and remove durable arbitrary JSON documents associated with commits.
     Notes(notes::NotesArgs),
+
+    /// Inspect staged span obligations using index definitions and blobs without mutation.
+    Preflight(preflight::PreflightArgs),
 
     /// Hold a private receipt mutex until the caller closes stdin.
     #[command(name = "__receipt-lock", hide = true)]
@@ -834,6 +838,14 @@ pub fn dispatch(
     span_dir: Option<&str>,
     cli: &Cli,
 ) -> anyhow::Result<i32> {
+    if let Commands::Preflight(args) = command {
+        crate::update_check::maybe_engage(cli);
+        let result = preflight::run(repo, args);
+        if result.is_ok() {
+            crate::update_check::maybe_remind(cli);
+        }
+        return result;
+    }
     if let Commands::Notes(args) = command {
         crate::update_check::maybe_engage(cli);
         let result = notes::run(repo, args);
@@ -865,7 +877,9 @@ pub fn dispatch(
     crate::update_check::maybe_engage(cli);
 
     let result = match command {
-        Commands::Notes(_) => unreachable!("notes dispatched before span recovery"),
+        Commands::Notes(_) | Commands::Preflight(_) => {
+            unreachable!("notes/preflight dispatched before span recovery")
+        }
         Commands::ReceiptLock(args) => receipt_lock::run(args),
         Commands::Show(args) => {
             let _perf = crate::perf::span("command.show");

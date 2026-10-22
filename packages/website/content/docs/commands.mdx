@@ -374,3 +374,19 @@ Key flags:
 | `--dry-run` | Report what EACH of `--rehash`/`--ours`/`--theirs` would produce, without writing. Side flags are ignored when this is set — all three are always evaluated together so the outcomes can be compared before committing to one |
 | `--format <human\|json>` | Output format (human or json) |
 
+### preflight
+
+```bash
+git span preflight [OPTIONS]
+```
+
+Inspect staged span obligations using index definitions and blobs without mutation
+
+JSON schema: [preflight](https://git-span.com/schemas/cli/v1/preflight.json).
+
+Key flags:
+
+| Flag | Description |
+|------|-------------|
+| `--format <human\|json>` | Output as a readable report or the versioned JSON envelope |
+

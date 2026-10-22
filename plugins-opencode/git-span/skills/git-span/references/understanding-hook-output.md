@@ -8,82 +8,47 @@ observes `bash`/`read`/`edit`/`write`, plus `apply_patch` on gpt models, and
 appends bounded `<git-span>` context to the tool output. The experimental
 `execute` tool is outside this coverage.
 
-## The touch hook: the merged `<git-span>` block
+## The touch hook: bounded context and discovery
 
-When an edit lands (or a read touches a partial range) inside a span anchor,
-the touch hook appends a merged `<git-span>` block to the tool result's
-output: a header line, one full span section per surfaced span (sections
-separated by `---`), and a single footer after a final `---`. A healthy span
-renders as:
+A targeted touch delivers the span's anchors and why in a `<git-span>` block.
+Anchors use a shared-prefix tree; changed or unavailable evidence carries status
+suffixes. Matching anchors and successful repairs do not establish semantic
+agreement: output says relationship review is not recorded in this context.
 
-```
-<git-span>
-checkout.tsx has implicit couplings:
+Structured reads distinguish requested discovery from the tool's visible extent.
+OpenCode's structured read response has no pinned extent metadata contract in
+this adapter. Its read extent remains unknown; explicit requested ranges can
+still receive complete hook relationship context with that uncertainty stated.
 
-## billing/checkout-request-flow
-├─ web/checkout.tsx #L88-L120
-└─ api/charge.ts    #L30-L76
+A broad read can discover relationships outside its visible lines. Above three
+sections or 1.5 KiB, or when broad extent is unknown, it shows an index with
+span names, file counts, changed-evidence signals and retrieval commands. The
+index reports omitted spans. It does not record full exposure: a later targeted
+read or write still gets the complete first section. Targeted output is bounded
+at 8 KiB; incomplete details retain a retrieval route and remain eligible.
+These provisional byte budgets constrain context; they are not measured optima.
 
-Checkout request flow that carries a charge attempt from the browser to the
-Stripe-backed server.
+After complete exposure, changed visible fields render a delta: changed anchors,
+the why's first sentence, the complete why when changed, and `git span show`.
+When only the opaque evidence revision changes and the why and anchor metadata
+are identical, the hook repeats the full source/status section within the same
+byte budget and reports the changed revision. Exact repeats are suppressed,
+including after a delta. A→B→A is delivered again. Snapshot eviction or malformed private state
+requires full delivery again. The session store holds at most 128 latest
+snapshots, at most 8 KiB each and 256 KiB serialized state; it stores no file blobs.
+Recipient transcript identities separate Claude structured-read/write baselines.
 
----
+This adapter has no wired, trustworthy compaction reset. It retains
+self-contained footer instructions; suppression is not claimed compaction-safe.
 
-If you change checkout.tsx check the other files to confirm they still work
-together.
-</git-span>
-```
-
-When the touch leaves genuine content drift behind, drifted anchors carry a
-lowercase status suffix and the header and footer switch:
-
-```
-<git-span>
-This edit put an implicit coupling out of date:
-
-## billing/checkout-request-flow
-├─ web/checkout.tsx #L88-L120 — changed
-└─ api/charge.ts    #L30-L76
-
-Checkout request flow that carries a charge attempt from the browser to the
-Stripe-backed server.
-
----
-
-Restore agreement before committing. Follow confirmed authority. Preserve
-anchor shape; if an address changed, swap the old anchor for the new one
-with `git span replace`. Update or retire the why only if its meaning
-changed. Require `git span drift billing/checkout-request-flow` to report
-zero, then check the other anchors. Conform a side only when confirmed authority
-or a satisfied gate decides it; report ambiguity or an obsolete coupling.
-</git-span>
-```
-
-Each `## <name>` section renders the span's full declared anchor list —
-including anchors in files other than the touched one — as a box-drawing
-tree grouped by shared path prefix, each leaf's range column showing
-`#Lstart-Lend`, followed by the span's why sentence when one is recorded. A
-directory holding a single entry folds onto that entry's line, so a branch
-only ever appears where two or more anchors actually share a prefix. A
-whole-file anchor is a bare path with no range column; where the same file
-also carries line ranges, it takes `(whole file)` in the range column so its
-own drift label can never be read as belonging to a neighboring range. Only genuine
-(semantic or terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
-drift never does — see below. The header scales with what drifted: `<file>
-has implicit couplings:` (naming the touched file) when nothing did, the
-singular form above for one drifted span on a write, and `This edit put
-implicit couplings out of date:` for more than one. A read never edited
-anything — it only surfaces drift that was already there — so its drifted
-header names the coupling instead of the touch: `This file has an implicit
-coupling out of date:` (singular) or `This file has implicit couplings
-out of date:` (plural). With several drifted spans, apply the footer to each
-span and use `git span drift <name>` for the final zero-drift check. The block carries
-everything needed to act — anchors, statuses, and the description — so no
-follow-up `git span` read is required.
+Check coupled evidence before committing. Moving an address uses
+`git span replace <name> <old-anchor> <new-anchor>`; deliberately accepting
+content at the same address uses `git span add <name> <anchor>`. Neither
+command records relationship review, and zero drift does not prove correctness.
 
 ### Verified relocations are refreshed before delivery
 
-Before delivery, the hook runs `git span context --fix` for the touched file
+After writes, before delivery, the hook runs `git span context --fix` for the touched file
 or range. It refreshes verified exact-content relocations in selected spans and
 elsewhere in addressed files; response selection stays scoped.
 Whitespace edits and fuzzy matches remain drifting for review. Repairs update
@@ -92,22 +57,11 @@ Whitespace edits and fuzzy matches remain drifting for review. Repairs update
 
 ### When a span surfaces (and resurfaces)
 
-A span renders when its evidence revision differs from the latest one delivered
-for that repository and span in this session. The revision covers its definition
-and relevant file state. Identical repeats are suppressed; a different change
-renders again even with the same status. Returning to an earlier revision after
-another change also renders again. Every render includes the full span section.
-
-### What never produces a block
-
-- Whole-file `read` (no `offset`/`limit`).
-- `write` to a path that doesn't yet exist on disk.
-- A `write` that's a full-content replacement (no common prefix/suffix with
-  what's on disk).
-- Whole-file anchors (no `#L…` range) — excluded from intersection matching.
-- Gitignored or non-repo files.
-- A span whose repository and evidence revision match its latest delivery
-  this session.
+Delivery compares the latest completely injected relationship context for this
+repository, span and recipient identity. Identical repeats are suppressed; new
+changes are delivered again, even when status is unchanged. Discovery indexes
+and incomplete output never advance that baseline. The evidence revision covers
+the definition and relevant captured source state, not a semantic verdict.
 
 ## Bash intent attribution
 
@@ -142,9 +96,11 @@ plans between turns, and `session.deleted` — plus a final `dispose()` sweep at
 shutdown — eagerly retire the session memo and any remaining plans;
 opportunistic 30-day cleanup covers crashed sessions.
 
-After user input, when any note exists in the repository, `session.status` (idle) sends root sessions one synthetic prompt to
-dispatch a forked subagent using `@review-notes`.
-Synthetic prompts and child sessions do not trigger another review. OpenCode V2 resumes the session through `session.synthetic`.
+After user input, `session.status` (idle) checks repository notes and sends root sessions
+one synthetic prompt to dispatch a forked reviewer using `@review-notes`.
+Lookup failures produce a notes read error notice once for that turn. Synthetic prompts and
+child sessions do not recurse. OpenCode V2 resumes through `session.synthetic`;
+a failed dispatch is logged without an automatic retry loop.
 
 A command that merely exits nonzero still reaches the after hook under
 OpenCode — the bash tool returns with a numeric `exit`, and exit-gated join
@@ -161,6 +117,12 @@ unattributed. This is the degraded-parity caveat documented in
 result suppresses like an interruption) stay silent. Response-derived reads
 remain a separate pass and share only the session memo, so a later read
 can surface context without duplicating command-derived output.
+
+Reviewers examine changed behavior before metadata. The parent owns production edits,
+staging and commits. Intentional code does not supersede requirements, and disputed
+findings remain visible. Metadata completion and zero drift do not establish semantic
+approval. Validated notes are removed individually with matching ID/SHA/document
+receipts; unresolved notes remain.
 
 The parser's candidate ceiling is 32 and is all-or-nothing: a bounded set is
 attributed completely or rejected before any touch. Planned records allow at

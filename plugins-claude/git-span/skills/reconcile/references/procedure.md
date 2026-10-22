@@ -139,13 +139,14 @@ drifted — ...`, `state indeterminate`, `state unverified`) before the scoped `
 
 ### Deciding authority
 
-A doc drifting behind a deliberate, committed code change is wrong — conform it.
-A code change with no coherent commit story may be a regression — the doc may be
-the truth. Docs follow deliberate committed code and describe current reality —
-never "we used to" framing. Keep the why across routine re-anchors; write a new
-one only when the subsystem itself changed. Check a quoted phrase in the why against the
-authority; update it only when the spec was deliberately reworded. Fail closed on ambiguity, not on
-editing per se: surface the stop, never re-anchor over a live disagreement.
+Identify the requirement or authorised change, its source/revision, scope and consumer.
+Committed code and its narrative show intent; they do not supersede a requirement.
+Update stale prose only with a cited supersession. Otherwise preserve and report the
+conflict and affected consumer; a scoped provisional assumption may permit safe work.
+Fail closed for the unsafe operation, not unrelated edits. Never refresh hashes over
+live disagreement. Keep the why across routine re-anchors; change it only when the
+relationship or authorised requirement changes. Prefer mechanical enforcement or
+removing avoidable coupling before adding annotation upkeep.
 
 ---
 
@@ -158,6 +159,17 @@ git span doctor    # no findings other than the optional merge-driver registrati
 
 Run required validation for every behavior change and surface every anchor diff.
 If validation fails, handle the failing component before committing.
+
+When partial staging, coupled source repairs, or span removals make the staged
+selection worth inspecting, run `git span preflight` after staging and before
+committing. Check affected spans' whys, anchor presence, `content_matches`, and
+`removed_spans`; resolve unintended omissions or mismatches and re-run after
+restaging. `--format json` supports automation. Exit 0 means a report was produced,
+not that all anchors match. Matching hashes do not establish semantic correctness.
+
+Preflight reads only the index. The path-limited `git commit -o` below can commit
+different worktree content; inspect those paths' actual intended content separately.
+In embedded coverage mode, leave this check to the staging/commit owner.
 
 ```bash
 git add <changed-anchor-paths> .span   # omit content paths when no anchor changed

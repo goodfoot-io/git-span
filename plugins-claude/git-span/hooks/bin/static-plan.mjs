@@ -7,7 +7,7 @@ const __filename = __fileURLToPath(import.meta.url);
 const __dirname = __pathDirname(__filename);
 
 // packages/agent-hooks/src/claude/static-plan.ts
-import { dirname as dirname9, join as join10 } from "node:path";
+import { dirname as dirname9, join as join11 } from "node:path";
 
 // node_modules/@goodfoot/agent-hooks/dist/core/logger.js
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
@@ -1016,12 +1016,13 @@ function pruneStaleSessionsThrottled(layout, now = Date.now()) {
 }
 
 // packages/agent-hooks/src/common/bash-attribution.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import * as fs7 from "node:fs";
 import * as nodePath5 from "node:path";
 
 // packages/agent-hooks/src/common/span-surface.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs4 from "node:fs";
 import * as nodePath3 from "node:path";
 
@@ -1173,7 +1174,7 @@ import * as nodePath4 from "node:path";
 
 // packages/agent-hooks/src/common/parse-command.ts
 import { readFileSync as readFileSync4, statSync as statSync4 } from "node:fs";
-import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
+import { basename as basename3, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
 // packages/agent-hooks/src/common/command-resolve.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
@@ -2746,7 +2747,7 @@ function teeOperandParts(argv) {
   }
   return { append, operands };
 }
-function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results) {
+function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join12, results) {
   const parts = teeOperandParts(argv);
   if (parts === null) return;
   for (const operand of parts.operands) {
@@ -2759,23 +2760,23 @@ function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex,
         operation: "create-overwrite",
         absolutePath,
         simpleCommandIndex,
-        join: join11,
+        join: join12,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       } : {
         operation: "append",
         absolutePath,
         simpleCommandIndex,
-        join: join11,
+        join: join12,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       }
     });
   }
 }
-function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join11, results) {
+function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join12, results) {
   const contentRedirects = redirects.filter(isContentRedirect);
   const host = argv[0];
   if (contentRedirects.length === 0) {
-    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results);
+    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join12, results);
     return;
   }
   if (host === void 0 || host === ":" || host === "exec") {
@@ -2786,7 +2787,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
       results.push({
         status: "resolved",
         idiom: "truncate-write",
-        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 }
+        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join12 }
       });
     }
     return;
@@ -2810,7 +2811,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "append",
           absolutePath,
           simpleCommandIndex,
-          join: join11,
+          join: join12,
           ...threadedAppend !== void 0 ? { written: threadedAppend } : {}
         }
       });
@@ -2822,13 +2823,13 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "create-overwrite",
           absolutePath,
           simpleCommandIndex,
-          join: join11,
+          join: join12,
           ...threadedOverwrite !== void 0 ? { written: threadedOverwrite } : {}
         }
       });
     }
   }
-  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results);
+  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join12, results);
 }
 var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time", "nice", "doas"]);
 var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -2938,12 +2939,12 @@ function copyMoveParts(args, spec) {
   }
   return { operands, targetDir };
 }
-function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join11) {
+function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join12) {
   if (spec.sourceOperation === "delete") {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join11 }
+      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join12 }
     });
     return;
   }
@@ -2951,17 +2952,17 @@ function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join11)
   results.push({
     status: "resolved",
     idiom: spec.idiom,
-    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join11 } : {
+    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join12 } : {
       operation: "read",
       lineStart: range.lineStart,
       lineEnd: range.lineEnd,
       absolutePath,
       simpleCommandIndex,
-      join: join11
+      join: join12
     }
   });
 }
-function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join11, results) {
+function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join12, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   let spec = null;
@@ -3012,7 +3013,7 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join11,
       return;
     }
     const targetAbs = resolvePath(dir, parts.targetDir);
-    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename2(p)));
+    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename3(p)));
   } else {
     const dest = parts.operands.at(-1);
     if (dest === void 0) return;
@@ -3026,23 +3027,23 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join11,
       pushUnresolved(results, spec.idiom, dest, "a multi-source copy/move needs a directory destination");
       return;
     }
-    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename2(p))) : [destAbs];
+    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename3(p))) : [destAbs];
   }
   for (const sourcePath of sourcePaths) {
-    emitSourceSpan(results, spec, sourcePath, simpleCommandIndex, join11);
+    emitSourceSpan(results, spec, sourcePath, simpleCommandIndex, join12);
   }
   for (const destPath of destPaths) {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPath, simpleCommandIndex, join: join11 }
+      span: { operation: spec.destOperation, absolutePath: destPath, simpleCommandIndex, join: join12 }
     });
   }
 }
 var RM_NO_VALUE = /* @__PURE__ */ new Set(["-f", "-i", "-v"]);
 var RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d"]);
 var GIT_RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d", "-n", "--dry-run"]);
-function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join11, results) {
+function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join12, results) {
   let afterDashDash = false;
   const operands = [];
   for (const a of args) {
@@ -3068,7 +3069,7 @@ function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex,
     results.push({
       status: "resolved",
       idiom: "rm-write",
-      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join11 }
+      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join12 }
     });
   }
 }
@@ -3081,7 +3082,7 @@ function evaluateStaticSize(value) {
   const mult = suffix === "K" ? 1024 : suffix === "M" ? 1024 ** 2 : suffix === "G" ? 1024 ** 3 : 1;
   return base * mult;
 }
-function matchTruncateOperands(args, dir, simpleCommandIndex, join11, results) {
+function matchTruncateOperands(args, dir, simpleCommandIndex, join12, results) {
   let sawSizeFlag = false;
   let afterDashDash = false;
   let staticSize;
@@ -3127,21 +3128,21 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join11, results) {
         operation: "truncate",
         absolutePath: resolvePath(dir, operand.path),
         simpleCommandIndex,
-        join: join11,
+        join: join12,
         ...operand.size !== void 0 ? { size: operand.size } : {}
       }
     });
   }
 }
-function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join11, results) {
+function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join12, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "rm") {
-    matchRmOperands(commandArgs, RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join11, results);
+    matchRmOperands(commandArgs, RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join12, results);
     return;
   }
   if (command === "truncate") {
-    matchTruncateOperands(commandArgs, dirForResolution, simpleCommandIndex, join11, results);
+    matchTruncateOperands(commandArgs, dirForResolution, simpleCommandIndex, join12, results);
     return;
   }
   if (command === "git") {
@@ -3157,7 +3158,7 @@ function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join11, res
         true,
         sub.cDir ?? dirForResolution,
         simpleCommandIndex,
-        join11,
+        join12,
         results
       );
     }
@@ -3185,7 +3186,7 @@ function heredocBodyIsLiteral(body) {
   }
   return true;
 }
-function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join11, results) {
+function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join12, results) {
   const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
   const tokens = tokenize(stripLeadingAssignments(opener).trim());
   if (tokens === null) return;
@@ -3210,7 +3211,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
             operation: "append",
             absolutePath,
             simpleCommandIndex,
-            join: join11,
+            join: join12,
             ...singlePlainAppend && r.op === ">>" && bodyLiteral ? { written: body } : {}
           }
         });
@@ -3218,11 +3219,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
         results.push({
           status: "resolved",
           idiom: "heredoc-write",
-          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 } : {
+          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join12 } : {
             operation: "create-overwrite",
             absolutePath,
             simpleCommandIndex,
-            join: join11,
+            join: join12,
             // The exact gate compares full file bytes, so the trailing
             // `\n` the extraction stripped comes back on the overwrite.
             ...singlePlainOverwrite && bodyLiteral ? { written: `${body}
@@ -3251,7 +3252,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
               operation: "append",
               absolutePath,
               simpleCommandIndex,
-              join: join11,
+              join: join12,
               ...contentRedirects.length === 0 && bodyLiteral ? { written: body } : {}
             }
           });
@@ -3259,11 +3260,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
           results.push({
             status: "resolved",
             idiom: "heredoc-write",
-            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 } : {
+            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join12 } : {
               operation: "create-overwrite",
               absolutePath,
               simpleCommandIndex,
-              join: join11,
+              join: join12,
               // Same restored-`\n` exact body as the redirect branch; a
               // tee operand with a content redirect present keeps the
               // redirect's threading only (mirror of the append branch).
@@ -3278,17 +3279,17 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
     return;
   }
   if (host === "patch" || host === "git") {
-    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11, results);
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join12, results);
     return;
   }
 }
 var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
-function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join11, results) {
+function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join12, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "sed") {
-    matchSedInplaceArgs(commandArgs, dirForResolution, simpleCommandIndex, join11, results);
+    matchSedInplaceArgs(commandArgs, dirForResolution, simpleCommandIndex, join12, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -3299,7 +3300,7 @@ function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join11, res
   }
 }
 var SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
-function matchSedInplaceArgs(args, dir, simpleCommandIndex, join11, results) {
+function matchSedInplaceArgs(args, dir, simpleCommandIndex, join12, results) {
   let suffix = null;
   let sawInplace = false;
   let i = 0;
@@ -3424,20 +3425,20 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join11, results) {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join11 }
+        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join12 }
       });
     } else {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join11 }
+        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join12 }
       });
     }
     if (suffix !== null && suffix !== "") {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join11 }
+        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join12 }
       });
     }
   }
@@ -3523,7 +3524,7 @@ function readPatchFile(absolutePath) {
     return null;
   }
 }
-function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join11, results) {
+function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join12, results) {
   const parts = patchApplyParts(args, isGitApply);
   if (parts.readOnly || parts.cachedOnly) return;
   if (parts.directory) {
@@ -3581,13 +3582,13 @@ function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join11,
+        join: join12,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
   }
 }
-function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join11, results) {
+function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join12, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "patch") {
@@ -3599,7 +3600,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join11,
+      join12,
       results
     );
     return;
@@ -3619,7 +3620,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join11,
+      join12,
       results
     );
     return;
@@ -3631,7 +3632,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     }
   }
 }
-function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11, results) {
+function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join12, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   let isGitApply = false;
@@ -3673,7 +3674,7 @@ function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join11,
+        join: join12,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
@@ -3745,7 +3746,7 @@ function stripPackageRunner(argv) {
   if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
   return { kind: "stripped", stripped: rest };
 }
-function matchFormatter(argv, dirForResolution, simpleCommandIndex, join11, results) {
+function matchFormatter(argv, dirForResolution, simpleCommandIndex, join12, results) {
   const unwrapped = stripTransparentWrapper(argv);
   const [command] = unwrapped;
   if (command === void 0) return;
@@ -3810,12 +3811,12 @@ function matchFormatter(argv, dirForResolution, simpleCommandIndex, join11, resu
     results.push({
       status: "resolved",
       idiom: "formatter-write",
-      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join11 }
+      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join12 }
     });
   }
 }
 var RESTORE_NO_VALUE = /* @__PURE__ */ new Set(["-q", "-f", "-u"]);
-function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join11) {
+function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join12) {
   if (looksUnresolvable(operand)) {
     pushUnresolved(results, idiom, operand, "path contains an unexpanded shell variable or glob");
     return;
@@ -3833,10 +3834,10 @@ function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommand
   results.push({
     status: "resolved",
     idiom,
-    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join11 }
+    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join12 }
   });
 }
-function matchRestoreOperands(args, dir, simpleCommandIndex, join11, results) {
+function matchRestoreOperands(args, dir, simpleCommandIndex, join12, results) {
   let staged = false;
   let worktree = false;
   let afterDashDash = false;
@@ -3881,10 +3882,10 @@ function matchRestoreOperands(args, dir, simpleCommandIndex, join11, results) {
   }
   if (staged && !worktree) return;
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join11);
+    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join12);
   }
 }
-function matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results) {
+function matchCheckoutOperands(args, dir, simpleCommandIndex, join12, results) {
   let afterDashDash = false;
   const operands = [];
   for (let i = 0; i < args.length; i++) {
@@ -3915,10 +3916,10 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results) {
     if (a.startsWith("-")) continue;
   }
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join11);
+    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join12);
   }
 }
-function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join11, results) {
+function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join12, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "git") {
@@ -3935,8 +3936,8 @@ function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, joi
     }
     const dir = sub.cDir ?? dirForResolution;
     const args = commandArgs.slice(sub.subIdx + 1);
-    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join11, results);
-    else matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results);
+    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join12, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join12, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -3987,7 +3988,7 @@ function parseCommandDetailed(command, opts = {}) {
     if (isAbsolute2(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
-  const emitCandidate = (c, frame, simpleCommandIndex, join11) => {
+  const emitCandidate = (c, frame, simpleCommandIndex, join12) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: "unresolved",
@@ -4043,7 +4044,7 @@ function parseCommandDetailed(command, opts = {}) {
         lineEnd: range.lineEnd,
         absolutePath,
         simpleCommandIndex,
-        join: join11
+        join: join12
       }
     });
   };
@@ -6300,11 +6301,11 @@ function parseCompoundStages(command, split, options, maxCandidates, parse) {
     const stage = split.stages[index];
     if (stage === void 0) break;
     const child = parse(stage.text, options);
-    const join11 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
+    const join12 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
     resolved.push(
       ...child.resolved.map((match) => ({
         ...match,
-        span: { ...match.span, simpleCommandIndex: index, join: join11 }
+        span: { ...match.span, simpleCommandIndex: index, join: join12 }
       }))
     );
     unresolvedMatches.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
@@ -6741,14 +6742,20 @@ function filterTrackedEligibility(candidates, options) {
 
 // packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import * as fs6 from "node:fs";
-import { basename as basename4, dirname as dirname6, join as join5 } from "node:path";
+import { basename as basename5, dirname as dirname6, join as join6 } from "node:path";
+
+// packages/agent-hooks/src/common/delivery-presentation.ts
+import { createHash as createHash2 } from "node:crypto";
+var MAX_MEMO_BYTES = 256 * 1024;
+
+// packages/agent-hooks/src/common/touch-core.ts
 var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 
 // packages/agent-hooks/src/common/parse-response.ts
 import { existsSync as existsSync5, statSync as statSync6 } from "node:fs";
-import { dirname as dirname7, join as join6, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
 
 // packages/agent-hooks/src/common/bash-attribution.ts
 function createDefaultPlannedTouchStore(layout) {
@@ -6777,7 +6784,7 @@ function planEvidence(matches, requirements) {
     return {
       kind: "content-digest",
       algorithm: "sha256",
-      digest: createHash3("sha256").update(expectedContent).digest("hex"),
+      digest: createHash4("sha256").update(expectedContent).digest("hex"),
       range: unionRange(ranges)
     };
   }
@@ -6881,12 +6888,12 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync7, lstatSync as lstatSync2, realpathSync as realpathSync3, renameSync as renameSync5, rmSync as rmSync4 } from "node:fs";
+import { existsSync as existsSync7, lstatSync as lstatSync2, realpathSync as realpathSync3, renameSync as renameSync5, rmSync as rmSync5 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-association.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 // packages/agent-hooks/src/common/commit-contracts.ts
@@ -6970,7 +6977,7 @@ function decideCommitClaim(owner, liveness, remainingMs) {
 }
 
 // packages/agent-hooks/src/common/commit-observation.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { resolve as resolve6 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-git.ts
@@ -7103,7 +7110,7 @@ function checkpointCommitInvocation(enrollment, deadline) {
 }
 
 // packages/agent-hooks/src/common/commit-storage.ts
-import { createHash as createHash6, randomBytes } from "node:crypto";
+import { createHash as createHash7, randomBytes } from "node:crypto";
 import {
   closeSync as closeSync3,
   constants as constants2,
@@ -7116,11 +7123,11 @@ import {
   openSync as openSync3,
   readFileSync as readFileSync8,
   renameSync as renameSync4,
-  rmSync as rmSync3,
+  rmSync as rmSync4,
   unlinkSync,
   writeFileSync as writeFileSync3
 } from "node:fs";
-import { dirname as dirname8, isAbsolute as isAbsolute7, join as join8 } from "node:path";
+import { dirname as dirname8, isAbsolute as isAbsolute7, join as join9 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 // packages/agent-hooks/src/common/receipt-lock.ts
@@ -7197,7 +7204,7 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
 
 // packages/agent-hooks/src/common/commit-storage.ts
 function identityKey(identity) {
-  return createHash6("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
+  return createHash7("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
 }
 async function privateDirectory(path, deadline) {
   if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
@@ -7227,13 +7234,13 @@ function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {
   return parsed;
 }
 function atomicJson(path, value, immutable = false) {
-  const temporary = join8(dirname8(path), `.publish-${randomBytes(16).toString("hex")}`);
+  const temporary = join9(dirname8(path), `.publish-${randomBytes(16).toString("hex")}`);
   try {
     writeFileSync3(temporary, JSON.stringify(value), { mode: 384, flag: "wx" });
     if (immutable) linkSync(temporary, path);
     else renameSync4(temporary, path);
   } finally {
-    rmSync3(temporary, { force: true });
+    rmSync4(temporary, { force: true });
   }
 }
 function boundedEntries(directory, cap, deadline = Infinity) {
@@ -7268,9 +7275,9 @@ function ownerRecord(value) {
 }
 async function acquireReceiptClaim(root, key2, deadline, executable) {
   if (!/^[a-zA-Z0-9_-]+$/.test(key2)) throw new Error("invalid receipt claim key");
-  const directory = join8(root, "claims");
+  const directory = join9(root, "claims");
   await privateDirectory(directory, deadline);
-  const path = join8(directory, `${key2}.json`);
+  const path = join9(directory, `${key2}.json`);
   const owner = { token: randomBytes(16).toString("hex"), pid: process.pid };
   while (performance.now() < deadline) {
     const lock = await acquireNativeReceiptLock(directory, key2, deadline, executable);
@@ -7323,11 +7330,11 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
   const command = inspected.value;
   const root = receiptRoot(options);
   const key2 = identityKey(request);
-  const directory = join9(root, "invocations", key2);
+  const directory = join10(root, "invocations", key2);
   const deadline = performance.now() + COMMIT_RECEIPT_LIMITS.drainMs;
   try {
     await privateDirectory(root, deadline);
-    await privateDirectory(join9(root, "invocations"), deadline);
+    await privateDirectory(join10(root, "invocations"), deadline);
     await evictInvocations(
       root,
       key2,
@@ -7338,7 +7345,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
     const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline, options.lockExecutable);
     if (!claim) throw new Error("invocation enrollment ownership unavailable");
     try {
-      const enrollmentPath = join9(directory, "enrollment.json");
+      const enrollmentPath = join10(directory, "enrollment.json");
       if (existsSync7(enrollmentPath)) {
         const existing = validateCommitEnrollment(readJson(enrollmentPath));
         if (!existing.ok) throw new Error(existing.reason);
@@ -7403,13 +7410,13 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
       }
       try {
         await privateDirectory(directory, deadline);
-        await privateDirectory(join9(directory, "receipts"), deadline);
+        await privateDirectory(join10(directory, "receipts"), deadline);
         atomicJson(enrollmentPath, valid.value, true);
-        atomicJson(join9(directory, "state.json"), state);
-        atomicJson(join9(directory, "observations.json"), observations, true);
-        if (commands.length > 0) atomicJson(join9(directory, "commands.json"), executionContexts, true);
+        atomicJson(join10(directory, "state.json"), state);
+        atomicJson(join10(directory, "observations.json"), observations, true);
+        if (commands.length > 0) atomicJson(join10(directory, "commands.json"), executionContexts, true);
       } catch (error) {
-        rmSync4(directory, { recursive: true, force: true });
+        rmSync5(directory, { recursive: true, force: true });
         throw error;
       }
       return { kind: "enrolled", enrollment: valid.value };
@@ -7427,7 +7434,7 @@ function fitsJsonFile(value) {
 }
 function evictionRank(directory, now) {
   try {
-    const enrollment = validateCommitEnrollment(readJson(join9(directory, "enrollment.json")));
+    const enrollment = validateCommitEnrollment(readJson(join10(directory, "enrollment.json")));
     if (!enrollment.ok) return { rank: 0, lastActivityMs: 0 };
     const state = readState(directory, enrollment.value);
     if (state.status === "retired") return { rank: 0, lastActivityMs: state.lastActivityMs };
@@ -7440,17 +7447,17 @@ function evictionRank(directory, now) {
   }
 }
 async function evictInvocations(root, enrollingKey, deadline, executable, logger2) {
-  const invocations = join9(root, "invocations");
+  const invocations = join10(root, "invocations");
   try {
-    rmSync4(join9(root, "usage.json"), { force: true });
+    rmSync5(join10(root, "usage.json"), { force: true });
     const names = boundedEntries(invocations, Number.POSITIVE_INFINITY, deadline);
     for (const name of names)
-      if (name.startsWith(".evicted-")) rmSync4(join9(invocations, name), { recursive: true, force: true });
+      if (name.startsWith(".evicted-")) rmSync5(join10(invocations, name), { recursive: true, force: true });
     const live = names.filter((name) => !name.startsWith(".evicted-"));
     if (live.length <= COMMIT_RECEIPT_LIMITS.invocationWindow) return;
     const now = Date.now();
     const candidates = live.filter((name) => name !== enrollingKey).flatMap((name) => {
-      const ranked = evictionRank(join9(invocations, name), now);
+      const ranked = evictionRank(join10(invocations, name), now);
       return ranked === null ? [] : [{ name, ...ranked }];
     }).sort((a, b) => a.rank - b.rank || a.lastActivityMs - b.lastActivityMs);
     let remaining = live.length;
@@ -7469,10 +7476,10 @@ async function evictInvocations(root, enrollingKey, deadline, executable, logger
       }
       if (!claim) continue;
       try {
-        if (evictionRank(join9(invocations, candidate.name), Date.now()) === null) continue;
-        const trash = join9(invocations, `.evicted-${randomBytes2(8).toString("hex")}`);
-        renameSync5(join9(invocations, candidate.name), trash);
-        rmSync4(trash, { recursive: true, force: true });
+        if (evictionRank(join10(invocations, candidate.name), Date.now()) === null) continue;
+        const trash = join10(invocations, `.evicted-${randomBytes2(8).toString("hex")}`);
+        renameSync5(join10(invocations, candidate.name), trash);
+        rmSync5(trash, { recursive: true, force: true });
         remaining--;
       } finally {
         await claim.release();
@@ -7484,7 +7491,7 @@ async function evictInvocations(root, enrollingKey, deadline, executable, logger
   }
 }
 function receiptRoot(options) {
-  return options.stateRoot ?? join9(homedir2(), ".cache", "git-span", "commit-receipts");
+  return options.stateRoot ?? join10(homedir2(), ".cache", "git-span", "commit-receipts");
 }
 function errorMessage2(error) {
   return (error instanceof Error ? error.message : String(error)).slice(0, 512);
@@ -7504,7 +7511,7 @@ function unsupportedCommandReason(input, command) {
   return null;
 }
 function readState(directory, enrollment) {
-  const value = readJson(join9(directory, "state.json"));
+  const value = readJson(join10(directory, "state.json"));
   const stored = isRecord(value) ? validateCommitEnrollment(value.enrollment) : null;
   if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.observing !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
     throw new Error("invalid private invocation lifecycle");
@@ -7529,7 +7536,7 @@ function narrowCommand(toolInput) {
   return typeof command === "string" && command.length > 0 ? command : null;
 }
 function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) {
-  const options = { stateRoot: join10(dirname9(layout.base), "commit-receipts"), ...runtimeOptions };
+  const options = { stateRoot: join11(dirname9(layout.base), "commit-receipts"), ...runtimeOptions };
   return async (input, ctx) => {
     try {
       if (!input.session_id || !input.tool_use_id) return null;

@@ -109,7 +109,8 @@ const HEADING_INVENTORY: Record<string, string[]> = {
     'drift',
     'doctor',
     'merge-driver',
-    'resolve'
+    'resolve',
+    'preflight'
   ],
   '/docs/ci': [
     'ci-gate-the-enforcement-backstop',

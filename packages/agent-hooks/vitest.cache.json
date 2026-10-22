@@ -1,6 +1,17 @@
 {
   "files": {
-    "packages/agent-hooks/test/antigravity/lifecycle.test.ts": [],
+    "packages/agent-hooks/test/antigravity/lifecycle.test.ts": [
+      "packages/agent-hooks/src/**",
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
     "packages/agent-hooks/test/common/context-executor.test.ts": [],
     "packages/agent-hooks/test/common/git-span-path-precedence.test.ts": [],
     "packages/agent-hooks/test/common/context-warmup.test.ts": [],
@@ -12,7 +23,18 @@
     "packages/agent-hooks/test/common/shell-split-machines.test.ts": [],
     "packages/agent-hooks/test/codex/apply-patch.test.ts": [],
     "packages/agent-hooks/test/codex/shell-command.test.ts": [],
-    "packages/agent-hooks/test/common/review-notes-stop.test.ts": [],
+    "packages/agent-hooks/test/common/review-notes-stop.test.ts": [
+      "packages/agent-hooks/src/**",
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
     "packages/agent-hooks/test/common/note-review-guard.test.ts": [],
     "packages/agent-hooks/test/opencode/review-notes.test.ts": [],
     "packages/agent-hooks/test/opencode/native.test.ts": [],

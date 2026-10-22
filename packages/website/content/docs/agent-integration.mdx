@@ -7,7 +7,7 @@ Once installed (see [Getting started](/docs/getting-started)), the git-span plug
 
 - **A touch hook** — surfaces existing spans after supported reads and writes and repairs mechanically safe positional drift inline.
 - **Static planning and lifecycle hooks** — capture bounded pre-state for supported writes, deduplicate context, warm up the CLI, and clean up session state.
-- **Three skills** — `git-span` for declaration, inspection, and focused reconciliation; `review-notes` for reviewing session notes and noted commits, repairing couplings, and removing completed notes; and `reconcile` for multi-span triage.
+- **Three skills** — `git-span` for declaration, inspection, and focused reconciliation; `review-notes` for reviewing changed behavior, recording material findings, and reconciling couplings with explicit findings; and `reconcile` for multi-span triage.
 - **An expert subagent where supported** — Claude Code, Codex, and OpenCode ship one; Antigravity ships skills and hooks without a separate agent artifact.
 
 The integrations use the same scriptable `git span` CLI available in a terminal or CI.
@@ -16,7 +16,13 @@ The integrations use the same scriptable `git span` CLI available in a terminal 
 
 The touch pipeline observes supported file-affecting tools: Claude Code covers `Read`, `Edit`, `Write`, and `Bash`; Codex covers `apply_patch` and its shell/exec family; OpenCode covers `bash`, `read`, `edit`, `write`, and `apply_patch`; Antigravity covers `run_command`.
 
-When a supported range intersects an existing anchor, the hook repairs mechanically safe positional drift and surfaces bounded context identifying the span, its anchors, and its why. Remaining semantic drift requires a decision about the coupled artifacts; see [Reconcile drifted spans](/docs/guides/reconcile-drifted-spans). Session deduplication tracks each repository and span's latest evidence revision. Identical repeats are suppressed; new changes are delivered again, even when the status is unchanged.
+When a supported range intersects an existing anchor, the hook repairs verified exact-content relocations and surfaces context identifying the span, its anchors, and its why. Whitespace edits and fuzzy candidates remain review obligations. Output separates located or candidate evidence from relationship review; matching anchors, hash refreshes and zero drift do not establish correctness.
+
+Broad structured reads advertise relationships beyond visible lines through a discovery index when extent is unknown, there are more than three sections, or full output would exceed 1.5 KiB. Entries include names, file counts and retrieval commands; omitted entries are counted. Discovery never marks a relationship fully delivered. Claude response extent metadata bounds known reads; OpenCode's adapter leaves extent unknown. Explicit targeted requests can still receive complete hook relationship context, with unknown source exposure stated.
+
+After complete exposure, changed visible fields show changed anchor rows, the why's first sentence (the full why when changed), and a retrieval command. If only the opaque evidence revision changes while the why and anchor metadata are identical, the hook repeats the full source/status section within the same byte budget and reports the changed revision. Identical repeats are suppressed; new changes are delivered again, even when the status is unchanged. Returning to an earlier state also delivers again. Targeted output is capped at 8 KiB; incomplete output remains eligible. Latest snapshots are bounded to 128 entries, 8 KiB per snapshot and 256 KiB serialized session state. These budgets are provisional, not measured optima.
+
+Claude structured touches separate transcript recipients and shorten footers after the first full explanation. Claude and Codex `SessionStart` reset exposure, including explicit compact/resume events. Other paths retain self-contained reminders; OpenCode and Antigravity have no wired compaction reset and are not claimed compaction-safe. Discovery does not consume the first full explanation. Use `git span replace <name> <old-anchor> <new-anchor>` to move an address and `git span add <name> <anchor>` to explicitly accept content at the same address; neither records semantic review.
 
 Shell attribution uses bounded literal command intent and post-state evidence. Static planning captures only the pre-state needed for supported operations. Unproven dynamic paths, unsupported syntax, and inconclusive failed writes stay silent. Failed commands can surface a write only when the supported parser provides decisive post-state evidence; interrupted calls suppress attribution.
 
@@ -36,7 +42,7 @@ Installing the plugin leaves hooks inactive until the user reviews and trusts th
 
 Shell envelopes' `workdir` selects the effective repository for planning and attribution. Patch planning and post-tool handling preserve the affected ranges, including supported failure-event attribution. Context arrives through `additionalContext`.
 
-When Codex omits `workdir` from a Bash hook payload, the plugin prepends a quiet helper through `updatedInput`. The helper checkpoints the actual working directory before the original command runs in its original shell, preserving stdin, stdout, stderr, and exit status. This works with stock Codex and requires no explicit `git -C`. If the helper cannot record a checkpoint, the plugin suppresses attribution rather than guessing from the session directory.
+When Codex omits `workdir` from a Bash hook payload, the plugin recovers it from the original transcript call. Direct calls use matching call IDs; supported code-mode calls use uniquely matching literal commands and directories. Ambiguous or dynamic calls receive no attribution. The plugin leaves shell commands unchanged.
 
 ## OpenCode specifics
 
@@ -58,13 +64,15 @@ Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive
 
 Claude Code and Codex shell hooks record observed Git commits as session notes. Editing a file alone creates no commit note. Install the CLI and plugin from the same release; receipt coordination uses a native CLI lock helper.
 
-All four hosts check for notes in the current repository and supplied workspace roots before requesting review. Empty results proceed silently, and a failed lookup skips the review.
+All four hosts inspect a bounded, versioned notes response in the current repository and supplied workspace roots. Claude Code and Codex select recognized notes for their host/session; OpenCode and Antigravity retain repository-wide selection. Empty selection is normal. A lookup failure reports that commit notes could not be read.
 
-On Claude Code and Codex, when notes for the session exist, the Stop hook asks the agent to dispatch a forked subagent that loads `review-notes` and follows its instructions to review them. The agent waits for the review and reports unresolved items. Stop continuations proceed without another review request. If the notes lookup fails, review is skipped. Codex clears session touch state on that continuation or an empty stop; Claude clears it at session end.
+On Claude Code and Codex, an ordinary Stop with matching notes asks for a forked reviewer using `review-notes`. Stop continuations skip another request to avoid recursive blocking. Codex retires touch state on an empty stop or continuation and preserves it while review is requested or its lookup fails; Claude retires it at session end.
 
-Antigravity requests the same review once per conversation at an idle, successful model stop when any note exists in the repository. Empty stops preserve its review guard. Later stops proceed and clean up call state; error and step-limit stops do not request review.
+The reviewer examines changed behavior and consumers before metadata, and reports metadata completion separately from material findings. The parent owns production edits, staging and commits. Deliberate code is evidence of intent, not authority to redefine a requirement; disputed consumer consequences remain in the report. Validated notes are removed individually with matching ID/SHA/document receipts; unresolved notes remain.
 
-OpenCode sends one synthetic review prompt to the root session on `session.status` (idle) after user input when any note exists in the repository. Review prompts and child sessions do not trigger another review. OpenCode V2 receives the continuation through `session.synthetic` with `resume: true`.
+Antigravity requests review once per conversation at an idle, successful model stop with repository notes. Its existing session guard survives call-scoped cleanup. Error and step-limit stops do not request review. Lookup failures report the notes read error without forcing repeated continuation.
+
+OpenCode sends one synthetic root-session prompt per observed user turn through `session.synthetic` with `resume: true`. Synthetic prompts and child sessions do not recurse. Lookup failures produce a notes read error notice once for that turn; failed dispatch is logged without an automatic retry loop.
 
 ## The enforcement backstop
 

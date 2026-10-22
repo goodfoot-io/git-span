@@ -1058,12 +1058,13 @@ function pruneStaleSessionsThrottled(layout, now = Date.now()) {
 }
 
 // packages/agent-hooks/src/common/bash-attribution.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import * as fs6 from "node:fs";
 import * as nodePath5 from "node:path";
 
 // packages/agent-hooks/src/common/span-surface.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs3 from "node:fs";
 import * as nodePath3 from "node:path";
 
@@ -1257,35 +1258,61 @@ import * as nodePath2 from "node:path";
 var HOOK_IGNORE_REL = nodePath2.join(".span", ".hookignore");
 
 // packages/agent-hooks/src/common/span-surface.ts
+function exposureDestination(layout, sessionId2) {
+  const base = layout.memoFile(sessionId2);
+  let epoch;
+  try {
+    epoch = fs3.readFileSync(`${base}.epoch`, "utf8");
+  } catch (err) {
+    if (errnoCode(err) === "ENOENT") return base;
+    throw err;
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(epoch))
+    throw new Error("invalid exposure epoch");
+  return `${base}.${epoch}`;
+}
 function createDiskMemoStore(logger2, layout) {
+  const destinations = /* @__PURE__ */ new WeakMap();
   return {
     getSurfaced(sessionId2) {
       pruneStaleSessionsThrottled(layout);
+      const empty2 = /* @__PURE__ */ new Set();
       try {
-        const raw = fs3.readFileSync(layout.memoFile(sessionId2), "utf8");
+        const destination = exposureDestination(layout, sessionId2);
+        destinations.set(empty2, destination);
+        const raw = fs3.readFileSync(destination, "utf8");
         const parsed = JSON.parse(raw);
         const surfaced = isRecord(parsed) ? parsed.surfaced : void 0;
         if (Array.isArray(surfaced) && surfaced.every((name) => typeof name === "string")) {
-          return new Set(surfaced);
+          const result = new Set(surfaced);
+          destinations.set(result, destination);
+          return result;
         }
         throw new Error("memo file is not a { surfaced: string[] } document");
       } catch (err) {
         logger2.warn("memo read failed (treating as empty)", { err });
       }
-      return /* @__PURE__ */ new Set();
+      return empty2;
     },
     addSurfaced(sessionId2, names, known) {
       const existing = new Set(known);
       for (const n of names) existing.add(n);
-      const memoDir = layout.dir(sessionId2);
-      const memoPath = layout.memoFile(sessionId2);
-      const tmpPath = `${memoPath}.tmp`;
+      let tmpPath;
       try {
-        fs3.mkdirSync(memoDir, { recursive: true, mode: 448 });
-        fs3.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), "utf8");
+        const memoPath = destinations.get(known) ?? exposureDestination(layout, sessionId2);
+        tmpPath = `${memoPath}.${randomUUID()}.tmp`;
+        fs3.mkdirSync(layout.dir(sessionId2), { recursive: true, mode: 448 });
+        fs3.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), { encoding: "utf8", mode: 384 });
         fs3.renameSync(tmpPath, memoPath);
       } catch (err) {
         logger2.warn("memo write failed", { err });
+      } finally {
+        if (tmpPath !== void 0) {
+          try {
+            fs3.rmSync(tmpPath, { force: true });
+          } catch {
+          }
+        }
       }
     }
   };
@@ -1311,7 +1338,7 @@ import * as nodePath4 from "node:path";
 
 // packages/agent-hooks/src/common/parse-command.ts
 import { readFileSync as readFileSync4, statSync as statSync4 } from "node:fs";
-import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
+import { basename as basename3, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
 // packages/agent-hooks/src/common/command-resolve.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
@@ -2837,7 +2864,7 @@ function teeOperandParts(argv) {
   }
   return { append, operands };
 }
-function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join12, results) {
+function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join13, results) {
   const parts = teeOperandParts(argv);
   if (parts === null) return;
   for (const operand of parts.operands) {
@@ -2850,23 +2877,23 @@ function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex,
         operation: "create-overwrite",
         absolutePath,
         simpleCommandIndex,
-        join: join12,
+        join: join13,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       } : {
         operation: "append",
         absolutePath,
         simpleCommandIndex,
-        join: join12,
+        join: join13,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       }
     });
   }
 }
-function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join12, results) {
+function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join13, results) {
   const contentRedirects = redirects.filter(isContentRedirect);
   const host = argv[0];
   if (contentRedirects.length === 0) {
-    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join12, results);
+    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join13, results);
     return;
   }
   if (host === void 0 || host === ":" || host === "exec") {
@@ -2877,7 +2904,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
       results.push({
         status: "resolved",
         idiom: "truncate-write",
-        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join12 }
+        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join13 }
       });
     }
     return;
@@ -2901,7 +2928,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "append",
           absolutePath,
           simpleCommandIndex,
-          join: join12,
+          join: join13,
           ...threadedAppend !== void 0 ? { written: threadedAppend } : {}
         }
       });
@@ -2913,13 +2940,13 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "create-overwrite",
           absolutePath,
           simpleCommandIndex,
-          join: join12,
+          join: join13,
           ...threadedOverwrite !== void 0 ? { written: threadedOverwrite } : {}
         }
       });
     }
   }
-  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join12, results);
+  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join13, results);
 }
 var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time", "nice", "doas"]);
 var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -3029,12 +3056,12 @@ function copyMoveParts(args, spec) {
   }
   return { operands, targetDir };
 }
-function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join12) {
+function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join13) {
   if (spec.sourceOperation === "delete") {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join12 }
+      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join13 }
     });
     return;
   }
@@ -3042,17 +3069,17 @@ function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join12)
   results.push({
     status: "resolved",
     idiom: spec.idiom,
-    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join12 } : {
+    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join13 } : {
       operation: "read",
       lineStart: range.lineStart,
       lineEnd: range.lineEnd,
       absolutePath,
       simpleCommandIndex,
-      join: join12
+      join: join13
     }
   });
 }
-function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join12, results) {
+function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join13, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   let spec = null;
@@ -3103,7 +3130,7 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join12,
       return;
     }
     const targetAbs = resolvePath(dir, parts.targetDir);
-    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename2(p)));
+    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename3(p)));
   } else {
     const dest = parts.operands.at(-1);
     if (dest === void 0) return;
@@ -3117,23 +3144,23 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join12,
       pushUnresolved(results, spec.idiom, dest, "a multi-source copy/move needs a directory destination");
       return;
     }
-    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename2(p))) : [destAbs];
+    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename3(p))) : [destAbs];
   }
   for (const sourcePath of sourcePaths) {
-    emitSourceSpan(results, spec, sourcePath, simpleCommandIndex, join12);
+    emitSourceSpan(results, spec, sourcePath, simpleCommandIndex, join13);
   }
   for (const destPath of destPaths) {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPath, simpleCommandIndex, join: join12 }
+      span: { operation: spec.destOperation, absolutePath: destPath, simpleCommandIndex, join: join13 }
     });
   }
 }
 var RM_NO_VALUE = /* @__PURE__ */ new Set(["-f", "-i", "-v"]);
 var RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d"]);
 var GIT_RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d", "-n", "--dry-run"]);
-function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join12, results) {
+function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join13, results) {
   let afterDashDash = false;
   const operands = [];
   for (const a of args) {
@@ -3159,7 +3186,7 @@ function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex,
     results.push({
       status: "resolved",
       idiom: "rm-write",
-      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join12 }
+      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join13 }
     });
   }
 }
@@ -3172,7 +3199,7 @@ function evaluateStaticSize(value) {
   const mult = suffix === "K" ? 1024 : suffix === "M" ? 1024 ** 2 : suffix === "G" ? 1024 ** 3 : 1;
   return base * mult;
 }
-function matchTruncateOperands(args, dir, simpleCommandIndex, join12, results) {
+function matchTruncateOperands(args, dir, simpleCommandIndex, join13, results) {
   let sawSizeFlag = false;
   let afterDashDash = false;
   let staticSize;
@@ -3218,21 +3245,21 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join12, results) {
         operation: "truncate",
         absolutePath: resolvePath(dir, operand.path),
         simpleCommandIndex,
-        join: join12,
+        join: join13,
         ...operand.size !== void 0 ? { size: operand.size } : {}
       }
     });
   }
 }
-function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join12, results) {
+function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join13, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "rm") {
-    matchRmOperands(commandArgs, RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join12, results);
+    matchRmOperands(commandArgs, RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join13, results);
     return;
   }
   if (command === "truncate") {
-    matchTruncateOperands(commandArgs, dirForResolution, simpleCommandIndex, join12, results);
+    matchTruncateOperands(commandArgs, dirForResolution, simpleCommandIndex, join13, results);
     return;
   }
   if (command === "git") {
@@ -3248,7 +3275,7 @@ function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join12, res
         true,
         sub.cDir ?? dirForResolution,
         simpleCommandIndex,
-        join12,
+        join13,
         results
       );
     }
@@ -3276,7 +3303,7 @@ function heredocBodyIsLiteral(body) {
   }
   return true;
 }
-function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join12, results) {
+function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join13, results) {
   const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
   const tokens = tokenize(stripLeadingAssignments(opener).trim());
   if (tokens === null) return;
@@ -3301,7 +3328,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
             operation: "append",
             absolutePath,
             simpleCommandIndex,
-            join: join12,
+            join: join13,
             ...singlePlainAppend && r.op === ">>" && bodyLiteral ? { written: body } : {}
           }
         });
@@ -3309,11 +3336,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
         results.push({
           status: "resolved",
           idiom: "heredoc-write",
-          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join12 } : {
+          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join13 } : {
             operation: "create-overwrite",
             absolutePath,
             simpleCommandIndex,
-            join: join12,
+            join: join13,
             // The exact gate compares full file bytes, so the trailing
             // `\n` the extraction stripped comes back on the overwrite.
             ...singlePlainOverwrite && bodyLiteral ? { written: `${body}
@@ -3342,7 +3369,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
               operation: "append",
               absolutePath,
               simpleCommandIndex,
-              join: join12,
+              join: join13,
               ...contentRedirects.length === 0 && bodyLiteral ? { written: body } : {}
             }
           });
@@ -3350,11 +3377,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
           results.push({
             status: "resolved",
             idiom: "heredoc-write",
-            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join12 } : {
+            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join13 } : {
               operation: "create-overwrite",
               absolutePath,
               simpleCommandIndex,
-              join: join12,
+              join: join13,
               // Same restored-`\n` exact body as the redirect branch; a
               // tee operand with a content redirect present keeps the
               // redirect's threading only (mirror of the append branch).
@@ -3369,17 +3396,17 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
     return;
   }
   if (host === "patch" || host === "git") {
-    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join12, results);
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join13, results);
     return;
   }
 }
 var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
-function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join12, results) {
+function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join13, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "sed") {
-    matchSedInplaceArgs(commandArgs, dirForResolution, simpleCommandIndex, join12, results);
+    matchSedInplaceArgs(commandArgs, dirForResolution, simpleCommandIndex, join13, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -3390,7 +3417,7 @@ function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join12, res
   }
 }
 var SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
-function matchSedInplaceArgs(args, dir, simpleCommandIndex, join12, results) {
+function matchSedInplaceArgs(args, dir, simpleCommandIndex, join13, results) {
   let suffix = null;
   let sawInplace = false;
   let i2 = 0;
@@ -3515,20 +3542,20 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join12, results) {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join12 }
+        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join13 }
       });
     } else {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join12 }
+        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join13 }
       });
     }
     if (suffix !== null && suffix !== "") {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join12 }
+        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join13 }
       });
     }
   }
@@ -3614,7 +3641,7 @@ function readPatchFile(absolutePath) {
     return null;
   }
 }
-function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join12, results) {
+function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join13, results) {
   const parts = patchApplyParts(args, isGitApply);
   if (parts.readOnly || parts.cachedOnly) return;
   if (parts.directory) {
@@ -3672,13 +3699,13 @@ function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join12,
+        join: join13,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
   }
 }
-function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join12, results) {
+function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join13, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "patch") {
@@ -3690,7 +3717,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join12,
+      join13,
       results
     );
     return;
@@ -3710,7 +3737,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join12,
+      join13,
       results
     );
     return;
@@ -3722,7 +3749,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     }
   }
 }
-function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join12, results) {
+function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join13, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   let isGitApply = false;
@@ -3764,7 +3791,7 @@ function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join12
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join12,
+        join: join13,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
@@ -3836,7 +3863,7 @@ function stripPackageRunner(argv) {
   if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
   return { kind: "stripped", stripped: rest };
 }
-function matchFormatter(argv, dirForResolution, simpleCommandIndex, join12, results) {
+function matchFormatter(argv, dirForResolution, simpleCommandIndex, join13, results) {
   const unwrapped = stripTransparentWrapper(argv);
   const [command] = unwrapped;
   if (command === void 0) return;
@@ -3901,12 +3928,12 @@ function matchFormatter(argv, dirForResolution, simpleCommandIndex, join12, resu
     results.push({
       status: "resolved",
       idiom: "formatter-write",
-      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join12 }
+      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join13 }
     });
   }
 }
 var RESTORE_NO_VALUE = /* @__PURE__ */ new Set(["-q", "-f", "-u"]);
-function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join12) {
+function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join13) {
   if (looksUnresolvable(operand)) {
     pushUnresolved(results, idiom, operand, "path contains an unexpanded shell variable or glob");
     return;
@@ -3924,10 +3951,10 @@ function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommand
   results.push({
     status: "resolved",
     idiom,
-    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join12 }
+    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join13 }
   });
 }
-function matchRestoreOperands(args, dir, simpleCommandIndex, join12, results) {
+function matchRestoreOperands(args, dir, simpleCommandIndex, join13, results) {
   let staged = false;
   let worktree = false;
   let afterDashDash = false;
@@ -3972,10 +3999,10 @@ function matchRestoreOperands(args, dir, simpleCommandIndex, join12, results) {
   }
   if (staged && !worktree) return;
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join12);
+    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join13);
   }
 }
-function matchCheckoutOperands(args, dir, simpleCommandIndex, join12, results) {
+function matchCheckoutOperands(args, dir, simpleCommandIndex, join13, results) {
   let afterDashDash = false;
   const operands = [];
   for (let i2 = 0; i2 < args.length; i2++) {
@@ -4006,10 +4033,10 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join12, results) {
     if (a.startsWith("-")) continue;
   }
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join12);
+    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join13);
   }
 }
-function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join12, results) {
+function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join13, results) {
   const [command, ...commandArgs] = stripTransparentWrapper(argv);
   if (command === void 0) return;
   if (command === "git") {
@@ -4026,8 +4053,8 @@ function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, joi
     }
     const dir = sub.cDir ?? dirForResolution;
     const args = commandArgs.slice(sub.subIdx + 1);
-    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join12, results);
-    else matchCheckoutOperands(args, dir, simpleCommandIndex, join12, results);
+    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join13, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join13, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -4078,7 +4105,7 @@ function parseCommandDetailed(command, opts = {}) {
     if (isAbsolute2(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
-  const emitCandidate = (c, frame, simpleCommandIndex, join12) => {
+  const emitCandidate = (c, frame, simpleCommandIndex, join13) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: "unresolved",
@@ -4134,7 +4161,7 @@ function parseCommandDetailed(command, opts = {}) {
         lineEnd: range.lineEnd,
         absolutePath,
         simpleCommandIndex,
-        join: join12
+        join: join13
       }
     });
   };
@@ -6391,11 +6418,11 @@ function parseCompoundStages(command, split, options, maxCandidates, parse4) {
     const stage = split.stages[index];
     if (stage === void 0) break;
     const child = parse4(stage.text, options);
-    const join12 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
+    const join13 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
     resolved.push(
       ...child.resolved.map((match) => ({
         ...match,
-        span: { ...match.span, simpleCommandIndex: index, join: join12 }
+        span: { ...match.span, simpleCommandIndex: index, join: join13 }
       }))
     );
     unresolvedMatches.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
@@ -6832,9 +6859,9 @@ function filterTrackedEligibility(candidates, options) {
 
 // packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import * as fs5 from "node:fs";
-import { basename as basename4, dirname as dirname6, join as join5 } from "node:path";
+import { basename as basename5, dirname as dirname6, join as join6 } from "node:path";
 
 // packages/agent-hooks/src/common/anchor-tree.ts
 function collapseByPath(rows) {
@@ -7032,6 +7059,95 @@ function renderAnchorTree(anchors) {
   return renderNodes(forest, "");
 }
 
+// packages/agent-hooks/src/common/delivery-presentation.ts
+import { createHash as createHash2 } from "node:crypto";
+var BROAD_READ_BYTES = 1536;
+var TARGETED_BYTES = 8192;
+var MAX_SNAPSHOTS = 128;
+var MAX_SNAPSHOT_BYTES = 8192;
+var MAX_MEMO_BYTES = 256 * 1024;
+function shellArgument(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function inlineCode(value) {
+  const longest = (value.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
+  const fence = "`".repeat(longest + 1);
+  return `${fence} ${value.replace(new RegExp("\\p{Cc}", "gu"), " ")} ${fence}`;
+}
+function showRoute(name) {
+  if (Buffer.byteLength(name) > 256 || new RegExp("\\p{Cc}", "u").test(name))
+    return "`git span list` (retrieve the complete name, then `git span show <name>`)";
+  return inlineCode(`git span show -- ${shellArgument(name)}`);
+}
+function snapshot(span, fullFooter, recipient) {
+  return {
+    version: 1,
+    revision: span.evidence_revision,
+    why: span.why,
+    anchors: span.anchors.map((anchor) => createHash2("sha256").update(JSON.stringify(anchor)).digest("hex")),
+    fullFooter,
+    recipient
+  };
+}
+function readSnapshots(surfaced) {
+  const result = /* @__PURE__ */ new Map();
+  for (const key2 of surfaced) {
+    if (!key2.startsWith("touch:")) continue;
+    const identity = key2.slice(0, 70);
+    if (!/^touch:[0-9a-f]{64}$/.test(identity)) {
+      surfaced.delete(key2);
+      continue;
+    }
+    try {
+      if (Buffer.byteLength(key2) > MAX_SNAPSHOT_BYTES) throw new Error("oversize snapshot");
+      const parsed = JSON.parse(key2.slice(71));
+      if (!isRecord(parsed) || parsed.version !== 1 || typeof parsed.revision !== "string" || !/^[0-9a-f]{64}$/.test(parsed.revision) || !(parsed.why === null || typeof parsed.why === "string") || !Array.isArray(parsed.anchors) || !parsed.anchors.every((row) => typeof row === "string" && /^[0-9a-f]{64}$/.test(row)) || typeof parsed.fullFooter !== "boolean" || typeof parsed.recipient !== "string" || parsed.recipient.length !== 64 || !/^[0-9a-f]{64}$/.test(parsed.recipient))
+        throw new Error("invalid snapshot");
+      const value = {
+        version: 1,
+        revision: parsed.revision,
+        why: parsed.why,
+        anchors: parsed.anchors,
+        fullFooter: parsed.fullFooter,
+        recipient: parsed.recipient
+      };
+      const prior = result.get(identity);
+      if (prior !== void 0) surfaced.delete(prior.key);
+      result.set(identity, { key: key2, value });
+    } catch {
+      surfaced.delete(key2);
+    }
+  }
+  return result;
+}
+function recordSnapshots(surfaced, updates) {
+  const records = readSnapshots(surfaced);
+  for (const [identity, value] of updates) {
+    const prior = records.get(identity);
+    if (prior !== void 0) {
+      surfaced.delete(prior.key);
+      records.delete(identity);
+    }
+    const key2 = `${identity}:${JSON.stringify(value)}`;
+    if (Buffer.byteLength(key2) <= MAX_SNAPSHOT_BYTES) {
+      records.set(identity, { key: key2, value });
+      surfaced.add(key2);
+    }
+  }
+  let bytes = Buffer.byteLength(JSON.stringify([...surfaced]));
+  for (const [identity, entry] of records) {
+    if (records.size <= MAX_SNAPSHOTS && bytes <= MAX_MEMO_BYTES) break;
+    surfaced.delete(entry.key);
+    records.delete(identity);
+    bytes -= Buffer.byteLength(JSON.stringify(entry.key)) + (surfaced.size > 0 ? 1 : 0);
+  }
+  for (const key2 of surfaced) {
+    if (bytes <= MAX_MEMO_BYTES) break;
+    surfaced.delete(key2);
+    bytes -= Buffer.byteLength(JSON.stringify(key2)) + (surfaced.size > 0 ? 1 : 0);
+  }
+}
+
 // packages/agent-hooks/src/common/touch-core.ts
 function toNeedleLines(written) {
   if (written.length === 0) return [];
@@ -7126,12 +7242,12 @@ function realPaths(cache, cwd) {
       if (lsFiles !== null) {
         for (const line of lsFiles.split("\n")) {
           const rel = line.trim();
-          if (rel.length > 0) real.add(join5(repoRoot, rel));
+          if (rel.length > 0) real.add(join6(repoRoot, rel));
         }
       }
       const spanList = capture(["span", "list", "--porcelain", ...rels]);
       if (spanList !== null) {
-        for (const row of parsePorcelain(spanList)) real.add(join5(repoRoot, row.path));
+        for (const row of parsePorcelain(spanList)) real.add(join6(repoRoot, row.path));
       }
     }
   }
@@ -7160,7 +7276,7 @@ function changedOnDisk(cache, cwd) {
           if (indexStatus === "?" || indexStatus === "!" || worktreeStatus === "?" || worktreeStatus === "!") {
             continue;
           }
-          changed.add(join5(repoRoot, entry.slice(3)));
+          changed.add(join6(repoRoot, entry.slice(3)));
         }
       } catch (err) {
         void err;
@@ -7343,7 +7459,7 @@ function decodeContextDocument(stdout) {
   const parsed = JSON.parse(stdout);
   const root2 = record(parsed, "context document");
   exactKeys(root2, ["schema_version", "scopes", "mutation", "spans"], "context document");
-  if (root2.schema_version !== 1) throw new Error("unsupported context schema version");
+  if (root2.schema_version !== 2) throw new Error("unsupported context schema version");
   const scopes = arrayField(root2.scopes, "context document.scopes").map((scope, index) => {
     const object = record(scope, `context document.scopes[${index}]`);
     exactKeys(object, ["path", "extent"], `context document.scopes[${index}]`);
@@ -7372,11 +7488,15 @@ function decodeContextDocument(stdout) {
   const spans = arrayField(root2.spans, "context document.spans").map((span, index) => {
     const label = `context document.spans[${index}]`;
     const object = record(span, label);
-    exactKeys(object, ["name", "why", "overlaps", "anchors"], label);
+    exactKeys(object, ["name", "evidence_revision", "why", "overlaps", "anchors"], label);
+    const evidenceRevision = stringField(object.evidence_revision, `${label}.evidence_revision`);
+    if (!/^[0-9a-f]{64}$/.test(evidenceRevision))
+      throw new Error(`${label}.evidence_revision must be a 64-digit hex digest`);
     const why = object.why;
     if (why !== null && typeof why !== "string") throw new Error(`${label}.why must be a string or null`);
     return {
       name: stringField(object.name, `${label}.name`),
+      evidence_revision: evidenceRevision,
       why,
       overlaps: arrayField(object.overlaps, `${label}.overlaps`).map(
         (overlap, overlapIndex) => decodeOverlap(overlap, `${label}.overlaps[${overlapIndex}]`)
@@ -7407,10 +7527,10 @@ function decodeContextDocument(stdout) {
         throw new Error(`${label}.intersection is not the exact scope/location intersection`);
     }
   }
-  return { schema_version: 1, scopes, mutation, spans };
+  return { schema_version: 2, scopes, mutation, spans };
 }
-function driftKey(name, status) {
-  return `${name}	${status}`;
+function deliveryIdentity(repoRoot, name, recipient = "") {
+  return `touch:${createHash3("sha256").update(JSON.stringify([repoRoot, name, recipient])).digest("hex")}`;
 }
 function anchorText(row) {
   if (row.start === 0 && row.end === 0) return row.path;
@@ -7429,9 +7549,9 @@ function driftHeader(driftedCount, kind) {
   return driftedCount === 1 ? "This file has an implicit coupling out of date:" : "This file has implicit couplings out of date:";
 }
 function driftFooter(driftedNames) {
-  if (driftedNames.length === 1) {
+  if (driftedNames.length === 1 && (driftedNames[0]?.length ?? 0) <= 200) {
     const name = driftedNames[0];
-    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require \`git span drift ${name}\` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
+    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require ${inlineCode(`git span drift -- ${shellArgument(name ?? "")}`)} to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
   }
   return "For each out-of-date span: restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.";
 }
@@ -7505,6 +7625,15 @@ function recoverReadRange(offset2, limit, filePath) {
 }
 function rangesForInput(input) {
   if (input.kind === "read") {
+    if (input.broadDiscovery === true) return "whole-file";
+    if (input.observedRange === null) {
+      if (input.offset !== void 0 || input.limit !== void 0) {
+        const start = input.offset ?? 1;
+        if (input.limit !== void 0) return [{ start, end: start + input.limit - 1 }];
+      }
+      return "whole-file";
+    }
+    if (input.observedRange !== void 0) return [input.observedRange];
     const recovered2 = recoverReadRange(input.offset, input.limit, input.filePath);
     return recovered2 === "whole-file" ? "whole-file" : [recovered2];
   }
@@ -7537,32 +7666,96 @@ function spanTouchesInput(span, document, repoPath, ranges) {
     return scope !== void 0 && scope.path === repoPath && extentIntersects(overlap.intersection, ranges);
   });
 }
-function renderContextTouch(input, document, repoPath, ranges, memo, logger2) {
+function renderContextTouch(input, document, repoRoot, repoPath, ranges, memo, logger2) {
+  const recipient = createHash3("sha256").update(input.recipientId ?? "").digest("hex");
   const surfaced = memo.getSurfaced(input.sessionId);
+  const previous = readSnapshots(surfaced);
+  const candidates = document.spans.filter((span) => {
+    if (!spanTouchesInput(span, document, repoPath, ranges)) return false;
+    const statuses = span.anchors.map((anchor) => contextStatusToken(anchor.status));
+    return statuses.every((status) => status === "FRESH") || statuses.some(isDebt);
+  }).sort((a, b) => {
+    const debt = (span) => span.anchors.some((anchor) => isDebt(contextStatusToken(anchor.status)));
+    return Number(debt(b)) - Number(debt(a)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  });
+  const eligible = candidates.filter(
+    (span) => previous.get(deliveryIdentity(repoRoot, span.name, input.recipientId))?.value.revision !== span.evidence_revision
+  );
+  if (eligible.length === 0) return null;
+  const broad = input.kind === "read" && input.broadDiscovery === true;
+  const unknown = input.kind === "read" && input.observedRange === null;
+  const discoveryOnly = unknown && (broad || ranges === "whole-file");
+  const observed = input.kind === "read" && input.observedRange !== void 0 && input.observedRange !== null ? [input.observedRange] : ranges;
+  const full = (span) => renderSpanSection(
+    span.name,
+    span.anchors.map((anchor) => contextAnchorRow(span.name, anchor)),
+    span.anchors.filter((anchor) => isDebt(contextStatusToken(anchor.status))).map((anchor) => contextDriftRow(span.name, anchor)),
+    span.why,
+    logger2
+  );
+  const qualifier = eligible.every((span) => span.anchors.every((anchor) => anchor.status.code === "FRESH")) ? "Anchors located; relationship review not recorded in this context." : "Tracked evidence shown; relationship review not recorded in this context. Match provenance is not reported here.";
+  const discovery = () => {
+    const lines = [];
+    const header2 = `Discovery only \u2014 ${eligible.length} relationships; ${unknown ? "read extent unknown" : "full details not delivered"}.`;
+    const route = "Retrieve omitted relationships with `git span list`; use `git span show <name>` for details.";
+    for (const span of eligible) {
+      const prior = previous.get(deliveryIdentity(repoRoot, span.name, input.recipientId));
+      const line = `- ${inlineCode(span.name)} \u2014 ${prior === void 0 ? "not fully shown" : "evidence changed"}; ${new Set(span.anchors.map((anchor) => anchor.anchored.path)).size} files; ${showRoute(span.name)}`;
+      const omitted = eligible.length - lines.length - 1;
+      const result = buildBlock([...lines, line], header2, `${omitted} spans omitted. ${route}`);
+      if (Buffer.byteLength(result) > BROAD_READ_BYTES) break;
+      lines.push(line);
+    }
+    return buildBlock(lines, header2, `${eligible.length - lines.length} spans omitted. ${route}`);
+  };
+  const fullFooterSeen = input.recipientResetSupported === true && [...previous.values()].some(({ value }) => value.recipient === recipient && value.fullFooter);
+  const shortFooter = "Check the coupled evidence before committing; zero drift does not establish relationship review.";
+  const fileName = basename5(input.filePath);
+  const driftedNames = eligible.filter((span) => span.anchors.some((anchor) => isDebt(contextStatusToken(anchor.status)))).map((span) => span.name);
+  const header = `${unknown ? "Tool read extent unknown; hook details target the requested lines.\n" : ""}${driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName)}
+${qualifier}`;
+  const footer = fullFooterSeen ? shortFooter : `${driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName)}
+To move an address: \`git span replace <name> <old-anchor> <new-anchor>\`. To explicitly accept content at the same address: \`git span add <name> <anchor>\`. Zero drift does not establish relationship review.`;
+  if (discoveryOnly || broad && (eligible.length > 3 || eligible.some((span) => !spanTouchesInput(span, document, repoPath, observed)) || Buffer.byteLength(buildBlock(eligible.map(full), header, footer)) > BROAD_READ_BYTES))
+    return discovery();
   const sections = [];
-  const toRecord = [];
-  const driftedNames = [];
-  for (const span of document.spans) {
-    if (!spanTouchesInput(span, document, repoPath, ranges)) continue;
-    const anchors = span.anchors.map((anchor) => contextAnchorRow(span.name, anchor));
-    const drift = span.anchors.filter((anchor) => anchor.status.code !== "FRESH").map((anchor) => contextDriftRow(span.name, anchor));
-    const debtRows = drift.filter((row) => isDebt(row.status));
-    if (drift.length > 0 && debtRows.length === 0) continue;
-    const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
-    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(span.name, status)));
-    const isNewName = !surfaced.has(span.name);
-    if (!isNewName && unsurfacedDebt.length === 0) continue;
-    sections.push(renderSpanSection(span.name, anchors, debtRows, span.why, logger2));
-    if (debtStatuses.length > 0) driftedNames.push(span.name);
-    if (isNewName) toRecord.push(span.name);
-    for (const status of unsurfacedDebt) toRecord.push(driftKey(span.name, status));
+  const updates = /* @__PURE__ */ new Map();
+  let incomplete = 0;
+  for (const [spanIndex, span] of eligible.entries()) {
+    const identity = deliveryIdentity(repoRoot, span.name, input.recipientId);
+    const prior = previous.get(identity)?.value;
+    const current2 = snapshot(span, input.recipientResetSupported === true, recipient);
+    let section = full(span);
+    if (prior !== void 0) {
+      const changed = span.anchors.filter((_anchor, index) => prior.anchors[index] !== current2.anchors[index]);
+      const removed = Math.max(0, prior.anchors.length - current2.anchors.length);
+      const why = prior.why !== span.why ? span.why : span.why?.split(/(?<=[.!?])\s/)[0] ?? null;
+      const rows = changed.map((anchor) => contextAnchorRow(span.name, anchor));
+      const debtRows = changed.filter((anchor) => isDebt(contextStatusToken(anchor.status))).map((anchor) => contextDriftRow(span.name, anchor));
+      section = changed.length === 0 && removed === 0 && prior.why === span.why ? `${section}
+Evidence revision changed; visible anchor metadata is unchanged. ${showRoute(span.name)}` : `${renderSpanSection(span.name, rows, debtRows, why, logger2)}
+Evidence changed since full exposure.${removed > 0 ? ` ${removed} anchor(s) removed.` : ""} ${showRoute(span.name)}`;
+    }
+    const omissionReserve = `
+${eligible.length - spanIndex - 1} additional relationships incomplete; retrieve with \`git span list\` and \`git span show <name>\`.`;
+    if (Buffer.byteLength(buildBlock([...sections, section], header, footer + omissionReserve)) > TARGETED_BYTES) {
+      incomplete = eligible.length - spanIndex;
+      const detail = `Incomplete relationship details; evidence ${inlineCode(span.evidence_revision)}. ${showRoute(span.name)}`;
+      if (Buffer.byteLength(buildBlock([...sections, detail], header, footer + omissionReserve)) <= TARGETED_BYTES)
+        sections.push(detail);
+      break;
+    }
+    sections.push(section);
+    updates.set(identity, current2);
   }
-  if (sections.length === 0) return null;
-  memo.addSurfaced(input.sessionId, toRecord, surfaced);
-  const fileName = basename4(input.filePath);
-  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
-  const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
-  return buildBlock(sections, header, footer);
+  recordSnapshots(surfaced, updates);
+  memo.addSurfaced(input.sessionId, [], surfaced);
+  return buildBlock(
+    sections,
+    header,
+    footer + (incomplete > 0 ? `
+${incomplete} relationships incomplete; retrieve with \`git span list\` and \`git span show <name>\`.` : "")
+  );
 }
 function normalizedAddressIdentity(touches) {
   const byPath = /* @__PURE__ */ new Map();
@@ -7593,7 +7786,7 @@ function normalizedAddressIdentity(touches) {
   return identity;
 }
 function deterministicOperationId(invocationId, repoRoot, addresses) {
-  const bytes = createHash2("sha256").update(invocationId).update("\0").update(repoRoot).update("\0").update(addresses.join("\0")).digest();
+  const bytes = createHash3("sha256").update(invocationId).update("\0").update(repoRoot).update("\0").update(addresses.join("\0")).digest();
   bytes.writeUInt8(bytes.readUInt8(6) & 15 | 80, 6);
   bytes.writeUInt8(bytes.readUInt8(8) & 63 | 128, 8);
   const hex = bytes.subarray(0, 16).toString("hex");
@@ -7679,7 +7872,15 @@ async function runTouchHooks(inputs, executors, memo, invocationId, probeCache, 
     if (document === void 0) continue;
     const singleTouchMutation = (partitions.get(touch.partitionKey)?.length ?? 0) === 1 && rewrittenPartitions.has(touch.partitionKey);
     try {
-      const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo, logger2);
+      const additionalContext = renderContextTouch(
+        touch.input,
+        document,
+        touch.repoRoot,
+        touch.repoPath,
+        touch.ranges,
+        memo,
+        logger2
+      );
       outputs[touch.index] = { additionalContext, treeModified: singleTouchMutation };
     } catch (err) {
       reportFailOpen(logger2, "touch-render", err, { filePath: touch.input.filePath });
@@ -7984,11 +8185,11 @@ function applyJoinFilter(order, groups, guardByIndex, computed) {
   const skipped = /* @__PURE__ */ new Set();
   let prevIndex = null;
   for (const idx of order) {
-    const join12 = joinOfCommand(idx, groups, guardByIndex);
+    const join13 = joinOfCommand(idx, groups, guardByIndex);
     const prevVerdict = prevIndex !== null ? effective.get(prevIndex) : void 0;
-    if (prevVerdict !== void 0 && join12 !== void 0) {
-      if (join12 === "&&" && prevVerdict === "failed" || join12 === "||" && prevVerdict === "succeeded") {
-        effective.set(idx, join12 === "&&" ? "failed" : "succeeded");
+    if (prevVerdict !== void 0 && join13 !== void 0) {
+      if (join13 === "&&" && prevVerdict === "failed" || join13 === "||" && prevVerdict === "succeeded") {
+        effective.set(idx, join13 === "&&" ? "failed" : "succeeded");
         skipped.add(idx);
         prevIndex = idx;
         continue;
@@ -8103,7 +8304,7 @@ async function runBashTouches(matches, sessionId2, cwd, toolResponse, executors,
 
 // packages/agent-hooks/src/common/parse-response.ts
 import { existsSync as existsSync5, statSync as statSync6 } from "node:fs";
-import { dirname as dirname7, join as join6, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
 var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
 var VALUE_SHORT_FLAGS = /* @__PURE__ */ new Set(["A", "B", "C", "e", "f", "m", "g", "t", "T"]);
@@ -8537,7 +8738,7 @@ function isFile(abs) {
 function findGitRoot(startDir) {
   let dir = startDir;
   for (; ; ) {
-    if (existsSync5(join6(dir, ".git"))) return dir;
+    if (existsSync5(join7(dir, ".git"))) return dir;
     const parent = dirname7(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -8910,7 +9111,7 @@ function plannedSpans(record2, cwd, logger2) {
     let expectedContent;
     if (touch.evidence?.kind === "content-digest") {
       const content = readText(absolutePath);
-      const digest = content === null ? null : createHash3("sha256").update(content).digest("hex");
+      const digest = content === null ? null : createHash4("sha256").update(content).digest("hex");
       if (digest !== touch.evidence.digest) {
         logger2.warn("git-span static attribution discarded unverifiable planned evidence", {
           path: touch.repoRelativePath,
@@ -9078,7 +9279,7 @@ async function runLayeredBashTouches(command, cwd, sessionId2, toolUseId, toolRe
     sessionId2,
     executors,
     memo,
-    `${sessionId2}:${toolUseId ?? createHash3("sha256").update(command).digest("hex")}:response`,
+    `${sessionId2}:${toolUseId ?? createHash4("sha256").update(command).digest("hex")}:response`,
     logger2
   );
   const blocks = [...commandBlocks, ...responseBatch.blocks];
@@ -9353,7 +9554,7 @@ function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
 }
 
 // packages/agent-hooks/src/codex/post-tool-use.ts
-import { dirname as dirname9, join as join11, resolve as resolvePath3 } from "node:path";
+import { dirname as dirname9, join as join12, resolve as resolvePath3 } from "node:path";
 
 // packages/agent-hooks/src/common/apply-patch-touch.ts
 var noRangeRecovery = () => null;
@@ -9398,12 +9599,12 @@ async function runApplyPatchTouches(patchText, cwd, sessionId2, planned, executo
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync7, lstatSync as lstatSync2, realpathSync as realpathSync3, renameSync as renameSync5, rmSync as rmSync4 } from "node:fs";
+import { existsSync as existsSync7, lstatSync as lstatSync2, realpathSync as realpathSync3, renameSync as renameSync5, rmSync as rmSync5 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-association.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 function noteDocument(value) {
   if (!isRecord(value) || value.schemaVersion !== 1 || value.host !== "claude" && value.host !== "codex") return null;
@@ -9421,7 +9622,7 @@ function noteDocument(value) {
   };
 }
 function commitAssociationKey(receipt, document) {
-  return createHash4("sha256").update(JSON.stringify([receipt.repository.commonDirectory, document.host, document.sessionId, receipt.sha])).digest("hex");
+  return createHash5("sha256").update(JSON.stringify([receipt.repository.commonDirectory, document.host, document.sessionId, receipt.sha])).digest("hex");
 }
 function selectCommitAssociation(document, existing) {
   if (!noteDocument(document)) return { kind: "reject", reason: "invalid association document" };
@@ -9610,7 +9811,7 @@ function commitCliBudgetMs(phaseStartedMs, nowMs) {
 }
 
 // packages/agent-hooks/src/common/commit-observation.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { resolve as resolve6 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-git.ts
@@ -9678,14 +9879,14 @@ function observedCommitReceipts(observation, enrollment) {
   return [...commits].map((sha) => ({
     schemaVersion: 1,
     invocationKey: enrollment.invocationKey,
-    nonce: `observed-${createHash5("sha256").update(repository.gitDirectory).digest("hex")}-${sha}`,
+    nonce: `observed-${createHash6("sha256").update(repository.gitDirectory).digest("hex")}-${sha}`,
     sha,
     repository
   }));
 }
 
 // packages/agent-hooks/src/common/commit-storage.ts
-import { createHash as createHash6, randomBytes } from "node:crypto";
+import { createHash as createHash7, randomBytes } from "node:crypto";
 import {
   closeSync as closeSync3,
   constants as constants2,
@@ -9698,11 +9899,11 @@ import {
   openSync as openSync3,
   readFileSync as readFileSync9,
   renameSync as renameSync4,
-  rmSync as rmSync3,
+  rmSync as rmSync4,
   unlinkSync,
   writeFileSync as writeFileSync3
 } from "node:fs";
-import { dirname as dirname8, isAbsolute as isAbsolute7, join as join8 } from "node:path";
+import { dirname as dirname8, isAbsolute as isAbsolute7, join as join9 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 // packages/agent-hooks/src/common/receipt-lock.ts
@@ -9779,7 +9980,7 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
 
 // packages/agent-hooks/src/common/commit-storage.ts
 function identityKey(identity) {
-  return createHash6("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
+  return createHash7("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
 }
 async function privateDirectory(path, deadline) {
   if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
@@ -9809,13 +10010,13 @@ function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {
   return parsed;
 }
 function atomicJson(path, value, immutable = false) {
-  const temporary = join8(dirname8(path), `.publish-${randomBytes(16).toString("hex")}`);
+  const temporary = join9(dirname8(path), `.publish-${randomBytes(16).toString("hex")}`);
   try {
     writeFileSync3(temporary, JSON.stringify(value), { mode: 384, flag: "wx" });
     if (immutable) linkSync(temporary, path);
     else renameSync4(temporary, path);
   } finally {
-    rmSync3(temporary, { force: true });
+    rmSync4(temporary, { force: true });
   }
 }
 function boundedEntries(directory, cap, deadline = Infinity) {
@@ -9850,9 +10051,9 @@ function ownerRecord(value) {
 }
 async function acquireReceiptClaim(root2, key2, deadline, executable) {
   if (!/^[a-zA-Z0-9_-]+$/.test(key2)) throw new Error("invalid receipt claim key");
-  const directory = join8(root2, "claims");
+  const directory = join9(root2, "claims");
   await privateDirectory(directory, deadline);
-  const path = join8(directory, `${key2}.json`);
+  const path = join9(directory, `${key2}.json`);
   const owner = { token: randomBytes(16).toString("hex"), pid: process.pid };
   while (performance.now() < deadline) {
     const lock = await acquireNativeReceiptLock(directory, key2, deadline, executable);
@@ -9898,16 +10099,16 @@ async function acquireReceiptClaim(root2, key2, deadline, executable) {
 // packages/agent-hooks/src/common/commit-runtime.ts
 async function terminalCommitInvocation(identity, options = {}, logger2) {
   const root2 = receiptRoot(options);
-  const directory = join9(root2, "invocations", identityKey(identity));
+  const directory = join10(root2, "invocations", identityKey(identity));
   const started = performance.now();
   let result = { original: null, acknowledged: 0, pending: 0 };
   if (!existsSync7(directory)) return result;
   try {
-    const valid = validateCommitEnrollment(readJson(join9(directory, "enrollment.json")));
+    const valid = validateCommitEnrollment(readJson(join10(directory, "enrollment.json")));
     if (!valid.ok) throw new Error(valid.reason);
     const original = restoreCommitInvocation(valid.value, identity);
     if (!original.ok) throw new Error(original.reason);
-    const contextsPath = join9(directory, "commands.json");
+    const contextsPath = join10(directory, "commands.json");
     const executions = existsSync7(contextsPath) ? readExecutionContexts(readJson(contextsPath)) : void 0;
     const restored = {
       ...result,
@@ -9928,7 +10129,7 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
       const state = readState(directory, valid.value);
       if (state.status === "retired") return restored;
       if (state.status === "active") {
-        const observations = readCommitObservations(readJson(join9(directory, "observations.json")), valid.value);
+        const observations = readCommitObservations(readJson(join10(directory, "observations.json")), valid.value);
         for (const observation of observations) {
           try {
             for (const receipt of observedCommitReceipts(observation, valid.value)) {
@@ -9943,7 +10144,7 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
           }
         }
       }
-      atomicJson(join9(directory, "state.json"), {
+      atomicJson(join10(directory, "state.json"), {
         ...readState(directory, valid.value),
         status: "completed",
         observing: false,
@@ -9960,7 +10161,7 @@ async function terminalCommitInvocation(identity, options = {}, logger2) {
   }
 }
 function receiptRoot(options) {
-  return options.stateRoot ?? join9(homedir2(), ".cache", "git-span", "commit-receipts");
+  return options.stateRoot ?? join10(homedir2(), ".cache", "git-span", "commit-receipts");
 }
 function errorMessage2(error) {
   return (error instanceof Error ? error.message : String(error)).slice(0, 512);
@@ -9975,7 +10176,7 @@ function readExecutionContexts(value) {
   });
 }
 function readState(directory, enrollment) {
-  const value = readJson(join9(directory, "state.json"));
+  const value = readJson(join10(directory, "state.json"));
   const stored = isRecord(value) ? validateCommitEnrollment(value.enrollment) : null;
   if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.observing !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
     throw new Error("invalid private invocation lifecycle");
@@ -9988,16 +10189,16 @@ function readState(directory, enrollment) {
   };
 }
 async function publishReceipt(directory, receipt) {
-  const enrollment = validateCommitEnrollment(readJson(join9(directory, "enrollment.json")));
+  const enrollment = validateCommitEnrollment(readJson(join10(directory, "enrollment.json")));
   if (!enrollment.ok) throw new Error(enrollment.reason);
-  if (existsSync7(join9(directory, "receipts", `${receipt.nonce}.json`))) return;
+  if (existsSync7(join10(directory, "receipts", `${receipt.nonce}.json`))) return;
   const state = readState(directory, enrollment.value);
   if (state.status !== "active") throw new Error("receipt invocation is no longer active");
-  atomicJson(join9(directory, "receipts", `${receipt.nonce}.json`), receipt, true);
+  atomicJson(join10(directory, "receipts", `${receipt.nonce}.json`), receipt, true);
   const pendingNonces = [...state.pendingNonces, receipt.nonce];
   for (const dropped of pendingNonces.slice(0, -COMMIT_RECEIPT_LIMITS.receiptsPerInvocation))
-    rmSync4(join9(directory, "receipts", `${dropped}.json`), { force: true });
-  atomicJson(join9(directory, "state.json"), {
+    rmSync5(join10(directory, "receipts", `${dropped}.json`), { force: true });
+  atomicJson(join10(directory, "state.json"), {
     ...state,
     pendingNonces: pendingNonces.slice(-COMMIT_RECEIPT_LIMITS.receiptsPerInvocation),
     lastActivityMs: Date.now()
@@ -10006,7 +10207,7 @@ async function publishReceipt(directory, receipt) {
 async function drainDirectory(root2, directory, enrollment, options, started, logger2) {
   const deadline = started + COMMIT_RECEIPT_LIMITS.drainMs;
   let acknowledged = 0;
-  const names = boundedEntries(join9(directory, "receipts"), COMMIT_RECEIPT_LIMITS.receiptsPerInvocation, deadline);
+  const names = boundedEntries(join10(directory, "receipts"), COMMIT_RECEIPT_LIMITS.receiptsPerInvocation, deadline);
   for (const name of names) {
     if (performance.now() >= deadline) {
       logger2?.warn("git-span commit receipts: receipt drain deadline exhausted");
@@ -10015,7 +10216,7 @@ async function drainDirectory(root2, directory, enrollment, options, started, lo
     try {
       if (!/^observed-[a-f0-9]{64}-[a-f0-9]{40}(?:[a-f0-9]{24})?\.json$/.test(name))
         throw new Error("invalid receipt filename");
-      const valid = validateCommitReceipt(readJson(join9(directory, "receipts", name)), enrollment);
+      const valid = validateCommitReceipt(readJson(join10(directory, "receipts", name)), enrollment);
       if (!valid.ok) throw new Error(valid.reason);
       const document = createCommitNoteDocument(enrollment);
       const association = await acquireReceiptClaim(
@@ -10054,7 +10255,7 @@ async function drainDirectory(root2, directory, enrollment, options, started, lo
           if (!confirmation.ok) throw new Error(confirmation.reason);
         }
         if (performance.now() >= deadline) throw new Error("receipt drain deadline exhausted before acknowledgment");
-        rmSync4(join9(directory, "receipts", name));
+        rmSync5(join10(directory, "receipts", name));
         acknowledged++;
       } finally {
         await association.release();
@@ -10063,9 +10264,9 @@ async function drainDirectory(root2, directory, enrollment, options, started, lo
       logger2?.warn(`git-span commit receipts: ${errorMessage2(error)}`);
     }
   }
-  const pendingNames = boundedEntries(join9(directory, "receipts"), COMMIT_RECEIPT_LIMITS.receiptsPerInvocation);
+  const pendingNames = boundedEntries(join10(directory, "receipts"), COMMIT_RECEIPT_LIMITS.receiptsPerInvocation);
   const state = readState(directory, enrollment);
-  atomicJson(join9(directory, "state.json"), {
+  atomicJson(join10(directory, "state.json"), {
     ...state,
     status: pendingNames.length === 0 ? "acknowledged" : "completed",
     pendingNonces: pendingNames.map((name) => name.replace(/\.json$/, "")),
@@ -10096,9 +10297,9 @@ async function invokeNotes(enrollment, receipt, options, args, stdin, started) {
 // packages/agent-hooks/src/codex/commit-exec.ts
 import { existsSync as existsSync8 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 function root(options) {
-  return options.stateRoot ?? join10(homedir3(), ".cache", "git-span", "commit-receipts");
+  return options.stateRoot ?? join11(homedir3(), ".cache", "git-span", "commit-receipts");
 }
 function sessionId(value) {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
@@ -10125,7 +10326,7 @@ function polledExecution(input) {
   return sessionId(input.session_id);
 }
 async function retainExecution(identity, executionId, options) {
-  const directory = join10(root(options), "invocations", identityKey(identity));
+  const directory = join11(root(options), "invocations", identityKey(identity));
   if (!existsSync8(directory)) return;
   const deadline = performance.now() + COMMIT_RECEIPT_LIMITS.drainMs;
   const claim = await acquireReceiptClaim(
@@ -10136,33 +10337,33 @@ async function retainExecution(identity, executionId, options) {
   );
   if (!claim) throw new Error("yielded execution ownership unavailable");
   try {
-    const stored = validateCommitEnrollment(readJson(join10(directory, "enrollment.json")));
+    const stored = validateCommitEnrollment(readJson(join11(directory, "enrollment.json")));
     if (!stored.ok || stored.value.host !== identity.host || stored.value.sessionId !== identity.sessionId || stored.value.toolUseId !== identity.toolUseId)
       throw new Error("yielded execution enrollment mismatch");
-    const existingPath = join10(directory, "exec-session.json");
+    const existingPath = join11(directory, "exec-session.json");
     if (existsSync8(existingPath)) {
       const existing = readJson(existingPath);
       if (!isRecord(existing) || existing.executionId !== executionId || existing.invocationKey !== stored.value.invocationKey)
         throw new Error("yielded execution transport identity changed");
     }
-    atomicJson(join10(directory, "exec-session.json"), { executionId, invocationKey: stored.value.invocationKey });
+    atomicJson(join11(directory, "exec-session.json"), { executionId, invocationKey: stored.value.invocationKey });
   } finally {
     await claim.release();
   }
 }
 function findExecution(session, executionId, options) {
-  const directory = join10(root(options), "invocations");
+  const directory = join11(root(options), "invocations");
   if (!existsSync8(directory)) return null;
   const deadline = performance.now() + COMMIT_RECEIPT_LIMITS.drainMs;
   let result = null;
   for (const key2 of boundedEntries(directory, COMMIT_RECEIPT_LIMITS.invocations, deadline)) {
     if (performance.now() >= deadline) throw new Error("yielded execution lookup deadline exhausted");
-    const path = join10(directory, key2);
-    const mappingPath = join10(path, "exec-session.json");
+    const path = join11(directory, key2);
+    const mappingPath = join11(path, "exec-session.json");
     if (!existsSync8(mappingPath)) continue;
     const mapping = readJson(mappingPath);
     if (!isRecord(mapping) || mapping.executionId !== executionId) continue;
-    const valid = validateCommitEnrollment(readJson(join10(path, "enrollment.json")));
+    const valid = validateCommitEnrollment(readJson(join11(path, "enrollment.json")));
     if (!valid.ok || mapping.invocationKey !== valid.value.invocationKey)
       throw new Error("invalid yielded execution identity");
     if (valid.value.host !== "codex" || valid.value.sessionId !== session) continue;
@@ -10170,12 +10371,6 @@ function findExecution(session, executionId, options) {
     result = { host: "codex", sessionId: session, toolUseId: valid.value.toolUseId };
   }
   return result;
-}
-
-// packages/agent-hooks/src/codex/execution-plan.ts
-var COMMAND_PREFIX = "node -e '/*git-span-execution-plan*/";
-function isExecutionPlanCommand(command) {
-  return command.startsWith(COMMAND_PREFIX);
 }
 
 // node_modules/acorn/dist/acorn.mjs
@@ -15851,9 +16046,10 @@ var MAX_EXECUTIONS = 32;
 var MAX_AST_NODES = 5e4;
 function execution(input) {
   const command = typeof input.cmd === "string" ? input.cmd : extractShellCommand(input);
-  if (!command) return null;
+  if (!command || command.includes("\0")) return null;
+  if (input.environment_id !== void 0 && input.environment_id !== null) return null;
   const workdir = input.workdir ?? input.cwd;
-  if (workdir !== void 0 && workdir !== null && typeof workdir !== "string") return null;
+  if (workdir !== void 0 && workdir !== null && (typeof workdir !== "string" || workdir.includes("\0"))) return null;
   return {
     command,
     workdir: typeof workdir === "string" ? workdir : null,
@@ -15890,7 +16086,17 @@ function literalArguments(node) {
     const key2 = property.key;
     const name = isRecord(key2) && key2.type === "Identifier" ? key2.name : literal2(key2);
     if (typeof name !== "string") return null;
-    if (["cmd", "workdir", "cwd", "run_in_background", "background", "delegate", "delegated", "worker"].includes(name)) {
+    if ([
+      "cmd",
+      "workdir",
+      "cwd",
+      "environment_id",
+      "run_in_background",
+      "background",
+      "delegate",
+      "delegated",
+      "worker"
+    ].includes(name)) {
       if (Object.hasOwn(result, name)) return null;
       const value = literal2(property.value);
       if (value === void 0) return null;
@@ -15899,7 +16105,7 @@ function literalArguments(node) {
   }
   return result;
 }
-function narrowCodeModeExecutions(toolInput) {
+function narrowCodeModeExecutions(toolInput, options = {}) {
   if (!isRecord(toolInput) || typeof toolInput.input !== "string") return { matched: false, executions: [] };
   const source = toolInput.input;
   if (Buffer.byteLength(source) > MAX_SOURCE_BYTES) return { matched: true, executions: [] };
@@ -15913,19 +16119,25 @@ function narrowCodeModeExecutions(toolInput) {
   let matched = false;
   let invalid = false;
   const executions = [];
+  const directToolObjects = /* @__PURE__ */ new Set();
   const pending2 = [ast];
   while (pending2.length > 0) {
     const node = pending2.pop();
     if (!isRecord(node) || typeof node.type !== "string") continue;
     if (++nodes > MAX_AST_NODES) return { matched: true, executions: [] };
+    if (options.directToolsOnly && node.type === "Identifier" && node.name === "tools" && !directToolObjects.has(node))
+      invalid = true;
     if (node.type === "CallExpression" && isRecord(node.callee)) {
       const callee = node.callee;
-      if (callee.type === "MemberExpression" && isRecord(callee.object) && callee.object.type === "Identifier" && callee.object.name === "tools" && isRecord(callee.property) && (callee.computed ? literal2(callee.property) : callee.property.name) === "exec_command") {
-        matched = true;
-        const args = Array.isArray(node.arguments) && node.arguments.length === 1 ? literalArguments(node.arguments[0]) : null;
-        const result = args === null ? null : execution(args);
-        if (result === null || executions.length >= MAX_EXECUTIONS) invalid = true;
-        else executions.push(result);
+      if (callee.type === "MemberExpression" && isRecord(callee.object) && callee.object.type === "Identifier" && callee.object.name === "tools" && isRecord(callee.property) && typeof (callee.computed ? literal2(callee.property) : callee.property.name) === "string") {
+        directToolObjects.add(callee.object);
+        if ((callee.computed ? literal2(callee.property) : callee.property.name) === "exec_command") {
+          matched = true;
+          const args = Array.isArray(node.arguments) && node.arguments.length === 1 ? literalArguments(node.arguments[0]) : null;
+          const result = args === null || options.directToolsOnly && Object.hasOwn(args, "cwd") ? null : execution(args);
+          if (result === null || executions.length >= MAX_EXECUTIONS) invalid = true;
+          else executions.push(result);
+        }
       }
     }
     const children = Object.values(node).flatMap((value) => Array.isArray(value) ? value : [value]);
@@ -15962,7 +16174,7 @@ function plannedPatchCandidates(record2, cwd) {
   }));
 }
 function createHandler(executors = createDefaultTouchExecutors(), memoFactory = createDiskMemoStore, layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) {
-  const options = { stateRoot: join11(dirname9(layout.base), "commit-receipts"), ...runtimeOptions };
+  const options = { stateRoot: join12(dirname9(layout.base), "commit-receipts"), ...runtimeOptions };
   return async (input, ctx) => {
     let original = null;
     const shellTool = ["Bash", "shell", "local_shell", "exec_command", "exec"].includes(input.tool_name);
@@ -15991,10 +16203,6 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
       }
     }
     if (poll) return void 0;
-    if (original === null && isRecord(input.tool_input) && typeof input.tool_input.command === "string" && isExecutionPlanCommand(input.tool_input.command)) {
-      ctx.logger.warn("git-span execution-directory receipt missing; suppressing session-directory attribution");
-      return void 0;
-    }
     if (original === null && input.tool_name === "Bash" && isRecord(input.tool_input) && typeof input.tool_input.command === "string" && typeof input.tool_input.workdir !== "string" && typeof input.tool_input.cwd !== "string") {
       ctx.logger.warn("git-span canonical Bash execution directory unknown; suppressing session-directory attribution");
       return void 0;

@@ -100,7 +100,10 @@ describe('antigravity stop cleanup', () => {
       terminationReason: 'model_stop',
       fullyIdle: true
     };
-    const result = await createStopHandler(layout, async () => true)(input as never, { logger });
+    const result = await createStopHandler(layout, async () => ({ kind: 'matching', repositories: [] }))(
+      input as never,
+      { logger }
+    );
     expect(result?.stdout.decision).toBe('continue');
     expect(result?.stdout.reason).toContain('Load the review-notes skill');
     expect(result?.stdout.reason).toContain('forked subagent');
@@ -108,13 +111,19 @@ describe('antigravity stop cleanup', () => {
 
     // A new handler models the next one-shot hook process; cleanup leaves its guard intact.
     expect(
-      await createStopHandler(layout, async () => true)({ ...input, executionNum: 2 } as never, { logger })
+      await createStopHandler(layout, async () => ({ kind: 'matching', repositories: [] }))(
+        { ...input, executionNum: 2 } as never,
+        { logger }
+      )
     ).toBeUndefined();
     expect(takeToolCall(layout, conv, 2)).toBeNull();
     expect(drainPendingInjections(layout, conv)).toEqual([]);
     expect(existsSync(layout.memoFile(conv))).toBe(true);
     expect(
-      await createStopHandler(layout, async () => true)({ ...input, executionNum: 3 } as never, { logger })
+      await createStopHandler(layout, async () => ({ kind: 'matching', repositories: [] }))(
+        { ...input, executionNum: 3 } as never,
+        { logger }
+      )
     ).toBeUndefined();
   });
 
@@ -122,12 +131,31 @@ describe('antigravity stop cleanup', () => {
     const conv = 'empty-notes';
     stashToolCall(layout, conv, 2, { name: 'run_command', args: {} });
     const input = { ...base(conv, ['/repo']), executionNum: 1, terminationReason: 'model_stop', fullyIdle: true };
-    expect(await createStopHandler(layout, async () => false)(input as never, { logger })).toBeUndefined();
+    expect(
+      await createStopHandler(layout, async () => ({ kind: 'empty' }))(input as never, { logger })
+    ).toBeUndefined();
     expect(takeToolCall(layout, conv, 2)).toBeNull();
     expect(existsSync(join(layout.dir(conv), 'antigravity-note-review-requested'))).toBe(false);
-    expect((await createStopHandler(layout, async () => true)(input as never, { logger }))?.stdout.decision).toBe(
-      'continue'
-    );
+    expect(
+      (
+        await createStopHandler(layout, async () => ({ kind: 'matching', repositories: [] }))(input as never, {
+          logger
+        })
+      )?.stdout.decision
+    ).toBe('continue');
+  });
+
+  it('reports lookup failure without forcing another invocation or consuming its guard', async () => {
+    const conv = 'lookup-failure';
+    const input = { ...base(conv, ['/repo']), executionNum: 1, terminationReason: 'model_stop', fullyIdle: true };
+    const check = vi.fn(async () => ({ kind: 'failure' as const, reason: 'notes timeout' }));
+    const handler = createStopHandler(layout, check);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await handler(input as never, { logger });
+      expect(result?.stdout.reason).toBe('git-span could not read commit notes: notes timeout');
+      expect(result?.stdout.decision).not.toBe('continue');
+    }
+    expect(existsSync(join(layout.dir(conv), 'antigravity-note-review-requested'))).toBe(false);
   });
 
   it.each([
@@ -137,7 +165,9 @@ describe('antigravity stop cleanup', () => {
     { terminationReason: 'model_stop', fullyIdle: true, error: 'cancelled' }
   ])('does not resume an abnormal or busy stop: %j', async (state) => {
     const input = { ...base(`skip-${JSON.stringify(state)}`, ['/repo']), executionNum: 1, ...state };
-    expect(await createStopHandler(layout, async () => true)(input as never, { logger })).toBeUndefined();
+    expect(
+      await createStopHandler(layout, async () => ({ kind: 'matching', repositories: [] }))(input as never, { logger })
+    ).toBeUndefined();
   });
 
   it('the emitted hook guard survives separate processes', () => {

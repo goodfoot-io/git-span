@@ -168,3 +168,15 @@ Pick the first that fits:
 15. Sweeping `.span/**` (or a large slice of it) up to the why-writing standard, not just
     one drifted span — including a request to "clean up" or "cleaning up" spans →
     `references/why-cleanup-campaign.md`.
+
+## Inspect staged couplings before commit
+
+After staging, use `git span preflight` when partial staging, coupled edits, or span
+removals warrant checking the proposed commit. Inspect each affected span's why,
+anchor presence and `content_matches`, including `removed_spans`. Resolve unexpected
+omissions or mismatches; matching content still requires judging the relationship.
+Use `--format json` for automation. Re-run after changing the index.
+
+This read-only report covers the index, not unstaged fixes or a prospective
+`git commit -o <paths>` tree. Inspect the actual intended content for path-limited
+commits. Preflight records no approval and replaces neither tests nor drift checks.

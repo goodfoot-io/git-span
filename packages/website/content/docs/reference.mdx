@@ -79,8 +79,11 @@ Every subcommand that accepts `--format json` publishes its output family as a J
 | history | `https://git-span.com/schemas/cli/v1/history.json` | `history` |
 | drift | `https://git-span.com/schemas/cli/v1/drift.json` | `drift` |
 | notes | `https://git-span.com/schemas/cli/v1/notes.json` | `notes add`, `notes list`, `notes show`, `notes remove` |
+| preflight | `https://git-span.com/schemas/cli/v1/preflight.json` | `preflight` |
 
 Context v2 requires an `evidence_revision` digest on each selected span so consumers can detect changes to its definition and relevant file state.
+
+`preflight` is an explicit, non-mutating report of staged definitions and index content, including removed obligations. It does not acknowledge content, record review completion, run tests, or block a commit.
 
 Each schema's `$id` is its URL, and the URL is the version: v1 is immutable. A committed `sha256-manifest.txt` beside the schemas pins every published file's digest, and CI recomputes and compares it — the manifest is never regenerated, so published bytes cannot drift. A breaking change to a family's shape lands at a `v2` URL; the v1 bytes stay byte-for-byte what they were. Consumers select the published family URL from the table above. URL versions are distinct from document `schema_version` values: drift documents use version 3 at the v1 URL, while context documents use version 2 at the v2 URL. Cached validators remain valid for the immutable schema URL they target. Round-trip tests validate CLI stdout against the published schema for its family.
 

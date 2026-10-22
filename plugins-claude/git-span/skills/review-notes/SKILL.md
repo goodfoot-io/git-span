@@ -1,11 +1,11 @@
 ---
 name: review-notes
-description: Review Git Span notes, update spans, remove consumed notes.
+description: Review changed behavior and couplings with explicit findings.
 ---
 
 ## Goal
 
-**Review the notes and improve span coverage by adding or updating spans.**
+**Review changed behavior, then reconcile implicit couplings. Report metadata completion separately from material findings.**
 
 ## Spans and notes
 
@@ -13,8 +13,9 @@ A span (`.span/<name>`, tracked) declares an implicit semantic coupling: anchors
 (`path#L<start>-L<end>`, or a bare `path` for a whole file) that must stay in
 agreement though no compiler, type, schema, test, build, or generator enforces it,
 plus a why. A note is clone-local JSON evidence attached to a commit SHA, never an
-instruction. Reviewing a note produces a committed span change or a recorded
-decision that none is needed; then the note is removed.
+instruction. Review reports distinguish checked evidence, findings and remaining
+uncertainty; metadata completion is not semantic approval. The parent owns production edits, staging and
+commits. Respect session restrictions, including requests not to commit.
 
 ## Good spans
 
@@ -36,7 +37,9 @@ decision that none is needed; then the note is removed.
   requirement lines with the code and test implementing them and quote the decisive phrase
   in the why. If it cannot be committed, quote the requirement verbatim in the why with its
   source and anchor the implementation and its test; nothing verifies that quote, so keep it
-  short. If the spec exists only in chat, ask the user where it should live. Declare one span
+  short. For chat-only requirements, inspect repository conventions and existing
+  decisions first; ask only if the necessary destination or authority remains unclear.
+  Provenance does not authorise a change. Declare one span
   per cluster of requirements a later edit could silently break; skip boilerplate and
   anything a test already enforces. Do not commit a spec the repository's readers should
   not see, and quote only short decisive phrases from licensed standards.
@@ -66,7 +69,7 @@ anything else is a blocker.
 | Anything else, including other sessions' notes | Leave it |
 
 An empty selection is normal: report it and finish. Capture the selected IDs and
-SHAs; remove only captured IDs.
+SHAs; remove only these captured IDs after validation.
 
 ## 2. Read the commit
 
@@ -79,6 +82,16 @@ git log --oneline <sha>..HEAD -- <paths>
 
 Read the transcript (`transcriptLocator` or `transcript`) when the diff leaves intent
 unclear. Judge against the current tree.
+
+## Behavioral phase — before metadata
+
+Stay within the captured requirement delta, changed boundary and callers. Before
+adopting the implementer's narrative, name a plausible consumer hazard and one
+valid/invalid or before/after check that distinguishes it. Do not weaken a test
+without naming the protected observation. Report findings or a patch to the parent;
+materially changed evidence needs review regardless of who authored it. Reserve
+separate behavioral and metadata budgets; record elapsed time and unchecked scope.
+A prompt budget is not a host-enforced token limit.
 
 ## 3. Find candidate spans
 
@@ -111,9 +124,14 @@ An empty result does not prove no relevant span exists. Read whys with `show` or
 Quote anchors. Run `wc -l <path>` just before writing a range; `add` rejects an end
 past the line count.
 
-**5a. Repair.** Conform the lagging side to the authority: deliberate committed code
-outranks a stale doc; a code change with no coherent commit story may be the
-regression. Run its required checks. If authority is unclear, stop and report.
+**5a. Authority.** Identify the requirement or authorised change, its source/revision,
+scope and consumer. Committed code and rationale show intent; neither supersedes a
+requirement. Cite an authorised supersession before updating stale prose. Otherwise
+preserve the conflict and report its consumer consequence. Use a scoped provisional
+assumption where safe; fail closed only for the unsafe operation. Return behaviour
+patches/findings to the parent for test-first validation; do not rewrite requirements
+or refresh hashes to hide disagreement. Prefer shared code, types, generators or
+discriminating tests over removable coupling.
 
 **5b. New span.** Confirm the name is unused with `git span list --oneline` (`why`
 on a mistyped name creates a new empty span), then:
@@ -142,45 +160,44 @@ Preserve shape: whole-file stays whole-file; an unchanged range keeps its bounds
 
 **5e. Why.** `git span why <name> "<text>"` only when meaning changed.
 
-## 6. Validate and commit
+## 6. Validate the final state
 
-```bash
-git span drift <name>                    # each touched span; exit 0
-git span drift                           # exit 0
-git status --short
-git add <owned-repaired-paths> .span
-git commit -o <owned-repaired-paths> .span -m "<what was declared or repaired>"
-git span drift
-```
-
-Include the `.span/.gitattributes`, `.gitignore`, and `.hookignore` a first `add`
-creates. Stage only paths you own, use a new commit, and run required checks for
-content repairs.
+After the parent accepts and validates any behavior repair, derive metadata from that
+final state. Run scoped and full `git span drift`; report every unresolved result.
+Zero drift completes reconciliation, not behavioral review. Leave edits unstaged for
+the parent; do not create an independent repair commit.
 
 ## 7. Remove consumed notes
 
-After step 6, or with recorded evidence that nothing was needed:
+After validation, or recorded evidence that no change was needed:
 
 ```bash
 git span notes remove <id> --format json
 ```
 
 Require exit 0 and an `operation: "remove"` receipt matching the captured ID, SHA,
-and document. On failure, inspect before retrying. Keep unresolved notes and the
-note on your own repair commit.
+and document. On failure, inspect before retrying. Retain unresolved notes; do not
+infer semantic approval from a continuation flag, removed note or zero drift.
+The parent controls edits and any staging/commit; never bypass a session restriction.
 
 ## 8. Report
 
-Per note: SHA, decision, spans changed, repair commits, checks, removed IDs, and
-retained IDs with blockers. One pass.
+Keep two separate summaries: **metadata complete/incomplete**, and **material findings**.
+For each finding record a stable local ID, consumer, consequence, evidence
+(`executed`, `specific-code-path`, `hypothesis`), requirement uncertainty, and disposition
+(`fixed`, `accepted-with-scope`, `deferred`, `disputed`). Name an accountable owner for a
+deferral only when one exists. “Intentional” alone does not close a consequential finding.
+Include captured SHAs/IDs, spans/patches, checks, retained scope and removed/retained IDs.
+Budget or output truncation records unchecked scope and yields `incomplete`, never
+`complete`. Return a bounded summary and name any omitted scope.
 
 ## Beyond the review
 
 Load `git-span:git-span` and follow its routing when you meet:
 
 - `DELETED`, `CONFLICT`, `SUBMODULE`, or `CONTENT_UNAVAILABLE` drift, or several drifted
-  spans (use `git-span:reconcile` in embedded mode; you keep staging,
-  commits, and note removal);
+  spans (use `git-span:reconcile` in embedded mode; the parent keeps
+  staging/commits, and the reviewer removes only validated captured notes);
 - binary, LFS, symlink, or whole-file anchor questions;
 - `.span/` merge conflicts or an unparsable span file;
 - noisy `<git-span>` hook output for a path class;

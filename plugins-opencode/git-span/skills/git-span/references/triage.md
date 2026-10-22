@@ -18,7 +18,7 @@
 | Changed; the file shrank below the anchored end but the region still exists | `replace <old-anchor> <new-anchor>` with the new extent equal to the file's current line count — an identity change, not a narrowing |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor |
 | Lifecycle gate satisfied | Make the authorized change, revise or retire the why, and reconcile or retire superseded anchors |
-| Authority unclear or no intentional change explains drift | Decide which side is authoritative — a doc drifting behind deliberate, committed code is wrong; a code change with no coherent commit story may be a regression. Conform the non-authoritative side; stop if ambiguity remains |
+| Authority unclear or no intentional change explains drift | Identify the requirement or authorised change, its source/revision, scope and consumer. Committed code shows intent, not authority to supersede it. Cite a justified supersession before changing prose; otherwise retain and report the conflict. Continue safe scoped work; do not re-anchor over disagreement |
 | Coupling gone | `git span delete <name>`; do not re-anchor unrelated bytes |
 | No drift finding | Declare an undeclared coupling only if it meets the parent skill's eligibility rule |
 

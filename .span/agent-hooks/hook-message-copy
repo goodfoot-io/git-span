@@ -1,11 +1,13 @@
-packages/agent-hooks/src/common/touch-core.ts#L888-L917 rk64:9621b6f95581b5b0
-packages/agent-hooks/src/common/touch-core.ts#L1115-L1145 rk64:b50db8aa0072ef3b
+packages/agent-hooks/src/common/delivery-presentation.ts#L6-L19 rk64:11418e7e7b8a51fe
+packages/agent-hooks/src/common/delivery-presentation.ts#L95-L122 rk64:10f51d2889adbdbc
+packages/agent-hooks/src/common/touch-core.ts#L907-L936 rk64:b195b5e9c47bd71a
+packages/agent-hooks/src/common/touch-core.ts#L1131-L1262 rk64:65eb53436caa22e6
 packages/git-span/src/cli/context.rs#L559-L581 rk64:ff505775865efacb
-packages/website/content/docs/agent-integration.mdx rk64:53f6853e8b98347c
-plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:0bb967aad7d48ee4
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:0683f2e3b68401c0
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:c6d5200d4d757775
-plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:3d990ba9e4ab2d29
-skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:7ebfa757f3cd3a2d
+packages/website/content/docs/agent-integration.mdx rk64:9ac1c04648c1adb0
+plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:028fac503f10ffd4
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:e137bb08485e3d5a
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:6cb819cc32f02b89
+plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:bd3ba704cc39f809
+skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:4cef56ecfbf57cba
 
-The shared touch-core messages and delivery gate, together with the CLI evidence revision producer, are authoritative; the hook-output template and website preserve the promise "Identical repeats are suppressed; new changes are delivered again, even when the status is unchanged." The template supplies all four generated hook-output references, whose examples and user-facing meaning must remain aligned with the shared implementation.
+The shared touch renderer, bounded presentation snapshots and CLI evidence revisions define delivery behavior; the hook-output template and website preserve "Identical repeats are suppressed; new changes are delivered again, even when the status is unchanged." Template-generated references preserve the same discovery-only exposure, byte budgets and source/status replay when an opaque revision changes without visible anchor changes.

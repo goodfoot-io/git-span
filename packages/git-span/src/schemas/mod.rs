@@ -39,7 +39,7 @@ pub struct Artifact {
     pub content: String,
 }
 
-/// The six versioned `--format json` families published at stable URLs.
+/// Versioned `--format json` families published at stable URLs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Family {
     Mutation,
@@ -48,6 +48,7 @@ pub enum Family {
     History,
     Drift,
     Notes,
+    Preflight,
 }
 
 impl Family {
@@ -60,6 +61,7 @@ impl Family {
             Family::History => "history",
             Family::Drift => "drift",
             Family::Notes => "notes",
+            Family::Preflight => "preflight",
         }
     }
 }
@@ -71,7 +73,12 @@ impl Family {
 /// old URL's bytes untouched.
 pub fn family_url_version(family: &Family) -> u32 {
     match family {
-        Family::Mutation | Family::Resolve | Family::History | Family::Drift | Family::Notes => 1,
+        Family::Mutation
+        | Family::Resolve
+        | Family::History
+        | Family::Drift
+        | Family::Notes
+        | Family::Preflight => 1,
         Family::Context => 2,
     }
 }
@@ -105,6 +112,10 @@ pub struct JsonCommandMapping {
 /// skipping publication.
 pub fn json_command_mappings() -> &'static [JsonCommandMapping] {
     &[
+        JsonCommandMapping {
+            subcommand: "preflight",
+            family: Some(Family::Preflight),
+        },
         JsonCommandMapping {
             subcommand: "notes add",
             family: Some(Family::Notes),
@@ -183,6 +194,9 @@ pub fn any_schema(_generator: &mut SchemaGenerator) -> Schema {
 fn family_schema(family: &Family) -> Schema {
     let generator = SchemaSettings::draft2020_12().into_generator();
     match family {
+        Family::Preflight => {
+            generator.into_root_schema_for::<crate::preflight::PreflightDocument>()
+        }
         Family::Notes => generator.into_root_schema_for::<crate::notes::NotesDocument>(),
         Family::Mutation => {
             generator.into_root_schema_for::<crate::cli::commit::MutationDocument>()
@@ -213,6 +227,7 @@ pub fn artifacts() -> Vec<Artifact> {
         Family::History,
         Family::Drift,
         Family::Notes,
+        Family::Preflight,
     ] {
         let mut schema = family_schema(&family);
         // `$id` is the family's stable URL; schemars emits `$schema`
@@ -318,7 +333,7 @@ const SECTION_GROUPS: &[(&str, &[&str])] = &[
     ("Inspect", &["show", "list", "tree", "history", "context"]),
     (
         "Audit and automate",
-        &["drift", "doctor", "merge-driver", "resolve"],
+        &["drift", "doctor", "merge-driver", "resolve", "preflight"],
     ),
 ];
 
@@ -696,8 +711,8 @@ mod tests {
     }
 
     #[test]
-    fn mapping_table_covers_all_twelve_json_emitters() {
-        assert_eq!(json_command_mappings().len(), 12);
+    fn mapping_table_covers_all_json_emitters() {
+        assert_eq!(json_command_mappings().len(), 13);
     }
 
     #[test]
@@ -756,10 +771,17 @@ mod tests {
             .map(|a| a.path.to_str().expect("utf8 path").to_string())
             .collect();
         paths.sort_unstable();
-        let mut expected: Vec<String> = ["drift", "history", "mutation", "notes", "resolve"]
-            .into_iter()
-            .map(|key| format!("public/schemas/cli/v1/{key}.json"))
-            .collect();
+        let mut expected: Vec<String> = [
+            "drift",
+            "history",
+            "mutation",
+            "notes",
+            "resolve",
+            "preflight",
+        ]
+        .into_iter()
+        .map(|key| format!("public/schemas/cli/v1/{key}.json"))
+        .collect();
         expected.push("public/schemas/cli/v2/context.json".to_string());
         expected.push("content/docs/commands.mdx".to_string());
         expected.sort_unstable();
@@ -828,8 +850,8 @@ mod tests {
         families.dedup();
         assert_eq!(
             families.len(),
-            6,
-            "each of the six families must be mapped by exactly one versioned row"
+            7,
+            "each published family must have a versioned mapping"
         );
     }
 

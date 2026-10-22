@@ -1,0 +1,118 @@
+{
+  "$id": "https://git-span.com/schemas/cli/v1/preflight.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PreflightDocument",
+  "type": "object",
+  "properties": {
+    "evidence_revision": {
+      "type": "string"
+    },
+    "obligations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PreflightSpan"
+      }
+    },
+    "operation": {
+      "type": "string"
+    },
+    "removed_spans": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PreflightSpan"
+      }
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "staged_tree": {
+      "description": "Git tree object ID calculated in memory; no write-tree/index mutation.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "operation",
+    "staged_tree",
+    "evidence_revision",
+    "obligations",
+    "removed_spans"
+  ],
+  "$defs": {
+    "PreflightAnchor": {
+      "type": "object",
+      "properties": {
+        "blob_oid": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content_matches": {
+          "description": "Exact stored identity at its declared staged address, not semantic approval.",
+          "type": "boolean"
+        },
+        "end_line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "path": {
+          "type": "string"
+        },
+        "present": {
+          "type": "boolean"
+        },
+        "start_line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "start_line",
+        "end_line",
+        "present",
+        "blob_oid",
+        "content_matches"
+      ]
+    },
+    "PreflightSpan": {
+      "type": "object",
+      "properties": {
+        "anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PreflightAnchor"
+          }
+        },
+        "evidence_revision": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "why": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "why",
+        "evidence_revision",
+        "anchors"
+      ]
+    }
+  }
+}

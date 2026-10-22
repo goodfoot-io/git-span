@@ -19,7 +19,8 @@ import { join } from 'node:path';
 import { type HookContext, type StopInput, stopHook, stopOutput } from '@goodfoot/agent-hooks/antigravity';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { errnoCode } from '../common/guards.js';
-import { hasReviewNotes, type NoteReviewCheck, reviewNotesPrompt } from '../common/review-notes-stop.js';
+import { hasReviewNotes } from '../common/review-lookup.js';
+import { type NoteReviewCheck, reviewNotesPrompt } from '../common/review-notes-stop.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 import { cleanupCallScopedState } from './stash.js';
 
@@ -37,12 +38,16 @@ export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT, ch
       cwd: input.workspacePaths[0] ?? '',
       workspacePaths: input.workspacePaths
     };
-    if (
-      input.terminationReason === 'model_stop' &&
-      !input.error &&
-      input.fullyIdle &&
-      (await check(scope, ctx.logger))
-    ) {
+    let failure: string | undefined;
+    const outcome =
+      input.terminationReason === 'model_stop' && !input.error && input.fullyIdle
+        ? await check(scope, ctx.logger).catch((err: unknown) => ({
+            kind: 'failure' as const,
+            reason: err instanceof Error ? err.message.slice(0, 512) : 'lookup unavailable'
+          }))
+        : { kind: 'empty' as const };
+    if (outcome.kind === 'failure') failure = `git-span could not read commit notes: ${outcome.reason}`;
+    if (outcome.kind === 'matching') {
       try {
         mkdirSync(layout.dir(input.conversationId), { recursive: true, mode: 0o700 });
         writeFileSync(join(layout.dir(input.conversationId), 'antigravity-note-review-requested'), '', {
@@ -61,7 +66,7 @@ export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT, ch
     }
     try {
       cleanupCallScopedState(layout, input.conversationId);
-      return undefined;
+      return failure ? stopOutput({ reason: failure }) : undefined;
     } catch (err) {
       ctx.logger.warn('git-span stop cleanup failed open on an uncaught error', { err });
       return undefined;

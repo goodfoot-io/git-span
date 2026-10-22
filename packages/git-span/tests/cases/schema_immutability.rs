@@ -5,7 +5,7 @@
 //! file's digest, and this test recomputes and compares. The manifest is
 //! **not** a generator artifact — it never enters the artifact list and is
 //! never regenerated — and this test is manifest-driven (every entry must
-//! exist and digest-match, and the six family names must all be present),
+//! exist and digest-match, and every frozen family must be present),
 //! not glob-driven, so a v1 file deleted on a future family bump fails
 //! loudly instead of silently shrinking the corpus. A breaking change
 //! lands at a `v2` path; the v1 bytes stay byte-for-byte what they were.
@@ -16,8 +16,14 @@ use std::path::Path;
 /// The committed v1 schema directory, relative to the git-span package.
 const SCHEMA_DIR: &str = "../website/public/schemas/cli/v1";
 
-const FAMILIES: [&str; 6] = [
-    "context", "drift", "history", "mutation", "notes", "resolve",
+const FAMILIES: [&str; 7] = [
+    "context",
+    "drift",
+    "history",
+    "mutation",
+    "notes",
+    "preflight",
+    "resolve",
 ];
 
 #[test]
@@ -53,6 +59,6 @@ fn every_published_schema_digest_matches_the_manifest() {
     expected.sort_unstable();
     assert_eq!(
         covered, expected,
-        "the manifest must cover exactly the six published v1 schemas"
+        "the manifest must cover exactly the published v1 schemas"
     );
 }

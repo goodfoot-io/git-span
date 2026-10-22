@@ -118,6 +118,8 @@ export function createAfterHandler(
           const memo = memoFactory(logger, layout);
           const touch: TouchInput = {
             kind: 'read',
+            observedRange: null,
+            broadDiscovery: narrowed.offset === undefined && narrowed.limit === undefined,
             sessionId,
             cwd,
             filePath,

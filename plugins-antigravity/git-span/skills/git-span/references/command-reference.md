@@ -53,6 +53,24 @@ before consumption; arbitrary JSON notes must not be treated as coverage work.
 Storage is clone-local, independent of resolver caches and span roots:
 [Storage model](./storage-model.md#commit-associated-notes).
 
+## Staged preflight
+
+```bash
+git span preflight                     # readable staged report
+git span preflight --format json       # one versioned JSON document
+```
+
+After staging, use this to inspect coupled edits, especially partial staging or
+span removals. It reads staged span definitions and index blobs, reporting affected
+`obligations` and `removed_spans`, each with its why and anchor evidence. Check
+`present` and `content_matches`; a match establishes stored content identity only.
+`staged_tree` identifies the index snapshot; re-run after restaging.
+
+Exit 0 means the report was produced, including when anchors are missing or
+mismatched; inspect its contents. Unmerged indexes fail explicitly. The command
+makes no repairs, runs no tests, and records no review status. It does not predict
+path-limited `git commit -o <paths>` content, which can differ from the index.
+
 ## Anchor grammar
 
 - **Line-range anchor**: `<path>#L<start>-L<end>` — 1-based, inclusive.

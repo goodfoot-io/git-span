@@ -17,7 +17,10 @@ function fixture() {
   const synthetic = vi.fn<OpencodeReviewClient['session']['synthetic']>(async () => ({ data: undefined }));
   const warn = vi.fn();
   const deps = {
-    check: vi.fn(async () => true),
+    check: vi.fn<import('../../src/common/review-notes-stop.js').NoteReviewCheck>(async () => ({
+      kind: 'matching',
+      repositories: []
+    })),
     directory: temp.parent,
     layout: temp.layout,
     client: { session: { get, synthetic } },
@@ -54,13 +57,26 @@ describe('OpenCode idle note review', () => {
 
   it('silently skips empty notes without resuming the session', async () => {
     const deps = fixture();
-    deps.check.mockResolvedValue(false);
+    deps.check.mockResolvedValue({ kind: 'empty' });
     const handler = createNoteReviewHandler(deps);
     handler.message('s', [{ type: 'text' }]);
     await Promise.all([handler.idle('s'), handler.idle('s')]);
     expect(deps.check).toHaveBeenCalledOnce();
     expect(deps.synthetic).not.toHaveBeenCalled();
     expect(deps.warn).not.toHaveBeenCalled();
+  });
+
+  it('surfaces lookup failure once and never turns it into a review request', async () => {
+    const deps = fixture();
+    deps.check.mockResolvedValue({ kind: 'failure', reason: 'native lookup timeout' });
+    const handler = createNoteReviewHandler(deps);
+    handler.message('s', [{ type: 'text' }]);
+    await handler.idle('s');
+    await handler.idle('s');
+    expect(deps.synthetic).toHaveBeenCalledOnce();
+    expect(deps.synthetic.mock.calls[0]?.[0].text).toContain('could not read commit notes');
+    expect(deps.synthetic.mock.calls[0]?.[0].text).toContain('native lookup timeout');
+    expect(deps.synthetic.mock.calls[0]?.[0].text).not.toContain('Dispatch a forked');
   });
 
   it('does not recursively review child sessions', async () => {

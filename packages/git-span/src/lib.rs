@@ -24,6 +24,7 @@ pub mod notes;
 mod notes_tests;
 mod oid_hex;
 pub mod perf;
+pub mod preflight;
 pub mod resolver;
 pub mod schemas;
 mod sigpipe;

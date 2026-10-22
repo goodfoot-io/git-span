@@ -11,6 +11,7 @@ use serde_json::Value;
 use std::path::Path;
 
 use super::json_fixtures;
+use crate::support::TestRepo;
 
 /// The committed schema root; URL versions are per-family and distinct from
 /// the version of the wire document (for example, drift document v3 at URL v1).
@@ -94,5 +95,43 @@ fn context_v2_validator_rejects_a_span_without_evidence_revision() -> Result<()>
         validator.validate(&doc).is_err(),
         "context v2 requires an evidence revision"
     );
+    Ok(())
+}
+
+#[test]
+fn staged_preflight_validates_against_its_published_schema() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let validator = jsonschema::validator_for(&committed_schema("preflight", 1))?;
+    let preflight: Value =
+        serde_json::from_str(&repo.span_stdout(["preflight", "--format", "json"])?)?;
+    validator
+        .validate(&preflight)
+        .expect("real preflight output matches schema");
+    repo.span_stdout(["add", "schema-contract", "file1.txt#L1-L3"])?;
+    repo.commit_all("declare staged obligation")?;
+    repo.run_git(["rm", "--cached", "file1.txt"])?;
+    let missing: Value =
+        serde_json::from_str(&repo.span_stdout(["preflight", "--format", "json"])?)?;
+    assert_eq!(
+        missing["obligations"][0]["anchors"][0]["blob_oid"],
+        Value::Null
+    );
+    assert_eq!(missing["obligations"][0]["anchors"][0]["present"], false);
+    validator
+        .validate(&missing)
+        .expect("missing staged blobs remain schema-valid");
+    repo.run_git(["rm", "--cached", ".span/schema-contract"])?;
+    let removed: Value =
+        serde_json::from_str(&repo.span_stdout(["preflight", "--format", "json"])?)?;
+    assert_eq!(removed["removed_spans"][0]["name"], "schema-contract");
+    validator
+        .validate(&removed)
+        .expect("removed obligations remain schema-valid");
+    let mut invalid = preflight;
+    invalid
+        .as_object_mut()
+        .expect("preflight envelope")
+        .remove("evidence_revision");
+    assert!(validator.validate(&invalid).is_err());
     Ok(())
 }

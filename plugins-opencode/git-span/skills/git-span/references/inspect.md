@@ -11,6 +11,9 @@ Match the question to the command, don't reflexively mutate:
   git-log-style text by default, `--format json` for JSON.
 - Drift check without fixing anything → `git span drift [<name-or-path>]` — read-only
   unless `--fix` is passed; omit `--fix` here.
+- Staged coupled changes / partial staging → `git span preflight [--format human|json]`.
+  Inspect affected relationships, missing or mismatched staged anchors, and removed
+  spans. Re-run after restaging; this reads the index and makes no repairs.
 - Commit evidence → `git span notes list [<revision-or-range>] --format json` or
   `git span notes show <id> --format json`. No revision includes unreachable commits;
   one revision includes its history, and `--exact` selects only that commit.

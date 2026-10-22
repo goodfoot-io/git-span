@@ -18,9 +18,11 @@ import { DEFAULT_SESSION_LAYOUT, derivePath, type SessionLayout } from '../commo
 import { createDefaultPlannedTouchStore, postTrackedValue, runLayeredBashTouches } from '../common/bash-attribution.js';
 import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
 import { isRecord } from '../common/guards.js';
+import { claudeReadExposure } from '../common/read-exposure.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import {
   createDefaultTouchExecutors,
+  DEFAULT_READ_LIMIT,
   runTouchHook,
   type TouchExecutors,
   type TouchInput
@@ -41,23 +43,33 @@ function toTouchInput(
   sessionId: string,
   cwd: string,
   filePath: string,
-  invocationId: string | undefined
+  invocationId: string | undefined,
+  response: unknown,
+  recipientId: string
 ): TouchInput | null {
   if (toolName === 'Read') {
     return {
       kind: 'read',
+      recipientResetSupported: true,
+      recipientId,
+      observedRange: claudeReadExposure(response),
+      broadDiscovery: toolInput.offset === undefined && toolInput.limit === undefined,
       sessionId,
       cwd,
       filePath,
       ...(invocationId === undefined ? {} : { invocationId }),
       offset: positiveIntField(toolInput, 'offset'),
-      limit: positiveIntField(toolInput, 'limit')
+      limit:
+        positiveIntField(toolInput, 'limit') ??
+        (positiveIntField(toolInput, 'offset') === undefined ? undefined : DEFAULT_READ_LIMIT)
     };
   }
   if (toolName === 'Edit' || toolName === 'Write') {
     const raw = toolName === 'Edit' ? toolInput.new_string : toolInput.content;
     return {
       kind: 'write',
+      recipientResetSupported: true,
+      recipientId,
       sessionId,
       cwd,
       filePath,
@@ -130,7 +142,9 @@ export function createHandler(
       sessionId,
       cwd,
       absolutePath,
-      input.tool_use_id === undefined ? undefined : `${sessionId}:${input.tool_use_id}`
+      input.tool_use_id === undefined ? undefined : `${sessionId}:${input.tool_use_id}`,
+      input.tool_response,
+      input.transcript_path
     );
     if (touch === null || postTrackedValue(absolutePath, touch, cwd) === null) return null;
     // ctx.logger doubles as the core logger: render defects warn inside the

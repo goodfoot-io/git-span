@@ -520,14 +520,14 @@ var EXIT_CODES = {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve3(chunks.join(""));
+      resolve4(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject(error);
@@ -589,12 +589,12 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     stream.write(content, (error) => {
       if (error)
         reject(error);
       else
-        resolve3();
+        resolve4();
     });
   });
 }
@@ -777,11 +777,57 @@ async function execute(hookFn) {
   await drive(transport, hookFn);
 }
 
+// packages/agent-hooks/src/common/agent-hooks-common.ts
+import { execFileSync } from "node:child_process";
+import * as fs2 from "node:fs";
+import * as os from "node:os";
+import * as nodePath from "node:path";
+var PORCELAIN_STATUSES = [
+  "FRESH",
+  "RESOLVED_PENDING_COMMIT",
+  "MOVED",
+  "CHANGED",
+  "DELETED",
+  "CONFLICT",
+  "SUBMODULE",
+  "LFS_NOT_FETCHED",
+  "LFS_NOT_INSTALLED",
+  "PROMISOR_MISSING",
+  "SPARSE_EXCLUDED",
+  "FILTER_FAILED",
+  "IO_ERROR"
+];
+var PORCELAIN_STATUS_SET = new Set(PORCELAIN_STATUSES);
+function sanitizeSessionId(sessionId) {
+  return sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => {
+    return `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`;
+  });
+}
+function createSessionLayout(base) {
+  const dir = (sessionId) => nodePath.join(base, sanitizeSessionId(sessionId));
+  const plannedTouchesDir = (sessionId) => nodePath.join(dir(sessionId), "planned-touches");
+  const plannedTouchFile = (sessionId, toolUseId, suffix) => nodePath.join(plannedTouchesDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
+  return Object.freeze({
+    base,
+    trashDir: nodePath.join(nodePath.dirname(base), "session-trash"),
+    dir,
+    memoFile: (sessionId) => nodePath.join(dir(sessionId), "touch-memo.json"),
+    plannedTouchesDir,
+    plannedTouchRecordFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".json"),
+    plannedTouchConsumedFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".consumed")
+  });
+}
+var DEFAULT_SESSION_LAYOUT = createSessionLayout(
+  nodePath.join(os.homedir(), ".cache", "git-span", "session")
+);
+var THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
+var lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
+
 // packages/agent-hooks/src/common/context-warmup.ts
 import { spawn as spawn2 } from "node:child_process";
 
 // packages/agent-hooks/src/common/git-span-command.ts
-import { dirname as dirname2, resolve as resolve2 } from "node:path";
+import { dirname as dirname3, resolve as resolve3 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-native-io.ts
 import { spawn, spawnSync } from "node:child_process";
@@ -790,21 +836,21 @@ import {
   accessSync,
   closeSync as closeSync2,
   constants,
-  existsSync as existsSync2,
+  existsSync as existsSync3,
   fstatSync,
   openSync as openSync2,
   readSync,
-  realpathSync,
-  statSync
+  realpathSync as realpathSync2,
+  statSync as statSync2
 } from "node:fs";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join as join2, resolve as resolve2 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 function executableOnPath(name, cwd = process.cwd()) {
-  const candidates = isAbsolute(name) ? [name] : (process.env.PATH ?? "").split(delimiter).map((directory) => resolve(cwd, directory, name));
+  const candidates = isAbsolute(name) ? [name] : (process.env.PATH ?? "").split(delimiter).map((directory) => resolve2(cwd, directory, name));
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants.X_OK);
-      if (statSync(candidate).isFile()) return realpathSync(candidate);
+      if (statSync2(candidate).isFile()) return realpathSync2(candidate);
     } catch {
     }
   }
@@ -817,12 +863,12 @@ function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git",
     const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
     for (const directory of (process.env.PATH ?? "").split(";")) {
       for (const extension of extensions) {
-        const candidate = resolve2(cwd, directory, `git-span${extension.toLowerCase()}`);
+        const candidate = resolve3(cwd, directory, `git-span${extension.toLowerCase()}`);
         try {
           const executable = executableOnPath(candidate, cwd);
           if (extension.toLowerCase() === ".exe" || extension.toLowerCase() === ".com")
             return { executable, argv: [...argv] };
-          return { executable: gitExecutable, argv: [`--exec-path=${dirname2(candidate)}`, "span", ...argv] };
+          return { executable: gitExecutable, argv: [`--exec-path=${dirname3(candidate)}`, "span", ...argv] };
         } catch {
         }
       }
@@ -856,14 +902,51 @@ function startContextWarmup(cwd, onError, spawnProcess = spawn2) {
   child.unref();
 }
 
+// packages/agent-hooks/src/common/span-surface.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import * as fs4 from "node:fs";
+import * as nodePath3 from "node:path";
+
+// packages/agent-hooks/src/common/span-ignore.ts
+import * as fs3 from "node:fs";
+import * as nodePath2 from "node:path";
+var HOOK_IGNORE_REL = nodePath2.join(".span", ".hookignore");
+
+// packages/agent-hooks/src/common/span-surface.ts
+function resetExposure(layout, sessionId, logger2) {
+  const base = layout.memoFile(sessionId);
+  const pointer = `${base}.epoch`;
+  const epoch = randomUUID();
+  const temporary = `${pointer}.${epoch}.tmp`;
+  try {
+    fs4.mkdirSync(layout.dir(sessionId), { recursive: true, mode: 448 });
+    fs4.writeFileSync(temporary, epoch, { encoding: "utf8", mode: 384 });
+    fs4.renameSync(temporary, pointer);
+    const stem = nodePath3.basename(base);
+    for (const name of fs4.readdirSync(layout.dir(sessionId))) {
+      if (name === stem || name.startsWith(`${stem}.`) && /^[0-9a-f-]{36}$/.test(name.slice(stem.length + 1)) && name !== `${stem}.${epoch}`)
+        fs4.rmSync(nodePath3.join(layout.dir(sessionId), name), { force: true });
+    }
+  } catch (err) {
+    logger2.warn("git-span recipient exposure reset failed", { err });
+  } finally {
+    try {
+      fs4.rmSync(temporary, { force: true });
+    } catch {
+    }
+  }
+}
+
 // packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
 // packages/agent-hooks/src/claude/session-start.ts
-function createHandler(spawnProcess) {
+function createHandler(spawnProcess, layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
+    resetExposure(layout, input.session_id, ctx.logger);
     try {
       startContextWarmup(
         input.cwd,
