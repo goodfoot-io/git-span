@@ -20,9 +20,10 @@ const MAX_AST_NODES = 50_000;
 
 function execution(input: Record<string, unknown>): ShellExecution | null {
   const command = typeof input.cmd === 'string' ? input.cmd : extractShellCommand(input);
-  if (!command) return null;
+  if (!command || command.includes('\0')) return null;
+  if (input.environment_id !== undefined && input.environment_id !== null) return null;
   const workdir = input.workdir ?? input.cwd;
-  if (workdir !== undefined && workdir !== null && typeof workdir !== 'string') return null;
+  if (workdir !== undefined && workdir !== null && (typeof workdir !== 'string' || workdir.includes('\0'))) return null;
   return {
     command,
     workdir: typeof workdir === 'string' ? workdir : null,
@@ -70,7 +71,17 @@ function literalArguments(node: unknown): Record<string, unknown> | null {
     const name = isRecord(key) && key.type === 'Identifier' ? key.name : literal(key);
     if (typeof name !== 'string') return null;
     if (
-      ['cmd', 'workdir', 'cwd', 'run_in_background', 'background', 'delegate', 'delegated', 'worker'].includes(name)
+      [
+        'cmd',
+        'workdir',
+        'cwd',
+        'environment_id',
+        'run_in_background',
+        'background',
+        'delegate',
+        'delegated',
+        'worker'
+      ].includes(name)
     ) {
       if (Object.hasOwn(result, name)) return null;
       const value = literal(property.value);
@@ -82,7 +93,10 @@ function literalArguments(node: unknown): Record<string, unknown> | null {
 }
 
 /** Collect every literal tools.exec_command call; a dynamic call invalidates the complete envelope. */
-export function narrowCodeModeExecutions(toolInput: unknown): ShellExecutions {
+export function narrowCodeModeExecutions(
+  toolInput: unknown,
+  options: { readonly directToolsOnly?: boolean } = {}
+): ShellExecutions {
   if (!isRecord(toolInput) || typeof toolInput.input !== 'string') return { matched: false, executions: [] };
   const source = toolInput.input;
   if (Buffer.byteLength(source) > MAX_SOURCE_BYTES) return { matched: true, executions: [] };
@@ -96,11 +110,14 @@ export function narrowCodeModeExecutions(toolInput: unknown): ShellExecutions {
   let matched = false;
   let invalid = false;
   const executions: ShellExecution[] = [];
+  const directToolObjects = new Set<unknown>();
   const pending: unknown[] = [ast];
   while (pending.length > 0) {
     const node = pending.pop();
     if (!isRecord(node) || typeof node.type !== 'string') continue;
     if (++nodes > MAX_AST_NODES) return { matched: true, executions: [] };
+    if (options.directToolsOnly && node.type === 'Identifier' && node.name === 'tools' && !directToolObjects.has(node))
+      invalid = true;
     if (node.type === 'CallExpression' && isRecord(node.callee)) {
       const callee = node.callee;
       if (
@@ -109,14 +126,18 @@ export function narrowCodeModeExecutions(toolInput: unknown): ShellExecutions {
         callee.object.type === 'Identifier' &&
         callee.object.name === 'tools' &&
         isRecord(callee.property) &&
-        (callee.computed ? literal(callee.property) : callee.property.name) === 'exec_command'
+        typeof (callee.computed ? literal(callee.property) : callee.property.name) === 'string'
       ) {
-        matched = true;
-        const args =
-          Array.isArray(node.arguments) && node.arguments.length === 1 ? literalArguments(node.arguments[0]) : null;
-        const result = args === null ? null : execution(args);
-        if (result === null || executions.length >= MAX_EXECUTIONS) invalid = true;
-        else executions.push(result);
+        directToolObjects.add(callee.object);
+        if ((callee.computed ? literal(callee.property) : callee.property.name) === 'exec_command') {
+          matched = true;
+          const args =
+            Array.isArray(node.arguments) && node.arguments.length === 1 ? literalArguments(node.arguments[0]) : null;
+          const result =
+            args === null || (options.directToolsOnly && Object.hasOwn(args, 'cwd')) ? null : execution(args);
+          if (result === null || executions.length >= MAX_EXECUTIONS) invalid = true;
+          else executions.push(result);
+        }
       }
     }
     // Reverse children so execution contexts remain in source order.

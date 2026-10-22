@@ -28,6 +28,7 @@
       "packages/git-span/.cargo/**"
     ],
     "packages/agent-hooks/test/codex/exec-commit-hooks.test.ts": [
+      "packages/agent-hooks/src/**",
       "packages/git-span/src/**",
       "packages/git-span-core/src/**",
       "packages/git-span/Cargo.toml",
@@ -39,6 +40,32 @@
       "packages/git-span/.cargo/**"
     ],
     "packages/agent-hooks/test/codex/shell-input.test.ts": [],
-    "packages/agent-hooks/test/common/private-receipt-directory.test.ts": []
+    "packages/agent-hooks/test/common/private-receipt-directory.test.ts": [],
+    "packages/agent-hooks/test/codex/transcript-directory.test.ts": [],
+    "packages/agent-hooks/test/codex/execution-cwd.test.ts": [
+      "packages/agent-hooks/src/**",
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/codex/commit-hooks.test.ts": [
+      "packages/agent-hooks/src/**",
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/codex/post-tool-use.test.ts": []
   }
 }
