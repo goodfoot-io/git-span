@@ -1,4 +1,6 @@
 packages/agent-hooks/src/common/touch-core.ts#L888-L917 rk64:9621b6f95581b5b0
+packages/agent-hooks/src/common/touch-core.ts#L1115-L1145 rk64:b50db8aa0072ef3b
+packages/git-span/src/cli/context.rs#L559-L581 rk64:ff505775865efacb
 packages/website/content/docs/agent-integration.mdx rk64:53f6853e8b98347c
 plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:0bb967aad7d48ee4
 plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:0683f2e3b68401c0
@@ -6,4 +8,4 @@ plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md r
 plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:3d990ba9e4ab2d29
 skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:7ebfa757f3cd3a2d
 
-The shared touch-core messages are authoritative. The understanding-hook-output template and its four generated references preserve their examples and user-facing meaning, while the website guide summarizes the same touch behavior and coverage boundary; the template is the edit surface for all four generated copies.
+The shared touch-core messages and delivery gate, together with the CLI evidence revision producer, are authoritative; the hook-output template and website preserve the promise "Identical repeats are suppressed; new changes are delivered again, even when the status is unchanged." The template supplies all four generated hook-output references, whose examples and user-facing meaning must remain aligned with the shared implementation.
