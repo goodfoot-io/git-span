@@ -9460,6 +9460,8 @@ var COMMIT_RECEIPT_LIMITS = {
   invocations: 4096,
   abandonedRetentionMs: 864e5,
   drainMs: 3e3,
+  /** Share of drainMs a batch eviction may spend; the remainder is reserved so enrolling the invocation never starves. */
+  evictionMs: 2e3,
   cliMs: 2e3
 };
 
@@ -10006,7 +10008,13 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
   try {
     await privateDirectory(root, deadline);
     await privateDirectory(join9(root, "invocations"), deadline);
-    await evictInvocations(root, key2, deadline, options.lockExecutable, logger2);
+    await evictInvocations(
+      root,
+      key2,
+      Math.min(deadline, performance.now() + COMMIT_RECEIPT_LIMITS.evictionMs),
+      options.lockExecutable,
+      logger2
+    );
     const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline, options.lockExecutable);
     if (!claim) throw new Error("invocation enrollment ownership unavailable");
     try {

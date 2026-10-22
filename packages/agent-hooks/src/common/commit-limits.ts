@@ -16,5 +16,7 @@ export const COMMIT_RECEIPT_LIMITS = {
   invocations: 4096,
   abandonedRetentionMs: 86_400_000,
   drainMs: 3000,
+  /** Share of drainMs a batch eviction may spend; the remainder is reserved so enrolling the invocation never starves. */
+  evictionMs: 2000,
   cliMs: 2000
 } as const;

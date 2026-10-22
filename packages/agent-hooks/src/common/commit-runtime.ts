@@ -98,7 +98,13 @@ export async function enrollCommitInvocation(
   try {
     await privateDirectory(root, deadline);
     await privateDirectory(join(root, 'invocations'), deadline);
-    await evictInvocations(root, key, deadline, options.lockExecutable, logger);
+    await evictInvocations(
+      root,
+      key,
+      Math.min(deadline, performance.now() + COMMIT_RECEIPT_LIMITS.evictionMs),
+      options.lockExecutable,
+      logger
+    );
     const claim = await acquireReceiptClaim(root, `invocation-${key}`, deadline, options.lockExecutable);
     if (!claim) throw new Error('invocation enrollment ownership unavailable');
     try {

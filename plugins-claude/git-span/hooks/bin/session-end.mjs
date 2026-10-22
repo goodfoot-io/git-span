@@ -947,6 +947,8 @@ var COMMIT_RECEIPT_LIMITS = {
   invocations: 4096,
   abandonedRetentionMs: 864e5,
   drainMs: 3e3,
+  /** Share of drainMs a batch eviction may spend; the remainder is reserved so enrolling the invocation never starves. */
+  evictionMs: 2e3,
   cliMs: 2e3
 };
 
