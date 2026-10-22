@@ -37,7 +37,11 @@ describe('OpenCode idle note review', () => {
     await Promise.all([event(idle), event(idle)]);
     expect(deps.synthetic).toHaveBeenCalledOnce();
     const request = deps.synthetic.mock.calls[0]?.[0];
-    expect(request).toMatchObject({ sessionID: 's', text: expect.stringContaining('Load review-notes'), resume: true });
+    expect(request).toMatchObject({
+      sessionID: 's',
+      text: expect.stringContaining('Load the review-notes skill'),
+      resume: true
+    });
     expect(deps.synthetic.mock.calls[0]?.[1]).toMatchObject({ signal: expect.any(AbortSignal) });
     await message({ sessionID: 's' }, { parts: [{ type: 'text', synthetic: true, text: 'review' }] });
     await event(idle);

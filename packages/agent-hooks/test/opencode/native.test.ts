@@ -115,7 +115,7 @@ describe('OpenCode V2 native adapter', () => {
       f.emit('session.status', { sessionID: 'native-review', status: { type: 'idle' } });
       await vi.waitFor(() => expect(f.synthetic).toHaveBeenCalledOnce());
       expect(f.synthetic).toHaveBeenCalledWith(
-        { sessionID: 'native-review', text: expect.stringContaining('Load review-notes'), resume: true },
+        { sessionID: 'native-review', text: expect.stringContaining('Load the review-notes skill'), resume: true },
         { signal: expect.any(AbortSignal) }
       );
     } finally {

@@ -102,7 +102,7 @@ describe('antigravity stop cleanup', () => {
     };
     const result = await createStopHandler(layout, async () => true)(input as never, { logger });
     expect(result?.stdout.decision).toBe('continue');
-    expect(result?.stdout.reason).toContain('Load review-notes');
+    expect(result?.stdout.reason).toContain('Load the review-notes skill');
     expect(result?.stdout.reason).toContain('forked subagent');
     expect(existsSync(layout.memoFile(conv))).toBe(true);
 
@@ -178,7 +178,7 @@ describe('antigravity stop cleanup', () => {
     expect(first.stderr).toBe('');
     expect(JSON.parse(first.stdout)).toMatchObject({
       decision: 'continue',
-      reason: expect.stringContaining('Load review-notes')
+      reason: expect.stringContaining('Load the review-notes skill')
     });
     for (let i = 0; i < 2; i++) {
       const continuation = run();

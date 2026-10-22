@@ -113,7 +113,9 @@ describe('emitted Stop protocol', () => {
       expect(result.output?.decision).toBe('block');
       expect(result.output?.reason).toContain('forked subagent');
       expect(result.output?.reason).toContain('git-span:review-notes');
-      expect(result.output?.reason).toContain('Git Span notes exist for this session');
+      expect(result.output?.reason).toContain(
+        'then follow the instructions to document implicit dependencies using `git-span`.'
+      );
       expect(result.output?.reason).toContain(JSON.stringify({ host, sessionId: input.session_id, cwd: input.cwd }));
 
       const continuation = invokeRealHook(bundle, { ...input, stop_hook_active: true }, env);
