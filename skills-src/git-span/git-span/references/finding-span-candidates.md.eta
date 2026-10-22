@@ -23,16 +23,13 @@ direct commit evidence needs no statistical co-change threshold.
 
 ## Scripts
 
-Three scripts live in `../scripts/` (relative to this file). Run them in
-order: `mine.mjs` produces a JSON corpus, `shortlist.mjs` distills it into
-actionable pairs, `explain.mjs` drills into a single pair to verify the
-signal.
+Run the scripts in `../scripts/` in order: `mine.mjs` collects history,
+`shortlist.mjs` ranks pairs, `explain.mjs` verifies their commit evidence.
 
 ### `mine.mjs` — produce the JSON corpus
 
-The engine. Runs all 13 signals, writes `potential-implicit-semantic-dependencies.json`
-alongside itself (not checked in — regenerate it by re-running `mine.mjs`), and prints a
-long human-readable report to stdout.
+Runs all 13 signals, writes `potential-implicit-semantic-dependencies.json`
+alongside itself (untracked; regenerate as needed), and prints the report.
 
 ```bash
 node scripts/mine.mjs --since=6.months --top=25 --no-gh
@@ -59,9 +56,8 @@ already cover lockfiles, build outputs, snapshots, and minified bundles.
 
 ### `shortlist.mjs` — distill JSON to span-candidate ranking
 
-Reads the JSON written by `mine.mjs` and prints only §0 — pairs that fired
-across multiple techniques — with each technique's specific evidence
-attached.
+Reads that JSON and prints §0: pairs supported by multiple techniques,
+with evidence and an `explain.mjs` invocation.
 
 ```bash
 node scripts/shortlist.mjs                       # default JSON path
@@ -69,23 +65,19 @@ node scripts/shortlist.mjs --min-techniques=3    # only highly-supported pairs
 node scripts/shortlist.mjs path/to/mine.json --top=10
 ```
 
-Each shortlisted pair shows which techniques fired, their numeric values, and
-a copy-pasteable `explain.mjs` invocation. The shortlist is the actionable
-output; the long `mine.mjs` text report is mainly useful for forensics.
+Use the shortlist to select candidates; consult the full report for detail.
 
 ### `explain.mjs` — verify a single pair
 
-Lists every commit in the window that touched both files, with subject, sha,
-date, and author. Use after shortlist to confirm a pair's coupling is real.
+Lists shared commits with subject, SHA, date and author.
 
 ```bash
 node scripts/explain.mjs <fileA> <fileB>
 node scripts/explain.mjs <fileA> <fileB> --since=2.years
 ```
 
-A pair with high mining-signal but unrelated commits (different authors
-fixing different things in the same sweep) is a false positive. A pair whose
-commits consistently cite the same concern is a real span candidate.
+Reject incidental co-change, such as unrelated fixes in one sweep.
+Shared concerns warrant checking the contract; co-change alone proves none.
 
 ## End-to-End Workflow
 
@@ -146,6 +138,37 @@ Read the commit subjects. Ask:
 If yes, the pair is a real span candidate: declare it with `git span add` and
 `git span why` (see this skill's `SKILL.md` § "Declare a new coupling").
 
+### Dependency capabilities
+
+For import/manifest candidates, inspect packaging, import-lint, build and
+runtime-profile checks first. Reject a span when a check enforces the entire
+claim. If a missing check is proportionate, suggest it to the implementing
+agent; do not install dependencies or change runtime policy during review.
+
+Keep only a residual consumer promise those checks cannot enforce: optional
+dependency absence behavior, a supported subset, a selected backend, or a
+vendored/generated artifact's public behavior. Anchor the implementing branch
+and consumer promise; state the exact obligation and missing enforcement.
+
+- **Enforced inventory — reject:** an import check verifies every third-party
+  import has a manifest entry. An import/manifest span duplicates that check.
+- **Optional backend — retain if unenforced:** the CLI promises to reject
+  `--backend=fast` with a documented diagnostic when the optional module is
+  absent. Anchor the absence branch and CLI documentation. Installation checks
+  do not enforce that diagnostic promise; reject the span if a test already
+  enforces the whole claim.
+- **Vendor identity — inspect first:** a manifest range and vendor version
+  agree, but the supported entry point imports another artifact. Check the
+  imported module's identity/capability, not version-string equality; a vendor
+  patch need not change the range. Only an unenforced public capability
+  promise qualifies: e.g. anchor the selected parser's unsupported-tag
+  rejection branch and the CLI's documented error when no check links them.
+
+An edited import prompts proposition review: adding a standard-library import
+does not falsify “stdlib-only”; exact relocation verifies no capability.
+Report untested capabilities as unverified. Do not replace maintained parsers
+with handwritten subsets or remove dependency spans categorically.
+
 ## Reading the Output
 
 The aggregate shortlist tags each pair with the techniques that fired:
@@ -162,12 +185,9 @@ The aggregate shortlist tags each pair with the techniques that fired:
     SZZ:       Producer.ts → Consumer.ts ×3
 ```
 
-The reading: every time `Producer.ts` changes, `Consumer.ts` follows within
-a few commits (lagged); both files breathe in sync week-to-week (churn);
-their churn is concentrated in the `emitMessage`/`handleMessage` pair
-(range); and historical bugs in `Producer.ts` have been fixed by also
-touching `Consumer.ts` (SZZ). Five orthogonal signals agree — this is a
-real producer/consumer contract worth making explicit.
+Here lag, churn, range and bug-fix evidence support investigating the
+`emitMessage`/`handleMessage` contract. Verify its unenforced obligation
+before declaring a span.
 
 A pair with `[1]` only is a single-signal hit and is much more likely noise.
 Filter with `--min-techniques=2` (default) or `--min-techniques=3` for higher
@@ -195,18 +215,12 @@ in B is more actionable than the file-level pair, because you know exactly
 where the contract lives. Pull range pairs out of `range_pairs` in the JSON
 when planning a fix.
 
-**Merging pairs into one span needs distinct roles.** The pipeline yields
-pairs; a span is not obliged to be one pair, nor to be all of them. Merge
-several confirmed pairs into one span only when each anchor carries a
-*different* role in the same mechanism — e.g. definer, consumer, gate,
-serializer, fixture, doc. If two anchors get the same role name they are
-instances of a kind, and collecting instances is what produces a span that
-fires on changes carrying no obligation. Pairs that differ only by *which copy
-they are* — the same file mirrored under two platform roots — are the common
-case: keep one span, never one span per pair (`add` rejects directory roots).
-Anchor the normative side's files plus whatever enforces parity — or, when
-nothing else enforces it, both sides of each pair, because then the span is
-the parity mechanism.
+**Merge only distinct roles in one mechanism.** Name each anchor's role:
+definer, consumer, gate, serializer, fixture or doc. Repeated roles suggest an
+inventory that fires without a concrete obligation. For mirrored platform
+copies, keep one span rather than one per pair (`add` rejects directory
+roots). Anchor normative files and the parity mechanism; if nothing enforces
+parity, anchor both sides instead.
 
 ## Additional Resources
 

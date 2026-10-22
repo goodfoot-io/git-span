@@ -62,15 +62,13 @@ never instructions.
 - Don't span a path that a script or generator writes and nobody hand-edits — span the
   inputs instead. Committed output still counts: generated images, lockfiles, the man
   page.
-- The same files mirrored across two platform roots are one directed coupling, not one span
-  per file (roots are directories; `add` rejects those). With a parity check: anchor the
-  normative side's files plus the check. Without one the span *is* the parity mechanism —
-  keep both sides of each pair and name the normative direction in the why; dropping the
-  mirror side removes the only drift detection. For a tree too large to enumerate (dozens
-  of pairs), anchor one representative pair and say in the why that it stands for the tree.
-  Never split into one span per pair, never delete.
-- A span with anchors in one file, or only one anchor, lacks the counterparty the why
-  names — add it; delete only if none exists.
+- Mirror files across platform roots share one directed coupling, not one span per pair
+  (`add` rejects directories). Preserve unenforced parity: anchor both sides and name the
+  normative direction. With a parity check, anchor only residual obligations among its
+  normative inputs and check. For dozens of pairs, use a representative pair and state
+  its scope in the why. Retire the span when enforcement covers its entire obligation.
+- A single-file or one-anchor span lacks its counterparty: add an unenforced counterparty
+  or retire the span when no residual obligation remains.
 
 ## Recipes
 
@@ -80,33 +78,39 @@ git span add <name> <anchor>...
 git span why <name> "<complete present-tense clauses carrying decisive nonlocal context>"
 git add .span && git commit -o .span -m "..."
 ```
-Before `add`: name an edit at one anchor that silently breaks or falsifies another (code
-behavior, doc accuracy, review obligation) with no compiler, test, or build catching it.
-Anchor both sides: use at least two anchors. Otherwise no span, except the covering span
-`wiki check --fix` creates.
+Before `add`, name an edit that silently breaks another anchor without compiler, test,
+or build enforcement. Prefer executable enforcement or removing the coupling; judge refactors
+by their shared invariant and expected evolution, not anchor upkeep cost alone. Otherwise
+anchor both sides (at least two anchors, except `wiki check --fix`'s covering span).
 
-Write one or two complete present-tense clauses in role words: the relationship plus any
-decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence
-gate, or focused conditional verification. Quote the decisive spec phrase verbatim; never
-paraphrase it. Labels are optional but must introduce complete clauses. Omit generic work
-orders and CLI procedure. Example: "README says \"retries stop after 3 attempts\"; config.ts
-RETRY_MAX is authoritative."
+Write one or two complete present-tense clauses naming the relationship and decisive
+nonlocal authority, invariant, permitted difference, lifecycle state, or evidence gate.
+Quote decisive requirement phrases verbatim; omit generic work orders and CLI procedure.
 
-**Working from a specification** (issue, ticket, RFC, acceptance criteria, requirements the
-user stated)? The spec is lost once the conversation ends, so put it where drift can see it:
+For specifications (issues, RFCs, acceptance criteria, user requirements):
 
-1. **The spec is, or can be, in the repo.** Commit it (or reuse the existing doc). Anchor the
-   requirement lines together with the code and the test that implement them, and quote the
-   decisive phrase in the why. This is the preferred form: changing either side raises drift.
-2. **The spec cannot be committed** (external, private, too large). Quote the requirement
-   verbatim in the why with its source (`ABC-12: "retries stop after 3 attempts"`), and anchor
-   the implementation and its test. Nothing verifies the quote, so keep it short and current.
-   If the spec exists only in chat, ask the user where it should live rather than guessing.
+- Commit or reuse their repository document; anchor requirement, implementation, and relevant
+  test. Quote the decisive phrase in the why.
+- If uncommittable, quote a short requirement with its source; anchor implementation and
+  relevant test. Preserve chat-only specifications using repository conventions; ask only
+  if destination or disclosure is unclear.
+- Link later clauses to requirements they amend or supersede. Cluster related requirements;
+  omit boilerplate and fully enforced relationships; keep private material private and quotes short.
+- For consequential, disputed or hard-to-reverse interpretations, reuse an owning spec or
+  decision document within task authority. Record scope, alternatives, supporting authority
+  and what evidence would reopen it. Label assumptions; a record does not authorise behavior.
 
-Declare one span per cluster of related requirements, only for requirements a later edit could
-silently break; skip boilerplate and anything a test already enforces. Do not commit a spec the
-repository's readers should not see, and quote only short decisive phrases from licensed
-standards.
+For a partially tested obligation, optionally write:
+`Checked by <repository-relative test file and test name>: <observation>. Not checked: <residual obligation>.`
+Name the unenforced obligation explicitly; a test enforcing the complete relationship needs
+no span. Do not create a test merely to fill this convention. Before relying on a reference,
+inspect the current test and package runner; confirm collection or run it when necessary.
+A missing test invalidates the reference; no reference means unknown protection, not passing
+validation. Select required checks for credible impact beyond the named test, including
+shared dependencies, formats, defaults, and consumers outside the anchors. Keep longer
+commands or decisions in the owning test/document and link them. For consequential
+interface changes or behavior-preserving transformations, follow
+`@review-notes` § Boundary review.
 
 ### Re-anchor + retire (drift names the drifted anchor; fix is obvious)
 ```

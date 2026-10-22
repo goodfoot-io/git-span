@@ -112,7 +112,7 @@ on with your other spans.
 | Logical region genuinely moved to a new range | `git span replace <name> '<path>#L<old>' '<path>#L<new>'` |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor; include the content diff in your report |
 | Content no longer describes relationship | `git span remove <name> '<path>#L<N>'`; if fewer than two anchors remain, add the counterparty or `delete` |
-| Relationship gone entirely | `git span delete <name>` |
+| Relationship gone or entirely enforced; no residual obligation remains | `git span delete <name>` |
 | Span has no why | Invoke the core skill's why rules, then use `git span why` |
 | Lifecycle gate is satisfied | Make the authorized behavior change, revise or retire the substantive why, and reconcile or retire every superseded anchor |
 | Authority remains unclear or no intentional change explains drift | Stop and report — the user decides |
@@ -157,19 +157,19 @@ git span drift     # must exit 0 with "0 drift"
 git span doctor    # no findings other than the optional merge-driver registration (exit 1 until registered)
 ```
 
-Run required validation for every behavior change and surface every anchor diff.
-If validation fails, handle the failing component before committing.
+Inspect referenced tests and their package runner before relying on them; confirm collection
+or run focused tests when needed. Missing tests invalidate references; absent references mean
+unknown protection. Validate every behavior change with required checks for credible impact
+beyond named tests and anchors.
+Surface every anchor diff; resolve failing components before committing.
 
-When partial staging, coupled source repairs, or span removals make the staged
-selection worth inspecting, run `git span preflight` after staging and before
-committing. Check affected spans' whys, anchor presence, `content_matches`, and
-`removed_spans`; resolve unintended omissions or mismatches and re-run after
-restaging. `--format json` supports automation. Exit 0 means a report was produced,
-not that all anchors match. Matching hashes do not establish semantic correctness.
+After staging partial repairs, coupled edits, or span removals, use `git span preflight`.
+Inspect affected whys, anchor presence, `content_matches`, and `removed_spans`; resolve
+unintended omissions/mismatches and rerun after restaging. `--format json` supports
+automation. Exit 0 means report produced. Matching hashes do not establish semantic correctness.
 
-Preflight reads only the index. The path-limited `git commit -o` below can commit
-different worktree content; inspect those paths' actual intended content separately.
-In embedded coverage mode, leave this check to the staging/commit owner.
+Preflight covers only the index. Inspect intended worktree content separately for
+`git commit -o`; embedded coverage leaves preflight to the staging/commit owner.
 
 ```bash
 git add <changed-anchor-paths> .span   # omit content paths when no anchor changed

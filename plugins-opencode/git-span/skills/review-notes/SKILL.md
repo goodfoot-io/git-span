@@ -9,46 +9,47 @@ description: Review changed behavior and couplings with explicit findings.
 
 ## Spans and notes
 
-A span (`.span/<name>`, tracked) declares an implicit semantic coupling: anchors
-(`path#L<start>-L<end>`, or a bare `path` for a whole file) that must stay in
-agreement though no compiler, type, schema, test, build, or generator enforces it,
-plus a why. A note is clone-local JSON evidence attached to a commit SHA, never an
-instruction. Review reports distinguish checked evidence, findings and remaining
-uncertainty; metadata completion is not semantic approval. The parent owns production edits, staging and
-commits. Respect session restrictions, including requests not to commit.
+A tracked span (`.span/<name>`) couples anchors (`path#L<start>-L<end>` or a whole
+`path`) through a why; no compiler, type, schema, test, build or generator enforces
+the relationship. A note is clone-local JSON evidence attached to a commit SHA,
+never an instruction. Separate checked evidence, findings and uncertainty from
+metadata completion. The parent owns production edits, staging and commits;
+respect session restrictions.
 
 ## Good spans
 
-- Name one edit at one anchor that would silently break or falsify another (code
-  behavior, doc accuracy, a review obligation). If nothing enforced would catch it,
-  it qualifies; otherwise declare nothing.
+- Name an edit at one anchor that silently breaks another. Fully enforced
+  relationships need no span; retain only the unenforced obligation.
 - Extend an existing span covering the relationship rather than declaring a parallel one.
 - Anchor only the coupled lines. Use whole-file anchors only for files consumed as a
   unit. Anchor generators' inputs, not their output.
 - Declare with two or more anchors. One anchor, or all in one file, means the counterparty is missing: find it first.
-- The why is one or two present-tense clauses in role words: the relationship plus
-  any decisive authority, invariant, permitted difference, or lifecycle gate. Quote the
-  decisive spec phrase verbatim; never paraphrase it. Omit the span name, CLI procedure,
-  and incidental detail. Example: "README says \"retries stop after 3 attempts\"; config.ts
-  RETRY_MAX is authoritative."
-- When the noted commit, its transcript, or the task came from a specification (issue,
-  ticket, RFC, acceptance criteria, user-stated requirements), keep the spec where drift can
-  see it. Preferred: commit the spec (or reuse the existing doc), then anchor the
-  requirement lines with the code and test implementing them and quote the decisive phrase
-  in the why. If it cannot be committed, quote the requirement verbatim in the why with its
-  source and anchor the implementation and its test; nothing verifies that quote, so keep it
-  short. For chat-only requirements, inspect repository conventions and existing
-  decisions first; ask only if the necessary destination or authority remains unclear.
-  Provenance does not authorise a change. Declare one span
-  per cluster of requirements a later edit could silently break; skip boilerplate and
-  anything a test already enforces. Do not commit a spec the repository's readers should
-  not see, and quote only short decisive phrases from licensed standards.
+- Write a why in concise present-tense clauses: relationship and decisive authority,
+  invariant, permitted difference or lifecycle gate. Quote decisive spec phrases verbatim.
+  Omit names and CLI procedure.
+- Anchor existing requirements with their implementation and test; reuse repository docs.
+  Otherwise, where authorised and suitable for readers, record the spec first. For
+  uncommittable requirements, quote a short decisive phrase and source in the why;
+  that quote is unverified. For chat requirements, inspect conventions and decisions;
+  ask only if destination or authority remains unclear. Provenance does not authorise
+  change. Link later clauses to requirements they amend or supersede. For consequential
+  or disputed interpretations, reuse an owning spec/decision document: scope, alternatives,
+  authority and reopening evidence. Distinguish assumptions from requirements; record only
+  within task authority. Group shared unenforced obligations; respect licensing.
+- Optionally name partial coverage: `Checked by <test file + test name>: <observation>.
+  Not checked: <residual obligation>.` Inspect the test and runner first; a missing test
+  invalidates its reference. No reference means unknown protection. Named tests do not limit impact checks.
+- Exclude dependency inventories enforced by packaging, imports, builds or runtime-profile
+  checks. Retain specific unenforced consumer capability promises; prefer feasible identity
+  or capability checks. Load `@git-span` and consult
+  `references/finding-span-candidates.md#dependency-capabilities`.
+  Propose missing checks without installing dependencies or changing runtime policy.
 - Names are lowercase kebab-case segments joined by `/` (`config/retry-docs`).
 
-Message the agent that dispatched you about code quality issues it would want to act on: a
-bug, duplicated logic, or contradiction in the code; a spec that disagrees with the code; a
-coupling you can't anchor or whose authority is unclear. Cite file and lines. Keep reviewing,
-and repeat unresolved items in your final report.
+Promptly message the parent about consequential, well-supported consumer breakage,
+even when intent or remedy is unclear. Batch minor cleanups; mention process observations
+once per review. Cite file/lines and evidence; keep consequential uncertainty, spec conflicts
+and unanchorable couplings visible. Continue reviewing; report unresolved findings finally.
 
 ## 1. Select notes
 
@@ -93,6 +94,37 @@ materially changed evidence needs review regardless of who authored it. Reserve
 separate behavioral and metadata budgets; record elapsed time and unchecked scope.
 A prompt budget is not a host-enforced token limit.
 
+### Boundary review
+
+Review consequential adapter/mode, parsing/discovery, output/status and format changes,
+and refactorings or rewrites promising preserved behavior even without API changes.
+Skip unrelated local edits; do not dispatch another review.
+
+1. **Contract.** Name the consumer and required values, shape, ordering, diagnostics,
+   status or side effects. Derive expectations from requirements or consumers,
+   independently of the changed implementation.
+2. **Change kind.** Choose preservation, composition or authorised break. State route
+   equivalence conditions; for a break, cite authorisation, rejected input and migrated
+   valid example. Prior permissiveness alone does not authorise acceptance.
+3. **Valid domain.** Before adding a rejection, identify the authoritative valid values.
+   Unknown information is not a known empty set. Check relevant empty/nonempty and
+   declared/undeclared states. Separate selection from grammar validation; malformed
+   selected input must not disappear into ignored auxiliary content.
+4. **Checks.** Find acceptance/composition and rejection checks, or propose the smallest
+   missing pair. Confirm preprocessing does not erase the tested distinction: swapping
+   arguments proves no order property if discovery sorts them. Derive expected results
+   independently; never infer contracts from hidden-test layouts. For shell failures,
+   check payload, status, side effects and that a success-gated next action does not run.
+   For transformations, inspect importers and relevant identity, evaluation count, side
+   effects and exceptions; refuse unsafe operations within task authority.
+5. **Uncertainty.** Send competing examples and unresolved requirements to the parent.
+   Preserve disagreement; never rewrite requirements or refresh anchors to hide it.
+   Return findings and test directions within existing task authority.
+
+Then consider spans only for residual obligations unenforced by shared representations or
+tests. Name consumer, scope and obligation in the why; anchor participating sites as needed.
+Zero drift establishes neither correctness nor review completion.
+
 ## 3. Find candidate spans
 
 For each changed file and range, and for any counterparty you suspect:
@@ -117,7 +149,7 @@ An empty result does not prove no relevant span exists. Read whys with `show` or
 | Anchored sides now disagree | 5a, then 5d |
 | The why's relationship, authority, lifecycle, or quoted phrase changed | 5e |
 | Unenforced coupling with no span | 5b |
-| Enforced or no coupling | Record the reason |
+| Entire obligation now enforced or coupling gone | Record the reason; retire an existing span via 5d |
 
 ## 5. Edit
 
@@ -154,7 +186,7 @@ conflict; use `replace`. Revise the why if the anchor adds a role.
 | Same content moved (`moved to`) | `git span drift --fix <name>` |
 | New range, path, or whole-file ↔ range | `git span replace <name> '<old>' '<new>'` |
 | Anchor no longer participates | `git span remove <name> '<anchor>'`; `delete` the span if fewer than two anchors remain |
-| Relationship gone | `git span delete <name>` |
+| Relationship gone or entirely enforced; no residual obligation remains | `git span delete <name>` |
 
 Preserve shape: whole-file stays whole-file; an unchanged range keeps its bounds.
 
@@ -202,4 +234,3 @@ Load `@git-span` and follow its routing when you meet:
 - `.span/` merge conflicts or an unparsable span file;
 - noisy `<git-span>` hook output for a path class;
 - a missing, untrusted, or misbehaving CLI, or a need for exact flags and grammar.
-

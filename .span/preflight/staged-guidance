@@ -1,7 +1,7 @@
 packages/git-span/src/cli/preflight.rs#L15-L24 rk64:7b2858b6e38f9176
 packages/git-span/src/preflight.rs#L215-L261 rk64:f698695da379f0af
-skills-src/git-span/git-span/SKILL.md.eta#L204-L214 rk64:69542c21415d24db
+skills-src/git-span/git-span/SKILL.md.eta#L208-L218 rk64:69542c21415d24db
 skills-src/git-span/git-span/references/command-reference.md#L56-L72 rk64:d45ff7ce46ead6a6
-skills-src/git-span/reconcile/references/procedure.md.eta#L163-L172 rk64:cd139375734ffec7
+skills-src/git-span/reconcile/references/procedure.md.eta#L166-L172 rk64:7ca3f909c59813df
 
 The staged reporter selects affected index declarations and removed spans, and the CLI returns success when a report is produced; the core and reconciliation guidance require checking this evidence after staging and warn "Matching hashes do not establish semantic correctness." These authored instructions preserve index-only scope, reruns after restaging and the distinct content of path-limited commits; rendering and tests do not enforce the prose against implementation.

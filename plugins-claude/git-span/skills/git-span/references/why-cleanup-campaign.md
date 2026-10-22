@@ -65,14 +65,15 @@ commit. Otherwise continue.
 | change-history | list | narrates the change story (e.g. "We switched IDs to UUIDs after issue #482") instead of standing state | restate the standing decision in present tense |
 | vague | list | true but generic; a leading blank line inside a triple-quoted why is this class too (cosmetic, not meaningful) | tighten / strip the artifact |
 | bad-name | list | non-kebab-case or reserved name | `git mv .span/<old> .span/<new>`; grep the repo for the old name first (docs/comments/skills may reference it) |
-| single-file | list | every anchor is a range in one file | add the counterparty the why names; delete only if none exists |
+| single-file | confirm | every anchor is a range in one file | add the unenforced counterparty the why names; retire if no residual obligation remains |
 | drift-claim | confirm | asserts a fact about code that may have changed (a mechanism, a count, a "fixed" problem) | verify against current anchor bytes; rewrite or use `git span history <name>` if creation-vs-current is unclear |
 | lifecycle-gate | confirm | behavior is conditional on named evidence | verify the evidence; preserve behavior and why when unmet, invalidated, or unavailable; when satisfied, make the change, then revise or retire the why and every superseded anchor |
 | drift-range | confirm | anchor content shifted but still the same logical site | `drift --fix` (verified exact-content relocation) or review and manual re-anchor |
 | mis-anchored | confirm | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `drift` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `drift` alone | find the real site, then swap the old range for the new one with `git span replace` |
 | duplicate/overlap | confirm | two spans assert the same coupling | consolidate (Operations table) |
+| enforced | confirm | a compiler, type, test, build or generator now enforces the entire obligation | confirm coverage, then retire; retain any genuinely unenforced remainder |
 | generated-output | confirm | a script or generator writes an anchored path and nobody hand-edits it | drop the output anchors, keep the producer↔consumer contract |
-| mirror-bundle | confirm | ≥2 basename pairs of *near-identical copies* across two roots differing by one path segment, no anchored enforcer. Surfaces that restate one rule in their own register are distinct roles, not this class | keep ONE span (`add` rejects directory roots). Parity check exists: anchor the normative side's files plus the check. No check: the span *is* the parity mechanism — keep both sides of each pair, name the normative direction in the why, and recommend building a check; dropping the mirror side removes the only drift detection. Tree too large to enumerate (dozens of pairs): anchor one representative pair and say in the why it stands for the tree. Never split per pair, never delete |
+| mirror-bundle | confirm | near-identical copies across platform roots; distinguish copies from distinct roles in one mechanism | keep one span for residual parity. Without enforcement, retain both sides and normative direction; recommend a proportionate check. With enforcement, keep only residual obligations among inputs/check; retire if none remain. For dozens of pairs, name the representative pair's scope. Never split per pair |
 | open-set registry | confirm | one anchor's content is a *list* of the other anchors — tells: "and others", "when ⟨members⟩ are added", "enumerating", "documents each" | **advisory, never auto-reject.** Distinguish a shared obligation ("every X must …" — keep) from a listing obligation ("every X is enumerated here" — narrow to the co-varying core, or hand the list to the tooling that owns it) |
 
 Then run `git span drift` once (read-only) to pre-mark remaining drift-range
@@ -177,7 +178,8 @@ For each assigned span:
    mechanism should replace the span, and activation from any anchor preserves
    the decision and leaves meaning and anchors accurate. Draft per the
    standard inlined above. Stop if a claim cannot be confirmed — report
-   instead.
+   instead. Judge refactors by the shared invariant and expected evolution; anchor upkeep
+   cost alone is no reason to retain duplication.
 3. **Apply.** All `git span why <name> "..."` writes in one chained command,
    then comment edits, then re-anchoring (comments before re-anchoring so one
    pass covers both). A comment edit that shifts an anchor's line count needs

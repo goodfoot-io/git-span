@@ -4,7 +4,7 @@ summary: The current constraints on git-span's commercial claims — drift is no
 aliases: [Commercial Risks]
 tags: [marketing, use-cases]
 keywords: [risks, boundaries, correctness, authoring cost, prompt injection, cross-repository, efficacy evidence]
-links-reviewed: 3
+links-reviewed: 4
 ---
 
 # Boundaries and risks
@@ -13,7 +13,7 @@ These constraints define what the product and its marketing may claim.
 
 ## Hash drift is not semantic correctness
 
-Git-span detects that recorded content changed. It cannot determine whether the connected implementations still agree. Its documentation explicitly warns that re-anchoring can record a new baseline without resolving an underlying disagreement ([`concepts.mdx`](/packages/website/content/docs/concepts.mdx#L41)).
+Git-span detects that recorded content changed. It cannot determine whether the connected implementations still agree. Its documentation explicitly warns that re-anchoring can record a new baseline without resolving an underlying disagreement ([`concepts.mdx`](/packages/website/content/docs/concepts.mdx#L43)).
 
 Commercial messaging should therefore use "surface," "protect," "review," and "assure the change process," not "prove correctness."
 

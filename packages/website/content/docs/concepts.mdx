@@ -22,6 +22,8 @@ The why is compact, durable, decision-relevant context shared by the exact ancho
 
 Inherit the why only while it remains true. Omit generic work orders and CLI procedure. A satisfied gate authorizes its transition; revise or retire the why, reconcile or retire superseded anchors, and require scoped drift to be zero.
 
+For partial test protection, optionally name `Checked by <test file and test name>: <observation>. Not checked: <residual obligation>.` Inspect the test and runner before relying on it. A missing test invalidates its reference; no reference means unknown protection. A fully enforced relationship needs no span. Keep the why concise and select required checks for impact beyond the named test.
+
 ## The `.span/` directory
 
 Span data lives in a `.span/` directory at the repo root (or wherever the span root resolves to), committed alongside your code with ordinary git commands: `git add .span && git commit`. It is **managed through the CLI** — `git span add`, `remove`, `replace`, `why`, `config`, and `delete` — not hand-edited. The files under `.span/` use an internal storage format, not the TOML-style view `git span show` renders; treat that internal format as private to the tool.
@@ -38,7 +40,7 @@ An anchor has drifted when the code it points at no longer matches what was reco
 
 A span with any drifted anchor has its **entire anchor list printed**, not just the drifted ones — anchors with no drift appear with no status suffix, alongside their drifted siblings.
 
-`git span drift` exits `0` on a clean scan and `1` when it finds drift (or an internal integrity violation, which `--no-exit-code` cannot mask). Reconciling drift starts with a decision, not a command: use the why and demonstrated intent to identify authority, with `git span history` and the drift-attributing commit as provenance, then conform the other side before re-anchoring with `git span add`. Without a confirmed contrary authority, a doc that lags deliberate committed code follows the code. Re-anchoring records the current content as the new baseline without any semantic check, so re-anchoring over a live disagreement hides the drift signal without resolving it. `git span drift --fix` handles relocations verified against recorded bytes or fingerprints, without committing; see the [reconcile guide](/docs/guides/reconcile-drifted-spans) for the walkthrough and its reliability caveats.
+`git span drift` exits `0` on a clean scan and `1` for drift or an internal integrity violation (`--no-exit-code` cannot mask the latter). Before re-anchoring, use the why and `git span history` to identify the applicable requirement and authorised change. Committed code shows intent; it does not supersede a requirement. Update stale prose only with cited supersession; otherwise preserve and report the conflict. Re-anchoring records content without checking meaning: never refresh over live disagreement. `git span drift --fix` handles verified relocations without committing; see the [reconcile guide](/docs/guides/reconcile-drifted-spans).
 
 <Callout type="warn">
 Span command output is ground truth. Don't re-derive a span's state by reading raw `git log`, `git show`, or the files under `.span/` directly — use `git span show`, `list`, `drift`, and `history`, which account for staging, worktree state, and internal formatting that raw git output doesn't reflect.
