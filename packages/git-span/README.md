@@ -1,6 +1,6 @@
 # git-span
 
-`git-span` tracks implicit semantic dependencies: exact line ranges or whole files that must stay aligned even though no schema, type, test, or build step enforces the relationship.
+`git-span` attaches decision-relevant context to exact line ranges or whole files: implicit dependencies, tested contracts, same-file relationships, single-anchor reminders, and generated-artifact evidence.
 
 Each span records its anchors and a compact, decision-relevant reason. Span declarations live under `.span/` as ordinary tracked repository data, and `git span drift` reports when their recorded content moves, changes, or disappears.
 

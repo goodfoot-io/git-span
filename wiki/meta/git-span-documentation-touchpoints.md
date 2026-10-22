@@ -2,7 +2,7 @@
 title: Git Span Documentation Touchpoints
 summary: Sources, mirrors, generated artifacts, and checks for git-span guidance changes.
 tags: [meta, git-span, tooling]
-links-reviewed: 3
+links-reviewed: 4
 ---
 
 # Git span documentation touchpoints
@@ -78,8 +78,8 @@ to be zero. Do not restore superseded rules such as “one subsystem-definition 
 
 Edit the `skills-src/` templates and rebuild — the per-platform paths below are rendered
 output. Files likely loaded together should divide responsibility:
-the core skill owns shared rules; the expert and routed references add only branch-specific
-judgment. Claude and Codex router branches may differ by harness.
+each skill owns its local policy and routed references; the expert adds judgment for its
+workflow. Claude and Codex router branches may differ by harness.
 
 - Core recipes and routing: `skills-src/git-span/git-span/SKILL.md.eta`, rendered into all four platform trees.
 - Judgment loaded with the core skill: the authored expert source and the Claude Code, Codex, and OpenCode agent outputs; Antigravity has no expert-agent artifact.
@@ -167,23 +167,27 @@ Keep text marked verbatim exact in the website integration page and both
 
 ## Span eligibility and grouping
 
-The eligibility clause is: anchors are “coupled by nothing a schema, type, test, or
-build/generator step enforces.” Exclude generated output; span its inputs. Keep it aligned
-in the package README, website concepts, both core skills and candidate references, Clap
-`after_help`, and the man-page description.
+A span associates one or more file or line-range anchors with decision-relevant
+context. Implicit couplings, tested contracts, same-file relationships, single-anchor
+reminders and generated-artifact evidence are eligible when the information changes a
+likely decision. Keep these mechanics and scope aligned in the package README,
+website concepts, Clap `after_help` and man-page description. Each skill owns its local
+selection and workflow guidance; no shared skill reference is required.
 
-Grouping guidance lives in both core skills, experts, candidate references, cleanup
+Grouping guidance lives in core skills, experts, candidate references, cleanup
 references, website mining guide, and `.claude/rules/wiki.md`. Preserve these rules:
 
-- one silent-break relationship per span;
-- generated output is excluded;
-- directed mirrors name an authority;
-- single-file spans need a nonlocal relationship;
-- anchors have distinct roles; and
+- one coherent decision or relationship per span;
+- prefer generator inputs when they carry the rule; generated output can be a useful witness;
+- directed mirrors name an authority and permitted differences;
+- same-file and single-anchor context state scope and detection limits;
+- test coverage can coexist with useful early explanation;
+- anchors have distinct roles where the relationship needs them; and
 - open-set registries are reviewed, not automatically rejected.
 
-Never impose an anchor-count limit. Do not instruct agents to anchor directories; only
-submodule roots accept a bare directory path.
+Do not impose an anchor-count limit or retire a span solely because it is tested or has
+one anchor. Do not instruct agents to anchor directories; only submodule roots accept a
+bare directory path.
 
 ## Reconciliation
 

@@ -15,7 +15,9 @@ git add .span && git commit -o .span -m "Anchor brand and contract assets"
 ```
 
 Use a whole-file anchor when the file is **consumed as a unit by name or
-identity**:
+identity**, its complete emitted structure is a witness, or broad delivery context
+is deliberate. Weigh unrelated drift and early session delivery against narrower
+ranges; see [span guidance](span-guidance.md). Typical unit-identity cases:
 - Images and binary assets pinned next to the copy that describes them
 - Design diagrams alongside the code they document
 - Prose whose identity is the contract: a license, a one-page ADR, a published
@@ -23,7 +25,8 @@ identity**:
 - Submodule roots (gitlink paths) — bumps surface for review without opening
   the submodule
 - Symlinks — compared by target string
-- Generated/minified assets and binary test fixtures
+- Generated/minified assets and binary test fixtures whose emitted content is the
+  relevant evidence; prefer generator inputs when they carry the same information
 
 Whole-file is the **recommended default for prose spans**: line-range anchors
 on prose drift noisily under editorial churn (heading renumbers, reflow,

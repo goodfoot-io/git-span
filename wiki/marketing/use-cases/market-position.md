@@ -4,7 +4,7 @@ summary: Git-span's commercial category — semantic change assurance — the va
 aliases: [Market Position, Commercial Category]
 tags: [marketing, use-cases]
 keywords: [category, value model, competition, Nx, Sonargraph, CodeScene, Sourcegraph, Swimm, Jama]
-links-reviewed: 1
+links-reviewed: 2
 ---
 
 # Commercial market position
@@ -27,7 +27,7 @@ A rough value model is:
 
 **Value of a span ≈ change frequency × probability of omission × cost of the escaped omission − maintenance cost**
 
-That immediately excludes many apparent use cases. Where a relationship can be enforced through a shared type, schema, generated client, import, deterministic architecture rule, or test, that mechanism is preferable. Git-span's own guidance makes the same distinction: the eligibility clause declares a span as anchors "coupled by nothing a schema, type, test, or build/generator step enforces" ([`concepts.mdx`](/packages/website/content/docs/concepts.mdx#L8-L8)) — spans are for couplings that remain after enforceable and incidental relationships are filtered out.
+Where a relationship can be enforced through a shared type, schema, generated client, import, deterministic architecture rule, or test, use that mechanism for enforcement. A span can complement it when early context changes a decision: the current definition includes tested contracts, same-file relationships, single-anchor reminders and generated-artifact observations ([`concepts.mdx`](/packages/website/content/docs/concepts.mdx#L8-L8)). Unenforced obligations remain this market analysis's focus, rather than a restriction on eligible span designs.
 
 ## Where git-span fits in the market
 

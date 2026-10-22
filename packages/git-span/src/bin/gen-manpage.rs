@@ -76,9 +76,9 @@ fn main() -> anyhow::Result<()> {
 /// on drift.
 const DESCRIPTION_SECTION: &str = r#".SH DESCRIPTION
 .B git span
-tracks implicit semantic dependencies in a Git repository: couplings between
-line ranges (or whole files), in code or prose, coupled by nothing a schema,
-type, test, or build/generator step enforces.
+attaches decision-relevant context to line ranges or whole files in a Git
+repository: implicit couplings, tested contracts, same-file relationships,
+single-anchor reminders, and generated-artifact evidence.
 Each
 .B span
 anchors the participating anchors and carries a durable

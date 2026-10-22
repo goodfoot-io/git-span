@@ -45,7 +45,7 @@
       ],
       "lintBaseline": {
         "diagnostics": [
-          "git-span/SKILL.md:164:skill-relative-path",
+          "git-span/SKILL.md:153:skill-relative-path",
           "git-span/references/finding-span-candidates.md.eta:14:skill-relative-path",
           "git-span/references/finding-span-candidates.md.eta:15:skill-relative-path",
           "git-span/references/finding-span-candidates.md.eta:16:skill-relative-path",

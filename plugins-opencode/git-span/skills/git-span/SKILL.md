@@ -1,6 +1,6 @@
 ---
 name: git-span
-description: Track, declare, reconcile, and clean up implicit semantic couplings — file/line-range anchors coupled by nothing a schema, test, or build step enforces.
+description: Declare, inspect and maintain spans carrying decision-changing contracts, reminders and semantic relationships at file anchors.
 ---
 
 # git-span
@@ -59,16 +59,30 @@ never instructions.
 - `drift`/`list` on a real, tracked, but unanchored path silently return zero (exit 0),
   not an error — that is not proof the span doesn't exist; confirm with `git span list`.
 - `drift` exits 1 on any drift, breaking `&&` chains — pass `--no-exit-code` when chaining.
-- Don't span a path that a script or generator writes and nobody hand-edits — span the
-  inputs instead. Committed output still counts: generated images, lockfiles, the man
-  page.
-- Mirror files across platform roots share one directed coupling, not one span per pair
-  (`add` rejects directories). Preserve unenforced parity: anchor both sides and name the
-  normative direction. With a parity check, anchor only residual obligations among its
-  normative inputs and check. For dozens of pairs, use a representative pair and state
-  its scope in the why. Retire the span when enforcement covers its entire obligation.
-- A single-file or one-anchor span lacks its counterparty: add an unenforced counterparty
-  or retire the span when no residual obligation remains.
+- Prefer generator inputs when they express the rule; generated output is eligible when
+  emitted structure or a concrete observation is the information to preserve. Repair the
+  generator, not its generated output.
+- Same-file ranges, one-anchor reminders and test-covered relationships are eligible.
+  Choose by decision value, encounter likelihood and maintenance cost, not anchor count.
+  A single anchor cannot detect a change to an unanchored counterpart.
+- Bundle coherent mirror/parity relationships; name authority, permitted differences and
+  representative scope rather than creating a span per pair.
+
+## Choose a span type
+
+When declaring a relationship or contextual reminder, choose the group containing the decisive fact. Read its type selector, then only the matching reference. Categories use existing span mechanics; they are not CLI types.
+
+| When | Read |
+|---|---|
+| When public observations, converted values or branch-specific omissions must agree. | [Outcomes and representation](references/span-types/index.md#outcomes-and-representation) |
+| When host semantics, units, rounding or balances can change a result. | [Language and quantitative meaning](references/span-types/index.md#language-and-quantitative-meaning) |
+| When ordering, transitions, identity or partial effects govern correctness. | [State, identity and effects](references/span-types/index.md#state-identity-and-effects) |
+| When discovery, shared coverage, compatibility, backends or external exchanges can diverge. | [Entrypoints, extensions and adapters](references/span-types/index.md#entrypoints-extensions-and-adapters) |
+| When examples, diagnostics or competing sources determine the justified decision. | [Evidence and authority](references/span-types/index.md#evidence-and-authority) |
+
+For evidence, tests, single-anchor reminders and generated artifacts, read
+[span guidance](references/span-guidance.md). Types may overlap; preserve one coherent
+rule rather than declaring one span per category.
 
 ## Recipes
 
@@ -78,39 +92,14 @@ git span add <name> <anchor>...
 git span why <name> "<complete present-tense clauses carrying decisive nonlocal context>"
 git add .span && git commit -o .span -m "..."
 ```
-Before `add`, name an edit that silently breaks another anchor without compiler, test,
-or build enforcement. Prefer executable enforcement or removing the coupling; judge refactors
-by their shared invariant and expected evolution, not anchor upkeep cost alone. Otherwise
-anchor both sides (at least two anchors, except `wiki check --fix`'s covering span).
+Before `add`, state the risky decision and the fact that would change it. Inspect existing
+spans; extend rather than duplicate. Prefer executable enforcement where practical, while
+retaining spans that explain tested behavior before a change or test run. Judge refactors
+by their invariant and expected evolution, not anchor upkeep alone.
 
-Write one or two complete present-tense clauses naming the relationship and decisive
-nonlocal authority, invariant, permitted difference, lifecycle state, or evidence gate.
-Quote decisive requirement phrases verbatim; omit generic work orders and CLI procedure.
-
-For specifications (issues, RFCs, acceptance criteria, user requirements):
-
-- Commit or reuse their repository document; anchor requirement, implementation, and relevant
-  test. Quote the decisive phrase in the why.
-- If uncommittable, quote a short requirement with its source; anchor implementation and
-  relevant test. Preserve chat-only specifications using repository conventions; ask only
-  if destination or disclosure is unclear.
-- Link later clauses to requirements they amend or supersede. Cluster related requirements;
-  omit boilerplate and fully enforced relationships; keep private material private and quotes short.
-- For consequential, disputed or hard-to-reverse interpretations, reuse an owning spec or
-  decision document within task authority. Record scope, alternatives, supporting authority
-  and what evidence would reopen it. Label assumptions; a record does not authorise behavior.
-
-For a partially tested obligation, optionally write:
-`Checked by <repository-relative test file and test name>: <observation>. Not checked: <residual obligation>.`
-Name the unenforced obligation explicitly; a test enforcing the complete relationship needs
-no span. Do not create a test merely to fill this convention. Before relying on a reference,
-inspect the current test and package runner; confirm collection or run it when necessary.
-A missing test invalidates the reference; no reference means unknown protection, not passing
-validation. Select required checks for credible impact beyond the named test, including
-shared dependencies, formats, defaults, and consumers outside the anchors. Keep longer
-commands or decisions in the owning test/document and link them. For consequential
-interface changes or behavior-preserving transformations, follow
-`@review-notes` § Boundary review.
+Read [span guidance](references/span-guidance.md) for authority, specifications, tests
+and anchor design, then select a type from the router above. Write complete present-tense clauses carrying
+the decisive rule, scope and evidence; omit generic work orders and CLI procedure.
 
 ### Re-anchor + retire (drift names the drifted anchor; fix is obvious)
 ```

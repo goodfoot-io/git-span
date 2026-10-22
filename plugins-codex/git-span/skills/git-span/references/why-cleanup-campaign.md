@@ -5,9 +5,9 @@ clauses stating the shared relationship plus its decisive nonlocal facts —
 authority, intentional difference, invariant, lifecycle state, completion
 gate, focused verification — with clear modal or evidentiary force. Labels are
 optional but must introduce complete clauses. Prefer a stronger enforceable
-mechanism (type, schema, test, lint, CI) over a span when one covers the
-requirement. Keep the smallest decision-preserving statement, roughly 15–35
-body tokens.
+mechanism (type, schema, test, lint, CI) for enforcement while retaining a span
+when timely explanation still changes a decision. Keep the smallest decision-preserving statement, with enough detail to preserve the decisive distinction. Read [span guidance](span-guidance.md)
+and select [a type](span-types/index.md) when the relationship needs redesign.
 Work has two phases: the main agent triages and partitions; forked subagents
 execute — the same fork-per-component mechanism as the reconcile skill. Only
 the main agent commits.
@@ -65,15 +65,15 @@ commit. Otherwise continue.
 | change-history | list | narrates the change story (e.g. "We switched IDs to UUIDs after issue #482") instead of standing state | restate the standing decision in present tense |
 | vague | list | true but generic; a leading blank line inside a triple-quoted why is this class too (cosmetic, not meaningful) | tighten / strip the artifact |
 | bad-name | list | non-kebab-case or reserved name | `git mv .span/<old> .span/<new>`; grep the repo for the old name first (docs/comments/skills may reference it) |
-| single-file | confirm | every anchor is a range in one file | add the unenforced counterparty the why names; retire if no residual obligation remains |
+| single-file | confirm | every anchor is a range in one file | confirm the local relationship or reminder; add a counterpart only if it improves coverage, not to satisfy a count |
 | drift-claim | confirm | asserts a fact about code that may have changed (a mechanism, a count, a "fixed" problem) | verify against current anchor bytes; rewrite or use `git span history <name>` if creation-vs-current is unclear |
 | lifecycle-gate | confirm | behavior is conditional on named evidence | verify the evidence; preserve behavior and why when unmet, invalidated, or unavailable; when satisfied, make the change, then revise or retire the why and every superseded anchor |
 | drift-range | confirm | anchor content shifted but still the same logical site | `drift --fix` (verified exact-content relocation) or review and manual re-anchor |
 | mis-anchored | confirm | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `drift` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `drift` alone | find the real site, then swap the old range for the new one with `git span replace` |
 | duplicate/overlap | confirm | two spans assert the same coupling | consolidate (Operations table) |
-| enforced | confirm | a compiler, type, test, build or generator now enforces the entire obligation | confirm coverage, then retire; retain any genuinely unenforced remainder |
-| generated-output | confirm | a script or generator writes an anchored path and nobody hand-edits it | drop the output anchors, keep the producer↔consumer contract |
-| mirror-bundle | confirm | near-identical copies across platform roots; distinguish copies from distinct roles in one mechanism | keep one span for residual parity. Without enforcement, retain both sides and normative direction; recommend a proportionate check. With enforcement, keep only residual obligations among inputs/check; retire if none remain. For dozens of pairs, name the representative pair's scope. Never split per pair |
+| enforced | confirm | a compiler, type, test, build or generator now enforces the entire obligation | confirm coverage and explanatory value; retain timely context or retire if no useful information remains |
+| generated-output | confirm | a script or generator writes an anchored path and nobody hand-edits it | keep output when its emitted structure is relevant evidence; otherwise prefer stable generator inputs; repair inputs, not generated files |
+| mirror-bundle | confirm | near-identical copies across platform roots; distinguish copies from distinct roles in one mechanism | preserve one coherent parity rule, normative direction and representative scope; checks do not automatically retire useful explanation. Consult [backend equivalence](span-types/cross-backend-behavioral-equivalence.md) |
 | open-set registry | confirm | one anchor's content is a *list* of the other anchors — tells: "and others", "when ⟨members⟩ are added", "enumerating", "documents each" | **advisory, never auto-reject.** Distinguish a shared obligation ("every X must …" — keep) from a listing obligation ("every X is enumerated here" — narrow to the co-varying core, or hand the list to the tooling that owns it) |
 
 Then run `git span drift` once (read-only) to pre-mark remaining drift-range
@@ -227,7 +227,7 @@ definition, so only the failed unit needs rework.
   factual clauses in the same pass.
 - Repeated anchors across *sibling spans* documenting one doc/subsystem family
   are by design, not a duplicate/overlap smell. Repeated *instances of one kind
-  inside a single span* are the smell — see the mirror-bundle and single-file rows.
+  inside a single span* warrant checking useful coverage rather than automatic rejection — see the mirror-bundle and single-file rows.
 - A span shown modified in `git status` with an empty `git diff HEAD -- <path>`
   is inert noise from another session, not a finding.
 - The main agent must not touch `.span/` while forks run.

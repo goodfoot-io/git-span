@@ -1,5 +1,8 @@
-skills-src/git-span/git-span/SKILL.md.eta#L84-L133 rk64:612b04a45b818c79
-skills-src/git-span/reconcile/references/procedure.md.eta#L140-L149 rk64:56a504f54d841f00
-skills-src/git-span/review-notes/SKILL.md.eta#L19-L47 rk64:44d0fda97bb50333
+skills-src/git-span/git-span/SKILL.md.eta#L82-L122 rk64:bf931570c137a5ca
+skills-src/git-span/git-span/references/span-guidance.md.eta rk64:f8513c5625f74956
+skills-src/git-span/reconcile/references/procedure.md.eta#L143-L152 rk64:522092e5614987ec
+skills-src/git-span/reconcile/references/span-guidance.md.eta rk64:db2279b602816e74
+skills-src/git-span/review-notes/SKILL.md.eta#L19-L30 rk64:b02c66fafe13b7c7
+skills-src/git-span/review-notes/references/span-guidance.md.eta rk64:1258986d0571c088
 
-The core skill’s why-writing and anchor-count rules are authoritative for review-notes guidance; reconciliation retains a why only while its relationship or authorised requirement remains true.
+Each skill owns its local span-selection, evidence and why-writing guidance; declaration, review and reconciliation preserve decision-changing context for same-file, single-anchor, generated-artifact and tested relationships without treating content freshness as correctness.

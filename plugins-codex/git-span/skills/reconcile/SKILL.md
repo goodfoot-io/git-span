@@ -14,3 +14,19 @@ If stage 1 leaves more than 8 drifted anchors, also read `./references/team.md`
 and delegate stage 3 by component. Stages 1, 2, and 4 stay yours.
 
 </instructions>
+
+## Choose a span type
+
+During stage 3, use this route when deciding whether an existing span still explains its relationship. The references guide reassessment; they do not expand reconciliation into an unrelated discovery sweep. Categories use existing span mechanics; they are not CLI types.
+
+| When | Read |
+|---|---|
+| When public observations, converted values or branch-specific omissions must agree. | [Outcomes and representation](references/span-types/index.md#outcomes-and-representation) |
+| When host semantics, units, rounding or balances can change a result. | [Language and quantitative meaning](references/span-types/index.md#language-and-quantitative-meaning) |
+| When ordering, transitions, identity or partial effects govern correctness. | [State, identity and effects](references/span-types/index.md#state-identity-and-effects) |
+| When discovery, shared coverage, compatibility, backends or external exchanges can diverge. | [Entrypoints, extensions and adapters](references/span-types/index.md#entrypoints-extensions-and-adapters) |
+| When examples, diagnostics or competing sources determine the justified decision. | [Evidence and authority](references/span-types/index.md#evidence-and-authority) |
+
+For evidence, tests, single-anchor reminders and generated artifacts, read
+[span guidance](references/span-guidance.md). Types may overlap; preserve one coherent
+rule rather than declaring one span per category.

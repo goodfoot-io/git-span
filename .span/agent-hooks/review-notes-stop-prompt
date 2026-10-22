@@ -1,8 +1,8 @@
 packages/agent-hooks/src/common/review-notes-stop.ts#L13-L22 rk64:dacafa8c6dac9b1c
 packages/website/content/docs/agent-integration.mdx#L69-L71 rk64:186490cec7f33e28
-skills-src/git-span/reconcile/references/procedure.md.eta#L140-L149 rk64:56a504f54d841f00
-skills-src/git-span/review-notes/SKILL.md.eta#L54-L58 rk64:4117963f654363ed
-skills-src/git-span/review-notes/SKILL.md.eta#L87-L126 rk64:4358c1e48e6b5ace
-skills-src/git-span/review-notes/SKILL.md.eta#L159-L166 rk64:adbaeb90fadb1fc9
+skills-src/git-span/reconcile/references/procedure.md.eta#L143-L152 rk64:522092e5614987ec
+skills-src/git-span/review-notes/SKILL.md.eta#L37-L41 rk64:4117963f654363ed
+skills-src/git-span/review-notes/SKILL.md.eta#L70-L109 rk64:ea6b62a3767ec432
+skills-src/git-span/review-notes/SKILL.md.eta#L158-L165 rk64:bd4d285d162506af
 
 The Stop prompt passes no session scope, so the review skill selects notes across repositories used in the session, while the integration guide describes its forked dispatch. Its behavioral-first instructions, parent ownership and "Intentional code does not supersede a requirement" agree with the review and reconciliation authority guidance; no renderer or build verifies this policy agreement.

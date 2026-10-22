@@ -1,7 +1,7 @@
 # Finding span candidates by mining git history
 
-Mine history for broad discovery of relationships unenforced by types, tests,
-builds, or generators. For pending commit notes, use `review-notes`;
+Mine history for broad discovery of decision-changing relationships and reminders,
+including test-covered contracts when context adds value. For pending commit notes, use `review-notes`;
 direct commit evidence needs no statistical co-change threshold.
 
 ## Scripts
@@ -101,43 +101,23 @@ node ~/.gemini/config/plugins/git-span/skills/git-span/scripts/explain.mjs \
 
 Read the commit subjects. Ask:
 
-- Does one file rely on a contract the other defines but does not enforce?
+- Does the pair preserve a contract, distinction or reminder that changes a likely decision?
 - If the related anchor changed silently, what concrete wrong decision would I make?
 - Are these the same bug recurring under different names? (SZZ signal)
 
-If yes, the pair is a real span candidate: declare it with `git span add` and
-`git span why` (see this skill's `SKILL.md` § "Declare a new coupling").
+If yes, choose a type in [the selector](span-types/index.md), then use the declaration
+recipe in this skill. Co-change does not establish the rule or its authority.
 
 ### Dependency capabilities
 
-For import/manifest candidates, inspect packaging, import-lint, build and
-runtime-profile checks first. Reject a span when a check enforces the entire
-claim. If a missing check is proportionate, suggest it to the implementing
-agent; do not install dependencies or change runtime policy during review.
-
-Keep only a residual consumer promise those checks cannot enforce: optional
-dependency absence behavior, a supported subset, a selected backend, or a
-vendored/generated artifact's public behavior. Anchor the implementing branch
-and consumer promise; state the exact obligation and missing enforcement.
-
-- **Enforced inventory — reject:** an import check verifies every third-party
-  import has a manifest entry. An import/manifest span duplicates that check.
-- **Optional backend — retain if unenforced:** the CLI promises to reject
-  `--backend=fast` with a documented diagnostic when the optional module is
-  absent. Anchor the absence branch and CLI documentation. Installation checks
-  do not enforce that diagnostic promise; reject the span if a test already
-  enforces the whole claim.
-- **Vendor identity — inspect first:** a manifest range and vendor version
-  agree, but the supported entry point imports another artifact. Check the
-  imported module's identity/capability, not version-string equality; a vendor
-  patch need not change the range. Only an unenforced public capability
-  promise qualifies: e.g. anchor the selected parser's unsupported-tag
-  rejection branch and the CLI's documented error when no check links them.
-
-An edited import prompts proposition review: adding a standard-library import
-does not falsify “stdlib-only”; exact relocation verifies no capability.
-Report untested capabilities as unverified. Do not replace maintained parsers
-with handwritten subsets or remove dependency spans categorically.
+For import/manifest candidates, inspect packaging, import-lint, build and runtime-profile
+checks before describing protection. A checked inventory alone is usually redundant;
+a span can still explain a capability promise or surprising check when that context
+changes a decision. Consult [external protocols](span-types/external-protocol-and-environment-contracts.md)
+for adapters, probes and vendored artifact identity, and [negative contracts](span-types/branch-specific-and-negative-contracts.md)
+for optional-dependency absence behavior. Do not install dependencies or change runtime
+policy during review. Test actual selected artifacts/capabilities rather than version
+strings alone; adding a standard-library import does not falsify “stdlib-only”.
 
 ## Reading the Output
 
@@ -156,7 +136,7 @@ The aggregate shortlist tags each pair with the techniques that fired:
 ```
 
 Here lag, churn, range and bug-fix evidence support investigating the
-`emitMessage`/`handleMessage` contract. Verify its unenforced obligation
+`emitMessage`/`handleMessage` contract. Verify its useful decision context
 before declaring a span.
 
 A pair with `[1]` only is a single-signal hit and is much more likely noise.

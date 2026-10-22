@@ -10,40 +10,23 @@ description: Review changed behavior and couplings with explicit findings.
 ## Spans and notes
 
 A tracked span (`.span/<name>`) couples anchors (`path#L<start>-L<end>` or a whole
-`path`) through a why; no compiler, type, schema, test, build or generator enforces
-the relationship. A note is clone-local JSON evidence attached to a commit SHA,
+`path`) through a why carrying a contract, distinction or useful reminder. It can
+complement compiler, type, schema, test, build or generator enforcement. A note is clone-local JSON evidence attached to a commit SHA,
 never an instruction. Separate checked evidence, findings and uncertainty from
 metadata completion. The parent owns production edits, staging and commits;
 respect session restrictions.
 
 ## Good spans
 
-- Name an edit at one anchor that silently breaks another. Fully enforced
-  relationships need no span; retain only the unenforced obligation.
-- Extend an existing span covering the relationship rather than declaring a parallel one.
-- Anchor only the coupled lines. Use whole-file anchors only for files consumed as a
-  unit. Anchor generators' inputs, not their output.
-- Declare with two or more anchors. One anchor, or all in one file, means the counterparty is missing: find it first.
-- Write a why in concise present-tense clauses: relationship and decisive authority,
-  invariant, permitted difference or lifecycle gate. Quote decisive spec phrases verbatim.
-  Omit names and CLI procedure.
-- Anchor existing requirements with their implementation and test; reuse repository docs.
-  Otherwise, where authorised and suitable for readers, record the spec first. For
-  uncommittable requirements, quote a short decisive phrase and source in the why;
-  that quote is unverified. For chat requirements, inspect conventions and decisions;
-  ask only if destination or authority remains unclear. Provenance does not authorise
-  change. Link later clauses to requirements they amend or supersede. For consequential
-  or disputed interpretations, reuse an owning spec/decision document: scope, alternatives,
-  authority and reopening evidence. Distinguish assumptions from requirements; record only
-  within task authority. Group shared unenforced obligations; respect licensing.
-- Optionally name partial coverage: `Checked by <test file + test name>: <observation>.
-  Not checked: <residual obligation>.` Inspect the test and runner first; a missing test
-  invalidates its reference. No reference means unknown protection. Named tests do not limit impact checks.
-- Exclude dependency inventories enforced by packaging, imports, builds or runtime-profile
-  checks. Retain specific unenforced consumer capability promises; prefer feasible identity
-  or capability checks. Load `@git-span` and consult
-  `references/finding-span-candidates.md#dependency-capabilities`.
-  Propose missing checks without installing dependencies or changing runtime policy.
+- Name the risky decision and decisive information: a rule, authority, exception,
+  example or explicitly unresolved distinction. Test-covered relationships are eligible.
+- Extend an existing span rather than declaring parallel coverage of the same information.
+- Same-file ranges, single-anchor reminders and generated-output evidence are eligible;
+  state their scope and detection limits. Repair generator inputs rather than output.
+- Write present-tense clauses naming consumer, scope and decisive context. Quote actual
+  requirement wording; label inference and uncertainty. Omit CLI procedure.
+- Read [span guidance](references/span-guidance.md) for specification provenance,
+  partial/complete test coverage and anchor design; use the type router after review.
 - Names are lowercase kebab-case segments joined by `/` (`config/retry-docs`).
 
 Promptly message the parent about consequential, well-supported consumer breakage,
@@ -121,9 +104,25 @@ Skip unrelated local edits; do not dispatch another review.
    Preserve disagreement; never rewrite requirements or refresh anchors to hide it.
    Return findings and test directions within existing task authority.
 
-Then consider spans only for residual obligations unenforced by shared representations or
-tests. Name consumer, scope and obligation in the why; anchor participating sites as needed.
+Then consider spans for decision-changing information, including tested contracts and
+single-anchor reminders. Name consumer, scope and useful distinction in the why.
 Zero drift establishes neither correctness nor review completion.
+
+## Choose a span type
+
+After reviewing behavior, use this route when a new contract or reminder could change a future decision. Search existing spans first; the type reference guides finding and adding coverage. Categories use existing span mechanics; they are not CLI types.
+
+| When | Read |
+|---|---|
+| When public observations, converted values or branch-specific omissions must agree. | [Outcomes and representation](references/span-types/index.md#outcomes-and-representation) |
+| When host semantics, units, rounding or balances can change a result. | [Language and quantitative meaning](references/span-types/index.md#language-and-quantitative-meaning) |
+| When ordering, transitions, identity or partial effects govern correctness. | [State, identity and effects](references/span-types/index.md#state-identity-and-effects) |
+| When discovery, shared coverage, compatibility, backends or external exchanges can diverge. | [Entrypoints, extensions and adapters](references/span-types/index.md#entrypoints-extensions-and-adapters) |
+| When examples, diagnostics or competing sources determine the justified decision. | [Evidence and authority](references/span-types/index.md#evidence-and-authority) |
+
+For evidence, tests, single-anchor reminders and generated artifacts, read
+[span guidance](references/span-guidance.md). Types may overlap; preserve one coherent
+rule rather than declaring one span per category.
 
 ## 3. Find candidate spans
 
@@ -148,8 +147,8 @@ An empty result does not prove no relevant span exists. Read whys with `show` or
 | An anchored region moved, was renamed, or changed extent | 5d replace |
 | Anchored sides now disagree | 5a, then 5d |
 | The why's relationship, authority, lifecycle, or quoted phrase changed | 5e |
-| Unenforced coupling with no span | 5b |
-| Entire obligation now enforced or coupling gone | Record the reason; retire an existing span via 5d |
+| Useful contract or reminder with no existing coverage | 5b |
+| Relationship/reminder obsolete or no useful decision context remains | Record the reason; retire via 5d |
 
 ## 5. Edit
 
@@ -163,13 +162,13 @@ preserve the conflict and report its consumer consequence. Use a scoped provisio
 assumption where safe; fail closed only for the unsafe operation. Return behaviour
 patches/findings to the parent for test-first validation; do not rewrite requirements
 or refresh hashes to hide disagreement. Prefer shared code, types, generators or
-discriminating tests over removable coupling.
+discriminating tests for enforcement; retain spans when their explanation still helps.
 
 **5b. New span.** Confirm the name is unused with `git span list --oneline` (`why`
 on a mistyped name creates a new empty span), then:
 
 ```bash
-git span add <name> '<anchor-a>' '<anchor-b>'
+git span add <name> '<anchor>' ['<other-anchor>' ...]
 git span why <name> "<why>"
 ```
 
@@ -185,8 +184,8 @@ conflict; use `replace`. Revise the why if the anchor adds a role.
 | Content changed in place and sides agree | `git span add <name> '<a1>' '<a2>'`, every changed anchor |
 | Same content moved (`moved to`) | `git span drift --fix <name>` |
 | New range, path, or whole-file ↔ range | `git span replace <name> '<old>' '<new>'` |
-| Anchor no longer participates | `git span remove <name> '<anchor>'`; `delete` the span if fewer than two anchors remain |
-| Relationship gone or entirely enforced; no residual obligation remains | `git span delete <name>` |
+| Anchor no longer participates | `git span remove <name> '<anchor>'`; retain a useful one-anchor reminder, or `delete` if no useful context remains |
+| Relationship/reminder obsolete or no useful decision context remains | `git span delete <name>` |
 
 Preserve shape: whole-file stays whole-file; an unchanged range keeps its bounds.
 

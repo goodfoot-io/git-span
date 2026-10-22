@@ -59,7 +59,7 @@ use clap::{Parser, Subcommand, ValueEnum};
     name = "git-span",
     about = "Track implicit semantic dependencies in a git repo.",
     version,
-    after_help = "A span holds code or prose anchors coupled by nothing a schema, type, test, or build/generator step enforces. Its `why` uses one or two complete present-tense clauses to state the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, or evidence gate. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure. Inherit a why only while it remains true; after a gated transition, revise or retire it and reconcile superseded anchors until scoped drift is zero.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
+    after_help = "A span associates one or more file or line-range anchors with decision-relevant context: implicit couplings, tested contracts, same-file relationships, single-anchor reminders, or generated-artifact evidence. Its `why` uses one or two complete present-tense clauses to state the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, or evidence gate. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure. Inherit a why only while it remains true; after a gated transition, revise or retire it and reconcile superseded anchors until scoped drift is zero.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
 )]
 pub struct Cli {
     /// Emit performance timings for major git-span operation groups to stderr.

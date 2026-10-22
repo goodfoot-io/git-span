@@ -5,7 +5,7 @@ description: Precise definitions for spans, anchors, the why, drift, and the tru
 
 ## Span
 
-A span is a named, declared coupling — a group of **anchors** coupled by nothing a schema, type, test, or build/generator step enforces — plus a **why** naming what those anchors form. A span is identified by a kebab-case name (segments separated by `/`, each segment starting with a letter or digit — e.g. `checkout/min-amount`).
+A span associates one or more **anchors** with a decision-relevant **why**: an implicit coupling, tested contract, same-file relationship, single-anchor reminder, or generated-artifact observation. A span is identified by a kebab-case name (segments separated by `/`, each segment starting with a letter or digit — e.g. `checkout/min-amount`).
 
 ## Anchor
 
@@ -22,7 +22,7 @@ The why is compact, durable, decision-relevant context shared by the exact ancho
 
 Inherit the why only while it remains true. Omit generic work orders and CLI procedure. A satisfied gate authorizes its transition; revise or retire the why, reconcile or retire superseded anchors, and require scoped drift to be zero.
 
-For partial test protection, optionally name `Checked by <test file and test name>: <observation>. Not checked: <residual obligation>.` Inspect the test and runner before relying on it. A missing test invalidates its reference; no reference means unknown protection. A fully enforced relationship needs no span. Keep the why concise and select required checks for impact beyond the named test.
+For partial test protection, optionally name `Checked by <test file and test name>: <observation>. Not checked: <residual obligation>.` Inspect the test and runner before relying on it. A missing test invalidates its reference; no reference means unknown protection. A fully enforced relationship can retain a span when early explanation still changes a decision; enforcement alone does not require retirement. Keep the why concise and select required checks for impact beyond the named test.
 
 ## The `.span/` directory
 

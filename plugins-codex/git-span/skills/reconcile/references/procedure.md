@@ -79,8 +79,10 @@ cohesive sub-batches by topic or subsystem.
 
 **Never investigate a DELETED anchor whose file is gone from disk** — you
 cannot. This ends that anchor's investigation, not the reconciliation. If the
-span's remaining anchors still describe a valid relationship, remove the
-deleted-file anchor; if the relationship is gone, `git span delete` the span.
+span's remaining anchors still carry a valid relationship or useful reminder,
+remove the deleted-file anchor and reassess its scope and detection limits. If no
+anchor remains, choose an existing delivery location for useful context or delete
+the span. Delete obsolete or valueless context with `git span delete`.
 
 ---
 
@@ -100,20 +102,21 @@ on with your other spans.
    CHANGED anchor's destination — use a targeted old/current file diff only when
    its logical region moved.
 2. Read current bytes at each drifted anchor.
-3. Write a concise confirmation of the relationship and its decisive nonlocal
-   fact. Stop if you cannot.
+3. If meaning needs reassessment, use the [type selector](span-types/index.md) and
+   [span guidance](span-guidance.md). Confirm the relationship or reminder and its
+   decisive context; preserve and report unresolved authority before any refresh.
 4. Classify and execute:
 
 | Category | Action |
 |---|---|
-| Whole-file anchor CHANGED; the file is still consumed as a unit | `git span add <name> '<path>'` — re-add the same bare path; a whole-file anchor stays whole-file |
+| Whole-file anchor CHANGED; its unit identity, witness or broad-context role still holds | `git span add <name> '<path>'` — re-add the same bare path; a whole-file anchor stays whole-file |
 | Range anchor CHANGED at the same address; the logical region did not move | `git span add <name> '<path>#L<start>-L<end>'` — re-add the exact existing range, nothing else |
 | File shrunken below the anchored end; the region still exists | `git span replace <name> '<path>#L<old>' '<path>#L<new>'` — an identity change, the new end line being the file's current line count |
 | Logical region genuinely moved to a new range | `git span replace <name> '<path>#L<old>' '<path>#L<new>'` |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor; include the content diff in your report |
-| Content no longer describes relationship | `git span remove <name> '<path>#L<N>'`; if fewer than two anchors remain, add the counterparty or `delete` |
-| Relationship gone or entirely enforced; no residual obligation remains | `git span delete <name>` |
-| Span has no why | Invoke the core skill's why rules, then use `git span why` |
+| Content no longer describes relationship | `git span remove <name> '<path>#L<N>'`; retain a useful single-anchor reminder; `delete` only if no useful context remains |
+| Relationship/reminder obsolete or no useful decision context remains | `git span delete <name>` |
+| Span has no why | Apply [local span guidance](span-guidance.md) and the matching type reference, then use `git span why` |
 | Lifecycle gate is satisfied | Make the authorized behavior change, revise or retire the substantive why, and reconcile or retire every superseded anchor |
 | Authority remains unclear or no intentional change explains drift | Stop and report — the user decides |
 
@@ -146,7 +149,7 @@ conflict and affected consumer; a scoped provisional assumption may permit safe 
 Fail closed for the unsafe operation, not unrelated edits. Never refresh hashes over
 live disagreement. Keep the why across routine re-anchors; change it only when the
 relationship or authorised requirement changes. Prefer mechanical enforcement or
-removing avoidable coupling before adding annotation upkeep.
+removing avoidable coupling for enforcement; preserve useful explanatory context even when tested.
 
 ---
 
