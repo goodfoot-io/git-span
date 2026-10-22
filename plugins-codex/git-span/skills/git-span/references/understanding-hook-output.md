@@ -15,7 +15,7 @@ and a single footer after a final `---`. A healthy span renders as:
 
 ```
 <git-span>
-checkout.tsx has implicit dependencies:
+checkout.tsx has implicit couplings:
 
 ## billing/checkout-request-flow
 ├─ web/checkout.tsx #L88-L120
@@ -36,7 +36,7 @@ lowercase status suffix and the header and footer switch:
 
 ```
 <git-span>
-This edit put an implicit dependency out of date:
+This edit put an implicit coupling out of date:
 
 ## billing/checkout-request-flow
 ├─ web/checkout.tsx #L88-L120 — changed
@@ -67,12 +67,12 @@ also carries line ranges, it takes `(whole file)` in the range column so its
 own drift label can never be read as belonging to a neighboring range. Only genuine
 (semantic or terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
 drift never does — see below. The header scales with what drifted: `<file>
-has implicit dependencies:` (naming the touched file) when nothing did, the
+has implicit couplings:` (naming the touched file) when nothing did, the
 singular form above for one drifted span on a write, and `This edit put
-implicit dependencies out of date:` for more than one. A read never edited
+implicit couplings out of date:` for more than one. A read never edited
 anything — it only surfaces drift that was already there — so its drifted
-header names the dependency instead of the touch: `This file has an implicit
-dependency out of date:` (singular) or `This file has implicit dependencies
+header names the coupling instead of the touch: `This file has an implicit
+coupling out of date:` (singular) or `This file has implicit couplings
 out of date:` (plural). With several drifted spans, apply the footer to each
 span and use `git span drift <name>` for the final zero-drift check. The block carries
 everything needed to act — anchors, statuses, and the description — so no

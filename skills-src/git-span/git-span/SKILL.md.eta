@@ -112,6 +112,22 @@ paraphrase it. Labels are optional but must introduce complete clauses. Omit gen
 orders and CLI procedure. Example: "README says \"retries stop after 3 attempts\"; config.ts
 RETRY_MAX is authoritative."
 
+**Working from a specification** (issue, ticket, RFC, acceptance criteria, requirements the
+user stated)? The spec is lost once the conversation ends, so put it where drift can see it:
+
+1. **The spec is, or can be, in the repo.** Commit it (or reuse the existing doc). Anchor the
+   requirement lines together with the code and the test that implement them, and quote the
+   decisive phrase in the why. This is the preferred form: changing either side raises drift.
+2. **The spec cannot be committed** (external, private, too large). Quote the requirement
+   verbatim in the why with its source (`ABC-12: "retries stop after 3 attempts"`), and anchor
+   the implementation and its test. Nothing verifies the quote, so keep it short and current.
+   If the spec exists only in chat, ask the user where it should live rather than guessing.
+
+Declare one span per cluster of related requirements, only for requirements a later edit could
+silently break; skip boilerplate and anything a test already enforces. Do not commit a spec the
+repository's readers should not see, and quote only short decisive phrases from licensed
+standards.
+
 ### Re-anchor + retire (drift names the drifted anchor; fix is obvious)
 ```
 git span drift <name>                     # see which anchor(s) drifted and how

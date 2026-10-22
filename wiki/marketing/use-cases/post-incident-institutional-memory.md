@@ -10,7 +10,7 @@ keywords: [incident, regression, review, organizational memory, Semgrep, adoptio
 
 This may be the best adoption mechanism across every use case.
 
-Trying to document every implicit dependency in an existing repository is too expensive and will create low-quality spans. Instead:
+Trying to document every implicit coupling in an existing repository is too expensive and will create low-quality spans. Instead:
 
 > Whenever an incident, failed deployment, regression, or review comment reveals a previously hidden obligation, record that obligation as a span.
 

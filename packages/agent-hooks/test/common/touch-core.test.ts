@@ -227,7 +227,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       // grouped under its directory branch (the drifted one
       // lowercase-status-suffixed, the clean cross-file one bare), the why
       // sentence, and the drift footer after a final `---`.
-      expect(block).toContain('This edit put an implicit dependency out of date:');
+      expect(block).toContain('This edit put an implicit coupling out of date:');
       expect(block).toContain('## billing/checkout-request-flow');
       expect(block).toContain('├─ src/app.ts    #L1-L10 — changed');
       expect(block).toContain('└─ api/charge.ts #L30-L76\n');
@@ -263,7 +263,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       // First touch: clean — the span surfaces once with the clean header/footer.
       const first = await runTouchHook(input, executors, memo);
       const cleanBlock = first.additionalContext ?? '';
-      expect(cleanBlock).toContain('app.ts has implicit dependencies:');
+      expect(cleanBlock).toContain('app.ts has implicit couplings:');
       expect(cleanBlock).toContain('## billing/checkout-request-flow');
       expect(cleanBlock).toContain(WHY);
       expect(cleanBlock).toContain('If you change app.ts check the other files to confirm they still work together.');
@@ -278,7 +278,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       drifted = true;
       const third = await runTouchHook(input, executors, memo);
       const driftBlock = third.additionalContext ?? '';
-      expect(driftBlock).toContain('This edit put an implicit dependency out of date:');
+      expect(driftBlock).toContain('This edit put an implicit coupling out of date:');
       expect(driftBlock).toContain('└─ src/app.ts #L1-L10 — changed');
       expect(driftBlock).toContain(WHY);
 
@@ -324,7 +324,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
 
       // A read never edited anything — only a write's header may say "This
       // edit put ... out of date"; a read names the dependency instead.
-      expect(output.additionalContext).toContain('This file has an implicit dependency out of date:');
+      expect(output.additionalContext).toContain('This file has an implicit coupling out of date:');
       expect(output.additionalContext).not.toContain('This edit put');
     });
 

@@ -25,7 +25,7 @@ This section holds the repository's commercial analysis of git-span: what catego
 - [[Security and Privacy Invariants]] — organization-specific assumptions that cannot be a reliable static rule.
 - [[Documentation and Runbook Consistency]] — code-coupled documentation without a new document format.
 - [[Release and Packaging Integrity]] — manually synchronized declarations in release engineering.
-- [[Semantic Architecture and Implicit Debt Mapping]] — use spans to identify which implicit dependencies should be engineered away.
+- [[Semantic Architecture and Implicit Debt Mapping]] — use spans to identify which implicit couplings should be engineered away.
 - [[Regulated Traceability]] — the later enterprise market; integration with requirements-management platforms.
 
 ## Go to market

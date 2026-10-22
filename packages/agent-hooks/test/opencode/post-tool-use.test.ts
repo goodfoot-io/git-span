@@ -20,7 +20,7 @@ import type { PatchPlanTouch } from '../../src/opencode/stash.js';
 import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout, type TempSessionLayout } from '../session-layout-helpers.js';
 
-const BLOCK = '\n<git-span>\ncheckout.tsx has implicit dependencies:\n</git-span>\n';
+const BLOCK = '\n<git-span>\ncheckout.tsx has implicit couplings:\n</git-span>\n';
 
 const { recorded } = vi.hoisted(() => ({ recorded: { calls: [] as TouchInput[] } }));
 

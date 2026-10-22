@@ -104,7 +104,7 @@ describe('emitted Stop protocol', () => {
       expect(result.output?.decision).not.toBe('block');
       expect(result.output?.reason).toBeUndefined();
     });
-    it(`${host} emits a scoped fork prompt and allows continuation without another prompt`, () => {
+    it(`${host} emits a fork prompt and allows continuation without another prompt`, () => {
       const directory = host === 'claude' ? bundles.claudeHooksDir : bundles.codexHooksDir;
       const bundle = join(directory, 'stop.mjs');
       const env = { ...process.env, HOME: temp.parent, XDG_CACHE_HOME: temp.parent };
@@ -114,9 +114,9 @@ describe('emitted Stop protocol', () => {
       expect(result.output?.reason).toContain('forked subagent');
       expect(result.output?.reason).toContain('git-span:review-notes');
       expect(result.output?.reason).toContain(
-        'then follow the instructions to document implicit dependencies using `git-span`.'
+        'then follow the instructions to document implicit couplings and specifications using `git-span`.'
       );
-      expect(result.output?.reason).toContain(JSON.stringify({ host, sessionId: input.session_id, cwd: input.cwd }));
+      expect(result.output?.reason).not.toContain('Review scope');
 
       const continuation = invokeRealHook(bundle, { ...input, stop_hook_active: true }, env);
       expect(continuation.stderr).toBe('');

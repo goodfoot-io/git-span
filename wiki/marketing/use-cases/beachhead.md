@@ -26,7 +26,7 @@ The recommended initial positioning is:
 
 > **Git-span prevents partial changes. It gives coding agents and reviewers the nonlocal obligations attached to the exact code they touch, then detects when those obligations have been left unresolved.**
 
-Leading with "implicit dependencies" alone is not recommended. That describes the underlying technical object but not the purchased outcome. The purchased outcome is **complete change**.
+Leading with "implicit couplings" alone is not recommended. That describes the underlying technical object but not the purchased outcome. The purchased outcome is **complete change**.
 
 ## Related
 

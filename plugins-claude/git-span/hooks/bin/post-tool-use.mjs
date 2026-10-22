@@ -7580,16 +7580,16 @@ function anchorText(row) {
   return `${row.path}#L${row.start}-L${row.end}`;
 }
 function cleanHeader(fileName) {
-  return `${fileName} has implicit dependencies:`;
+  return `${fileName} has implicit couplings:`;
 }
 function cleanFooter(fileName) {
   return `If you change ${fileName} check the other files to confirm they still work together.`;
 }
 function driftHeader(driftedCount, kind) {
   if (kind === "write") {
-    return driftedCount === 1 ? "This edit put an implicit dependency out of date:" : "This edit put implicit dependencies out of date:";
+    return driftedCount === 1 ? "This edit put an implicit coupling out of date:" : "This edit put implicit couplings out of date:";
   }
-  return driftedCount === 1 ? "This file has an implicit dependency out of date:" : "This file has implicit dependencies out of date:";
+  return driftedCount === 1 ? "This file has an implicit coupling out of date:" : "This file has implicit couplings out of date:";
 }
 function driftFooter(driftedNames) {
   if (driftedNames.length === 1) {

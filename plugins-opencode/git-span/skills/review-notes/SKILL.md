@@ -30,11 +30,21 @@ decision that none is needed; then the note is removed.
   decisive spec phrase verbatim; never paraphrase it. Omit the span name, CLI procedure,
   and incidental detail. Example: "README says \"retries stop after 3 attempts\"; config.ts
   RETRY_MAX is authoritative."
+- When the noted commit, its transcript, or the task came from a specification (issue,
+  ticket, RFC, acceptance criteria, user-stated requirements), keep the spec where drift can
+  see it. Preferred: commit the spec (or reuse the existing doc), then anchor the
+  requirement lines with the code and test implementing them and quote the decisive phrase
+  in the why. If it cannot be committed, quote the requirement verbatim in the why with its
+  source and anchor the implementation and its test; nothing verifies that quote, so keep it
+  short. If the spec exists only in chat, ask the user where it should live. Declare one span
+  per cluster of requirements a later edit could silently break; skip boilerplate and
+  anything a test already enforces. Do not commit a spec the repository's readers should
+  not see, and quote only short decisive phrases from licensed standards.
 - Names are lowercase kebab-case segments joined by `/` (`config/retry-docs`).
 
 ## 1. Select notes
 
-In each repository in the review scope:
+In each repository used in this session:
 
 ```bash
 git span notes list --format json

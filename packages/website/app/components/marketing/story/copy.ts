@@ -42,7 +42,7 @@ const SECONDARY_CTA: Cta = { label: 'Star on GitHub', href: GITHUB_URL };
 export const HERO: HeroCopy = {
   headline: [{ text: 'Agents should read between the lines.', code: false }],
   supporting:
-    'git-span documents implicit dependencies, the invisible connections in your project that type systems cannot see. ' +
+    'git-span documents implicit semantic couplings, the invisible connections in your project that type systems cannot see. ' +
     'Coding agents using git-span understand how the changes they make will affect other parts of your project.',
   primaryCta: PRIMARY_CTA,
   secondaryCta: SECONDARY_CTA

@@ -4,7 +4,7 @@
 # .wiki/wiki/** is the wiki tool's auto-generated anchor mesh (rk64 hashes
 # mirroring wiki-cited line ranges for staleness detection), not source the
 # advisor should ask for a git span — a commit that only re-anchors a drifted
-# wiki mesh file is not an uncovered implicit dependency.
+# wiki mesh file is not an uncovered implicit coupling.
 .wiki/
 
 # The plugin hook bundles are esbuild output from packages/agent-hooks/src,

@@ -24,7 +24,7 @@ The current `git span tree` command ([`tree.rs`](/packages/git-span/src/cli/tree
 
 This creates a second-order commercial use case:
 
-> **Use spans not only to protect implicit dependencies, but also to identify which implicit dependencies should be engineered away.**
+> **Use spans not only to protect implicit couplings, but also to identify which implicit couplings should be engineered away.**
 
 That would complement CodeScene's inferred change-coupling analysis. CodeScene can suggest that two areas often change together; git-span can add the declared reason, authority, lifecycle, and eventual remediation.
 
