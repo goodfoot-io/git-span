@@ -1,0 +1,7 @@
+packages/agent-hooks/src/claude/review-note-additions.ts#L88-L94 rk64:bb760d69221406e2
+packages/agent-hooks/src/common/commit-runtime.ts#L566-L580 rk64:6e7a8190b49f6256
+packages/agent-hooks/src/common/commit-span-metadata.ts rk64:bb493b8455bb26bd
+packages/agent-hooks/test/common/claude-stop-note-additions.test.ts#L80-L99 rk64:aa716742e5ccd5a2
+packages/agent-hooks/test/common/commit-span-metadata.test.ts rk64:b53fa8c4f0ac1157
+
+Automatic note creation and Claude Stop consume one bounded commit classifier: a nonempty commit changing only .span, .spans, or the configured span root is metadata-only; mixed commits remain material. The writer acknowledges metadata-only receipts without a notes association, while Claude Stop also ignores such pre-existing or manually added notes and advances its observed-ID checkpoint. Empty commits retain writer notes but do not request Claude review. Classifier lookup failures retain receipts and do not advance the Stop checkpoint. Merge-parent paths and rename source/destination paths participate in classification, so moving metadata into source remains material; the current writer regression checks default-root metadata receipts for Claude and Codex, while the Stop tests cover configured roots and mixed commits.

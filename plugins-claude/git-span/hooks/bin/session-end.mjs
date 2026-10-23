@@ -523,14 +523,14 @@ var EXIT_CODES = {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve6, reject2) => {
+  return new Promise((resolve7, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve6(chunks.join(""));
+      resolve7(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -592,12 +592,12 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve6, reject2) => {
+  return new Promise((resolve7, reject2) => {
     stream.write(content, (error) => {
       if (error)
         reject2(error);
       else
-        resolve6();
+        resolve7();
     });
   });
 }
@@ -801,6 +801,11 @@ function isOneOf(tokens, value) {
 }
 
 // packages/agent-hooks/src/common/agent-hooks-common.ts
+var SPAN_ROOT = ".span";
+function isInsideSpanRoot(repoRelPath, spanRoot = SPAN_ROOT) {
+  const root = spanRoot.replace(/\/+$/, "");
+  return repoRelPath === root || repoRelPath.startsWith(`${root}/`);
+}
 var PORCELAIN_STATUSES = [
   "FRESH",
   "RESOLVED_PENDING_COMMIT",
@@ -1155,6 +1160,44 @@ import { resolve as resolve4 } from "node:path";
 // packages/agent-hooks/src/common/commit-git.ts
 import { isAbsolute as isAbsolute3, resolve as resolve3 } from "node:path";
 
+// packages/agent-hooks/src/common/commit-span-metadata.ts
+import { relative, resolve as resolve5 } from "node:path";
+async function inspectCommitSpanMetadata(executable, cwd, sha, deadline, gitDirectory) {
+  const git = async (argv, missingConfig = false) => {
+    const timeoutMs = Math.floor(deadline - performance.now());
+    if (timeoutMs <= 0) throw new Error("note commit inspection deadline exhausted");
+    const result = await executeCommitNotes(executable, {
+      cwd,
+      argv: [...gitDirectory === void 0 ? [] : ["--git-dir", gitDirectory], ...argv],
+      timeoutMs,
+      maxOutputBytes: 1048576
+    });
+    if (result.signal !== null || result.timedOut || result.outputExceeded || result.exitCode !== 0 && !(missingConfig && result.exitCode === 1))
+      throw new Error("note commit inspection unavailable, failed, or exceeded bounds");
+    return result.stdout;
+  };
+  const configured = process.env.GIT_SPAN_DIR?.trim() || (await git(["config", "--get", "git-span.dir"], true)).trim() || ".span";
+  const root = relative(cwd, resolve5(cwd, configured)).split("\\").join("/");
+  const output = await git([
+    "diff-tree",
+    "--no-commit-id",
+    "--name-only",
+    "-z",
+    "-r",
+    "--root",
+    "-m",
+    "--no-renames",
+    sha,
+    "--"
+  ]);
+  if (output && !output.endsWith("\0")) throw new Error("invalid note commit path output");
+  const paths = output.split("\0").filter(Boolean);
+  if (!paths.length) return "empty";
+  return paths.some(
+    (changed) => ![".span", ".spans", root].some((metadata) => metadata === "" || isInsideSpanRoot(changed, metadata))
+  ) ? "material" : "metadata-only";
+}
+
 // packages/agent-hooks/src/common/commit-storage.ts
 import { createHash as createHash4, randomBytes } from "node:crypto";
 import {
@@ -1180,13 +1223,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { spawn as spawn2 } from "node:child_process";
 
 // packages/agent-hooks/src/common/git-span-command.ts
-import { dirname as dirname3, resolve as resolve5 } from "node:path";
+import { dirname as dirname3, resolve as resolve6 } from "node:path";
 function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git", platform = process.platform) {
   if (platform === "win32") {
     const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
     for (const directory of (process.env.PATH ?? "").split(";")) {
       for (const extension of extensions) {
-        const candidate = resolve5(cwd, directory, `git-span${extension.toLowerCase()}`);
+        const candidate = resolve6(cwd, directory, `git-span${extension.toLowerCase()}`);
         try {
           const executable = executableOnPath(candidate, cwd);
           if (extension.toLowerCase() === ".exe" || extension.toLowerCase() === ".com")
@@ -1229,12 +1272,12 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
   child.on("error", (error) => {
     spawnError = error;
   });
-  const closed = new Promise((resolve6) => {
-    child.once("close", (code, signal) => resolve6({ code, signal }));
+  const closed = new Promise((resolve7) => {
+    child.once("close", (code, signal) => resolve7({ code, signal }));
   });
   let released = false;
   try {
-    await new Promise((resolve6, reject2) => {
+    await new Promise((resolve7, reject2) => {
       let output = "";
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
@@ -1244,7 +1287,7 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
         output += chunk.toString("utf8");
         if (output === "locked\n") {
           clearTimeout(timer);
-          resolve6();
+          resolve7();
         } else if (output.length >= 7) {
           clearTimeout(timer);
           child.kill("SIGKILL");
@@ -1496,6 +1539,19 @@ async function drainDirectory(root, directory, enrollment, options, started, log
         throw new Error("invalid receipt filename");
       const valid = validateCommitReceipt(readJson(join4(directory, "receipts", name)), enrollment);
       if (!valid.ok) throw new Error(valid.reason);
+      const classification = await inspectCommitSpanMetadata(
+        enrollment.gitExecutable,
+        valid.value.repository.cwd,
+        valid.value.sha,
+        deadline,
+        valid.value.repository.gitDirectory
+      );
+      if (classification === "metadata-only") {
+        if (performance.now() >= deadline) throw new Error("receipt drain deadline exhausted before acknowledgment");
+        rmSync3(join4(directory, "receipts", name));
+        acknowledged++;
+        continue;
+      }
       const document = createCommitNoteDocument(enrollment);
       const association = await acquireReceiptClaim(
         root,

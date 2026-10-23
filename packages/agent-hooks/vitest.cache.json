@@ -125,6 +125,42 @@
       "packages/git-span/scripts/**",
       "packages/git-span/.cargo/**"
     ],
-    "packages/agent-hooks/test/common/review-outcomes.test.ts": []
+    "packages/agent-hooks/test/common/review-outcomes.test.ts": [],
+    "packages/agent-hooks/test/common/commit-span-metadata.test.ts": [
+      "packages/agent-hooks/src/**",
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/common/commit-span-metadata-boundaries.test.ts": [
+      "packages/agent-hooks/src/**",
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/common/commit-runtime.test.ts": [
+      "packages/agent-hooks/src/**",
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ]
   }
 }

@@ -1,9 +1,10 @@
 /** Durable Claude Stop checkpoints for newly added notes about material commits. */
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
-import { isInsideSpanRoot, type SessionLayout } from '../common/agent-hooks-common.js';
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
+import type { SessionLayout } from '../common/agent-hooks-common.js';
 import { executeCommitNotes } from '../common/commit-native-io.js';
+import { inspectCommitSpanMetadata } from '../common/commit-span-metadata.js';
 import { errnoCode, isRecord } from '../common/guards.js';
 import { hasReviewNotes, type NoteReviewCheck } from '../common/review-lookup.js';
 
@@ -25,15 +26,15 @@ function readCheckpoint(path: string): Map<string, number> {
     if (
       !isRecord(entry) ||
       Object.keys(entry).length !== 2 ||
-      typeof entry.cwd !== 'string' ||
-      !isAbsolute(entry.cwd) ||
+      typeof entry.commonDirectory !== 'string' ||
+      !isAbsolute(entry.commonDirectory) ||
       typeof entry.id !== 'number' ||
       !Number.isSafeInteger(entry.id) ||
       entry.id < 1 ||
-      checkpoint.has(entry.cwd)
+      checkpoint.has(entry.commonDirectory)
     )
       throw new Error('invalid note checkpoint repository');
-    checkpoint.set(entry.cwd, entry.id);
+    checkpoint.set(entry.commonDirectory, entry.id);
   }
   return checkpoint;
 }
@@ -41,7 +42,7 @@ function readCheckpoint(path: string): Map<string, number> {
 function writeCheckpoint(directory: string, path: string, checkpoint: Map<string, number>): void {
   const data = JSON.stringify({
     schemaVersion: 1,
-    repositories: [...checkpoint].map(([cwd, id]) => ({ cwd, id }))
+    repositories: [...checkpoint].map(([commonDirectory, id]) => ({ commonDirectory, id }))
   });
   if (Buffer.byteLength(data) > MAX_STATE_BYTES) throw new Error('note checkpoint exceeds size budget');
   mkdirSync(directory, { recursive: true });
@@ -67,56 +68,30 @@ export function checkClaudeNoteAdditions(
     const path = join(directory, 'review-notes-stop.json');
     const checkpoint = readCheckpoint(path);
     if (outcome.kind === 'empty') return outcome;
-    const git = async (cwd: string, argv: string[], missingConfig = false): Promise<string> => {
+    const git = async (cwd: string, argv: string[]): Promise<string> => {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) throw new Error('note commit inspection deadline exhausted');
       const result = await executeCommitNotes('git', { cwd, argv, timeoutMs: remaining, maxOutputBytes: 1_048_576 });
-      if (
-        result.signal !== null ||
-        result.timedOut ||
-        result.outputExceeded ||
-        (result.exitCode !== 0 && !(missingConfig && result.exitCode === 1))
-      )
+      if (result.signal !== null || result.timedOut || result.outputExceeded || result.exitCode !== 0)
         throw new Error('note commit inspection unavailable, failed, or exceeded bounds');
       return result.stdout;
     };
     const repositories = [];
     for (const repository of outcome.repositories) {
-      const previous = checkpoint.get(repository.cwd) ?? 0;
+      // Notes IDs belong to the shared store, not an individual linked worktree.
+      const commonDirectory = realpathSync(
+        (await git(repository.cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trimEnd()
+      );
+      const previous = checkpoint.get(commonDirectory) ?? 0;
       const added = repository.notes.filter((note) => note.id > previous);
       if (!added.length) continue;
-      const configured =
-        process.env.GIT_SPAN_DIR?.trim() ||
-        (await git(repository.cwd, ['config', '--get', 'git-span.dir'], true)).trim() ||
-        '.span';
-      const root = relative(repository.cwd, resolve(repository.cwd, configured)).split('\\').join('/');
       const material = new Set<string>();
       for (const sha of new Set(added.map((note) => note.commit_sha))) {
-        const output = await git(repository.cwd, [
-          'diff-tree',
-          '--no-commit-id',
-          '--name-only',
-          '-z',
-          '-r',
-          '--root',
-          '-m',
-          '--no-renames',
-          sha,
-          '--'
-        ]);
-        if (output && !output.endsWith('\0')) throw new Error('invalid note commit path output');
-        const paths = output.split('\0').filter(Boolean);
-        if (
-          paths.some(
-            (changed) =>
-              !['.span', '.spans', root].some((metadata) => metadata === '' || isInsideSpanRoot(changed, metadata))
-          )
-        )
-          material.add(sha);
+        if ((await inspectCommitSpanMetadata('git', repository.cwd, sha, deadline)) === 'material') material.add(sha);
       }
       const notes = added.filter((note) => material.has(note.commit_sha));
       if (notes.length) repositories.push({ cwd: repository.cwd, notes });
-      checkpoint.set(repository.cwd, Math.max(previous, ...added.map((note) => note.id)));
+      checkpoint.set(commonDirectory, Math.max(previous, ...added.map((note) => note.id)));
     }
     writeCheckpoint(directory, path, checkpoint);
     return repositories.length ? { kind: 'matching', repositories } : { kind: 'empty' };

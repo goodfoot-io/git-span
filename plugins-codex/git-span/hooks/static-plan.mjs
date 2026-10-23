@@ -453,14 +453,14 @@ function preToolUseHook(config, handler) {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve8, reject2) => {
+  return new Promise((resolve9, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve8(chunks.join(""));
+      resolve9(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -522,12 +522,12 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve8, reject2) => {
+  return new Promise((resolve9, reject2) => {
     stream.write(content, (error) => {
       if (error)
         reject2(error);
       else
-        resolve8();
+        resolve9();
     });
   });
 }
@@ -7075,6 +7075,9 @@ function checkpointCommitInvocation(enrollment, deadline) {
   return [...observations.values()];
 }
 
+// packages/agent-hooks/src/common/commit-span-metadata.ts
+import { relative as relative3, resolve as resolve7 } from "node:path";
+
 // packages/agent-hooks/src/common/commit-storage.ts
 import { createHash as createHash7, randomBytes } from "node:crypto";
 import {
@@ -7118,12 +7121,12 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
   child.on("error", (error) => {
     spawnError = error;
   });
-  const closed = new Promise((resolve8) => {
-    child.once("close", (code, signal) => resolve8({ code, signal }));
+  const closed = new Promise((resolve9) => {
+    child.once("close", (code, signal) => resolve9({ code, signal }));
   });
   let released = false;
   try {
-    await new Promise((resolve8, reject2) => {
+    await new Promise((resolve9, reject2) => {
       let output = "";
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
@@ -7133,7 +7136,7 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
         output += chunk.toString("utf8");
         if (output === "locked\n") {
           clearTimeout(timer);
-          resolve8();
+          resolve9();
         } else if (output.length >= 7) {
           clearTimeout(timer);
           child.kill("SIGKILL");
@@ -7497,7 +7500,7 @@ function disableUpdateCheck() {
 
 // packages/agent-hooks/src/codex/execution-directory.ts
 import { closeSync as closeSync4, constants as constants3, fstatSync as fstatSync3, openSync as openSync4, readSync as readSync2 } from "node:fs";
-import { isAbsolute as isAbsolute8, resolve as resolve7 } from "node:path";
+import { isAbsolute as isAbsolute8, resolve as resolve8 } from "node:path";
 
 // node_modules/acorn/dist/acorn.mjs
 var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
@@ -13310,7 +13313,7 @@ function directDirectory(call, request) {
     return null;
   if (args.workdir === void 0 || args.workdir === null || args.workdir === "") return request.cwd;
   if (typeof args.workdir !== "string" || args.workdir.includes("\0")) return null;
-  return resolve7(request.cwd, args.workdir);
+  return resolve8(request.cwd, args.workdir);
 }
 function completedScript(output) {
   const first = Array.isArray(output) ? output[0] : output;
@@ -13331,7 +13334,7 @@ function codeModeDirectory(pending2, command) {
     for (const execution2 of parsed.executions) {
       if (execution2.command !== command) continue;
       if (execution2.background) return null;
-      const cwd = resolve7(script.cwd, execution2.workdir ?? "");
+      const cwd = resolve8(script.cwd, execution2.workdir ?? "");
       if (directory !== null && directory !== cwd) return null;
       directory = cwd;
     }

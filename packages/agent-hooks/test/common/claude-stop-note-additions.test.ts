@@ -44,11 +44,25 @@ function fixture() {
     });
   };
   // Construct each handler afresh, as separate hook processes do in production.
-  const stop = () => createHandler(undefined, temp.layout)(input, context);
+  const stop = (cwd = input.cwd) => createHandler(undefined, temp.layout)({ ...input, cwd }, context);
   return { ...temp, git, commit, addNote, stop };
 }
 
 describe('Claude Stop only reviews newly added non-metadata notes', () => {
+  it('does not repeat unchanged shared notes after switching linked worktrees', async () => {
+    const repo = fixture();
+    try {
+      repo.commit('source.ts');
+      repo.addNote();
+      const linked = join(repo.parent, 'linked');
+      repo.git('worktree', 'add', '--detach', linked, 'HEAD');
+      expect((await repo.stop())?.stdout.decision).toBe('block');
+      expect(await repo.stop(linked)).toBeNull();
+    } finally {
+      repo.cleanup();
+    }
+  });
+
   it('persists the last stop and detects an additional note on the same commit', async () => {
     const repo = fixture();
     try {

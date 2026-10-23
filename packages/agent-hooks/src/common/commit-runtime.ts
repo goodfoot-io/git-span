@@ -32,6 +32,7 @@ import {
 } from './commit-lifecycle.js';
 import { executableOnPath, executeCommitNotes, verifyCommitObject } from './commit-native-io.js';
 import { checkpointCommitInvocation, observedCommitReceipts, readCommitObservations } from './commit-observation.js';
+import { inspectCommitSpanMetadata } from './commit-span-metadata.js';
 import {
   acquireReceiptClaim,
   atomicJson,
@@ -564,6 +565,19 @@ async function drainDirectory(
         throw new Error('invalid receipt filename');
       const valid = validateCommitReceipt(readJson(join(directory, 'receipts', name)), enrollment);
       if (!valid.ok) throw new Error(valid.reason);
+      const classification = await inspectCommitSpanMetadata(
+        enrollment.gitExecutable,
+        valid.value.repository.cwd,
+        valid.value.sha,
+        deadline,
+        valid.value.repository.gitDirectory
+      );
+      if (classification === 'metadata-only') {
+        if (performance.now() >= deadline) throw new Error('receipt drain deadline exhausted before acknowledgment');
+        rmSync(join(directory, 'receipts', name));
+        acknowledged++;
+        continue;
+      }
       const document = createCommitNoteDocument(enrollment);
       const association = await acquireReceiptClaim(
         root,

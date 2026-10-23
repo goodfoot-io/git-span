@@ -523,14 +523,14 @@ var EXIT_CODES = {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve7, reject2) => {
+  return new Promise((resolve8, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve7(chunks.join(""));
+      resolve8(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -592,12 +592,12 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve7, reject2) => {
+  return new Promise((resolve8, reject2) => {
     stream.write(content, (error) => {
       if (error)
         reject2(error);
       else
-        resolve7();
+        resolve8();
     });
   });
 }
@@ -7109,6 +7109,9 @@ function checkpointCommitInvocation(enrollment, deadline) {
   return [...observations.values()];
 }
 
+// packages/agent-hooks/src/common/commit-span-metadata.ts
+import { relative as relative3, resolve as resolve7 } from "node:path";
+
 // packages/agent-hooks/src/common/commit-storage.ts
 import { createHash as createHash7, randomBytes } from "node:crypto";
 import {
@@ -7152,12 +7155,12 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
   child.on("error", (error) => {
     spawnError = error;
   });
-  const closed = new Promise((resolve7) => {
-    child.once("close", (code, signal) => resolve7({ code, signal }));
+  const closed = new Promise((resolve8) => {
+    child.once("close", (code, signal) => resolve8({ code, signal }));
   });
   let released = false;
   try {
-    await new Promise((resolve7, reject2) => {
+    await new Promise((resolve8, reject2) => {
       let output = "";
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
@@ -7167,7 +7170,7 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
         output += chunk.toString("utf8");
         if (output === "locked\n") {
           clearTimeout(timer);
-          resolve7();
+          resolve8();
         } else if (output.length >= 7) {
           clearTimeout(timer);
           child.kill("SIGKILL");
