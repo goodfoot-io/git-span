@@ -27,6 +27,7 @@ pub mod cli_drift_renderers;
 pub mod cli_drift_whole_render;
 pub mod cli_exit_codes;
 pub mod cli_history;
+pub mod cli_help;
 pub mod cli_ls;
 pub mod cli_merge_driver;
 pub mod cli_notes;

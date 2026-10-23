@@ -25,7 +25,13 @@ fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let cmd = Cli::command();
+    // The manual is the detailed reference; concise top-level summaries belong
+    // only in short CLI help. Preserve every command's retained explanation.
+    let cmd =
+        Cli::command().mut_subcommands(|subcommand| match subcommand.get_long_about().cloned() {
+            Some(details) if !subcommand.is_hide_set() => subcommand.about(details),
+            _ => subcommand,
+        });
     let man = clap_mangen::Man::new(cmd);
 
     let mut buf: Vec<u8> = Vec::new();
@@ -220,6 +226,17 @@ Check for drift and inspect a span:
 git span drift
 git span billing/charge-request-contract
 git span show billing/charge-request-contract
+.fi
+.RE
+.PP
+Select actual span names from tab-delimited machine records (one row per
+anchor); deduplicate names before inspecting spans. Tab separators preserve
+field boundaries for paths with spaces; quoting keeps each name one argument:
+.PP
+.RS 4
+.nf
+git span list --porcelain | cut -f1 | sort -u | \e
+    while IFS= read -r name; do git span show "$name"; done
 .fi
 .RE
 .PP

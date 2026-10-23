@@ -53,14 +53,70 @@ pub use error::{
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
+use std::fmt::Write as _;
+
+/// Group the top-level inventory by task using the enum's command metadata.
+/// Building the enum directly avoids recursively constructing the top-level CLI.
+fn top_level_help_template() -> String {
+    let mut inventory = Commands::augment_subcommands(clap::Command::new("git-span"));
+    inventory.build();
+    let groups: &[(&str, &[&str])] = &[
+        ("Inspect spans", &["show", "list", "context"]),
+        (
+            "Check and maintain spans",
+            &["drift", "replace", "add", "why"],
+        ),
+        ("Commit notes", &["notes"]),
+        (
+            "History and diagnostics",
+            &["history", "preflight", "doctor", "tree"],
+        ),
+        (
+            "Administration",
+            &[
+                "remove",
+                "delete",
+                "config",
+                "resolve",
+                "merge-driver",
+                "help",
+            ],
+        ),
+    ];
+    let mut template = String::from("{about}\n\n{usage-heading} {usage}\n");
+    for (heading, names) in groups {
+        writeln!(template, "\n{heading}:").expect("write to String");
+        for name in *names {
+            let command = inventory
+                .find_subcommand(name)
+                .expect("group names a command");
+            if command.is_hide_set() {
+                continue;
+            }
+            let summary = if *name == "help" {
+                "Show command help".to_owned()
+            } else {
+                command
+                    .get_about()
+                    .expect("public command has a summary")
+                    .to_string()
+            };
+            writeln!(template, "  {name:<13} {summary}").expect("write to String");
+        }
+    }
+    template.push_str("\nOptions:\n{options}{after-help}\n");
+    template
+}
 
 /// Top-level `git-span` command.
 #[derive(Debug, Parser)]
 #[command(
     name = "git-span",
-    about = "Track implicit semantic dependencies in a git repo.",
+    about = "Track semantic relationships between anchored code and prose.",
+    help_template = top_level_help_template(),
     version,
-    after_help = "A span associates one or more file or line-range anchors with decision-relevant context: implicit couplings, tested contracts, same-file relationships, single-anchor reminders, or generated-artifact evidence. Its `why` uses one or two complete present-tense clauses to state the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, or evidence gate. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure. Inherit a why only while it remains true; after a gated transition, revise or retire it and reconcile superseded anchors until scoped drift is zero.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
+    after_help = "A span links anchors with a shared explanation.\nUse git span <name> to show a span; git span <command> -h for options.\nFor scripts: git span list --porcelain; git span notes list --format json.",
+    after_long_help = "A span associates one or more file or line-range anchors with decision-relevant context: implicit couplings, tested contracts, same-file relationships, single-anchor reminders, or generated-artifact evidence. Its `why` uses one or two complete present-tense clauses to state the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, or evidence gate. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure. Inherit a why only while it remains true; after a gated transition, revise or retire it and reconcile superseded anchors until scoped drift is zero.\n\nBare invocations:\n  git span <name>          show one span (anchors, why, config)"
 )]
 pub struct Cli {
     /// Emit performance timings for major git-span operation groups to stderr.
@@ -81,9 +137,14 @@ pub struct Cli {
 #[derive(Debug, Clone, Subcommand)]
 pub enum Commands {
     /// Attach, inspect, and remove durable arbitrary JSON documents associated with commits.
+    #[command(
+        about = "List, inspect, attach, or remove commit-associated JSON records",
+        long_about
+    )]
     Notes(notes::NotesArgs),
 
     /// Inspect staged span obligations using index definitions and blobs without mutation.
+    #[command(about = "Check staged span obligations", long_about)]
     Preflight(preflight::PreflightArgs),
 
     /// Hold a private receipt mutex until the caller closes stdin.
@@ -97,9 +158,14 @@ pub enum Commands {
     /// A span whose file is in a Git conflict state is refused rather than
     /// rendered from conflict-marker text; `git span resolve` settles it.
     #[command(name = "show")]
+    #[command(
+        about = "Show a span's anchors, explanation, and configuration",
+        long_about
+    )]
     Show(ShowArgs),
 
     /// List files and anchors currently tracked by a span.
+    #[command(about = "List spans and their anchors", long_about)]
     List(ListArgs),
 
     /// Report anchors whose content has drifted from their anchored state.
@@ -152,6 +218,7 @@ pub enum Commands {
     /// A span `--fix` cannot finish is not analyzable by re-running `drift`.
     /// See `git span resolve` (`--dry-run` first), which settles a
     /// conflict-markered span file under one explicitly chosen side.
+    #[command(about = "Check anchors for changes", long_about)]
     Drift(DriftArgs),
 
     /// Return exact dependency context for repository-relative paths or
@@ -163,6 +230,7 @@ pub enum Commands {
     /// Whitespace edits and fuzzy matches remain drifting. `--operation-id`
     /// makes repair retries idempotent. Output is always the versioned
     /// context document.
+    #[command(about = "Get structured context for paths or line ranges", long_about)]
     Context(ContextArgs),
 
     /// Return complete current relationship context selected by immutable commit changes.
@@ -210,11 +278,13 @@ pub enum Commands {
     /// — retryable. Exits 1 on an invalid name or an out-of-range anchor.
     ///
     /// Stage and commit the change with `git add .span && git commit`.
+    #[command(about = "Add anchors or refresh existing addresses", long_about)]
     Add(AddArgs),
 
     /// Remove anchors from a span, editing the span file under the span
     /// root. Each anchor must match an existing one on the span exactly.
     /// Stage and commit the change with `git add .span && git commit`.
+    #[command(about = "Remove anchors from a span", long_about)]
     Remove(RemoveArgs),
 
     /// Replace one anchor on a span with another address, in a single
@@ -246,6 +316,7 @@ pub enum Commands {
     /// `drifted` addresses.
     ///
     /// Stage and commit the change with `git add .span && git commit`.
+    #[command(about = "Move an anchor to a different address", long_about)]
     Replace(ReplaceArgs),
 
     /// Read or stage the span's why — one or two complete present-tense
@@ -275,15 +346,18 @@ pub enum Commands {
     /// meaning remains true. Revise or retire it when the relationship
     /// or lifecycle state changes. Commit with `git add .span && git
     /// commit`.
+    #[command(about = "Read or update a span's explanation", long_about)]
     Why(WhyArgs),
 
     /// Delete a span — removes its file under the span root. Destructive.
     /// Run `git span list` afterward to confirm it is gone, then commit
     /// the change.
+    #[command(about = "Delete a span", long_about)]
     Delete(DeleteArgs),
 
     /// Audit the local span setup — reports span count and findings,
     /// plus a store-size summary (bytes used). Exits 0.
+    #[command(about = "Audit the local span setup", long_about)]
     Doctor(DoctorArgs),
 
     /// Trace blast radius: render a clique-grouped impact tree rooted at
@@ -314,6 +388,7 @@ pub enum Commands {
     /// collapse onto one clique line exactly as they would from a
     /// single-root call, while roots with no span in common still
     /// surface as separate top-level trees in the same listing.
+    #[command(about = "Trace impact from paths", long_about)]
     Tree(TreeArgs),
 
     /// Resolve `.span/` merge conflicts structurally when invoked by git
@@ -345,6 +420,7 @@ pub enum Commands {
     ///
     /// ```
     #[command(name = "merge-driver")]
+    #[command(about = "Resolve structural span conflicts for Git", long_about)]
     MergeDriver(MergeDriverArgs),
 
     /// Show a span's git history as a git-log-style timeline: newest-first
@@ -373,6 +449,7 @@ pub enum Commands {
     /// timeline is the complete record). Treat scoped JSON output as a
     /// partial record — never read it as evidence that a span has no
     /// history or no drift.
+    #[command(about = "Show span and anchor history", long_about)]
     History(HistoryArgs),
 
     /// Settle every residue entry in a conflict-markered span file under one
@@ -395,6 +472,7 @@ pub enum Commands {
     /// stopped it, so a failed run is always safe to retry with another side.
     /// The result is written to the worktree and never staged — review it with
     /// `git diff` and stage what you agree with.
+    #[command(about = "Settle unresolved span conflicts", long_about)]
     Resolve(ResolveArgs),
 
     /// Read or set a span's resolver configuration — the span file's
@@ -424,6 +502,7 @@ pub enum Commands {
     /// resolve`'s job.
     ///
     /// Stage and commit the change with `git add .span && git commit`.
+    #[command(about = "Read or set span resolver configuration", long_about)]
     Config(ConfigArgs),
 }
 

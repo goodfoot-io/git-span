@@ -48,7 +48,7 @@ Key flags:
 git span remove <NAME> <ANCHORS>...
 ```
 
-Remove anchors from a span, editing the span file under the span root. Each anchor must match an existing one on the span exactly. Stage and commit the change with `git add .span && git commit`
+Remove anchors from a span, editing the span file under the span root. Each anchor must match an existing one on the span exactly. Stage and commit the change with `git add .span && git commit`.
 
 ### replace
 
@@ -114,7 +114,7 @@ Stage and commit the change with `git add .span && git commit`.
 git span delete <NAME>
 ```
 
-Delete a span — removes its file under the span root. Destructive. Run `git span list` afterward to confirm it is gone, then commit the change
+Delete a span — removes its file under the span root. Destructive. Run `git span list` afterward to confirm it is gone, then commit the change.
 
 ## Commit documents
 
@@ -209,7 +209,7 @@ A span whose file is in a Git conflict state is refused rather than rendered fro
 git span list [OPTIONS] [TARGETS]...
 ```
 
-List files and anchors currently tracked by a span
+List files and anchors currently tracked by a span.
 
 Key flags:
 
@@ -334,7 +334,7 @@ Key flags:
 git span doctor
 ```
 
-Audit the local span setup — reports span count and findings, plus a store-size summary (bytes used). Exits 0
+Audit the local span setup — reports span count and findings, plus a store-size summary (bytes used). Exits 0.
 
 ### merge-driver
 
@@ -390,7 +390,7 @@ Key flags:
 git span preflight [OPTIONS]
 ```
 
-Inspect staged span obligations using index definitions and blobs without mutation
+Inspect staged span obligations using index definitions and blobs without mutation.
 
 JSON schema: [preflight](https://git-span.com/schemas/cli/v1/preflight.json).
 

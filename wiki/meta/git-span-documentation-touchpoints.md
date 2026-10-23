@@ -31,7 +31,7 @@ templates instead.
 ## CLI sources
 
 - Clap commands and help: [cli/mod.rs](/packages/git-span/src/cli/mod.rs).
-- Bare-name pre-classification: [main.rs](/packages/git-span/src/main.rs#L65-L116).
+- Bare-name pre-classification: [main.rs](/packages/git-span/src/main.rs#L65-L115).
 - Reserved names: [validation.rs](/packages/git-span/src/validation.rs#L7-L28).
 - Command behavior and exits: `packages/git-span/src/cli/`, especially `commit.rs`,
   `drift_output.rs`, and `show.rs`.
@@ -68,7 +68,7 @@ to be zero. Do not restore superseded rules such as “one subsystem-definition 
 
 ### CLI and package surfaces
 
-- `after_help`, `Commands::Why`, and `WhyArgs` in [cli/mod.rs](/packages/git-span/src/cli/mod.rs).
+- `after_long_help`, `Commands::Why`, and `WhyArgs` in [cli/mod.rs](/packages/git-span/src/cli/mod.rs).
 - Description, why-writing, lifecycle, and examples in
   [gen-manpage.rs](/packages/git-span/src/bin/gen-manpage.rs).
 - [packages/git-span/README.md](/packages/git-span/README.md#L3).
@@ -178,7 +178,7 @@ A span associates one or more file or line-range anchors with decision-relevant
 context. Implicit couplings, tested contracts, same-file relationships, single-anchor
 reminders and generated-artifact evidence are eligible when the information changes a
 likely decision. Keep these mechanics and scope aligned in the package README,
-website concepts, Clap `after_help` and man-page description. Each skill owns its local
+website concepts, Clap `after_long_help` and man-page description. Each skill owns its local
 selection and workflow guidance; no shared skill reference is required.
 
 Grouping guidance lives in core skills, experts, candidate references, cleanup

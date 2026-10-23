@@ -73,7 +73,6 @@ fn run() -> Result<i32> {
     // clap-handled flag works outside a git repo.
     if args.len() == 1 {
         Cli::command().print_help()?;
-        println!();
         return Ok(0);
     }
     // Skip leading `--perf` so a bare `git span <name>` still routes to
@@ -213,7 +212,6 @@ fn run() -> Result<i32> {
         Some(cmd) => cli::dispatch(&repo, cmd.clone(), None, &cli),
         None => {
             Cli::command().print_help()?;
-            println!();
             Ok(0)
         }
     }
