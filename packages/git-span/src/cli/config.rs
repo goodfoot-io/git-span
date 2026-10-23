@@ -60,7 +60,10 @@ fn run_config_reader(repo: &Repository, name: &str, span_root: &str) -> Result<i
     let span = read_effective_or_refuse(repo, name, span_root)?;
 
     println!("Span `{name}` config:");
-    println!("copy_detection = \"{}\"", span.config.copy_detection.wire_name());
+    println!(
+        "copy_detection = \"{}\"",
+        span.config.copy_detection.wire_name()
+    );
     println!("ignore_whitespace = {}", span.config.ignore_whitespace);
     println!("follow_moves = {}", span.config.follow_moves);
     Ok(0)
@@ -90,7 +93,9 @@ fn read_effective_or_refuse(
                         let mut steps =
                             vec![NextStep::Bash(format!("git status {span_root}/{name}"))];
                         steps.extend(super::resolve::conflict_remediation(
-                            &[name], span_root, kind,
+                            &[name],
+                            span_root,
+                            kind,
                         ));
                         steps
                     },

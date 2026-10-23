@@ -116,7 +116,10 @@ mod tests {
     #[test]
     fn under_24h_does_not_spawn() {
         let now = 1_000_000_000;
-        assert!(!should_spawn_check(Some(&state(now - DAY + 1, 0, &[])), now));
+        assert!(!should_spawn_check(
+            Some(&state(now - DAY + 1, 0, &[])),
+            now
+        ));
     }
 
     #[test]
@@ -174,8 +177,8 @@ mod tests {
         // A stored cli finding above the running version means the latest
         // release is newer than the installed CLI — the note must fire.
         let s = state(now - DAY, now - DAY, &[("cli", "9.9.9")]);
-        let reminder = should_remind(Some(&s), &current, now)
-            .expect("a newer latest release must remind");
+        let reminder =
+            should_remind(Some(&s), &current, now).expect("a newer latest release must remind");
         assert_eq!(
             reminder.findings,
             BTreeMap::from([("cli".to_string(), Version::new(1, 1, 5))])

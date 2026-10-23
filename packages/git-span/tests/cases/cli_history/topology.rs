@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// A merge that *unions* the declaration: both branches added an anchor, and
 /// the merge keeps both.
 ///
@@ -101,7 +100,6 @@ fn a_merge_that_unions_the_declaration_asserts_no_anchor_deletion() -> Result<()
     Ok(())
 }
 
-
 /// A merge that moved the mainline at a seed path is a commit like any other,
 /// and the timeline says so.
 ///
@@ -134,7 +132,6 @@ fn a_merge_that_moved_the_mainline_at_a_seed_path_is_rendered() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn history_follows_first_parent_and_ours_merges_leave_no_side_branch_residue() -> Result<()> {
@@ -192,7 +189,6 @@ fn history_follows_first_parent_and_ours_merges_leave_no_side_branch_residue() -
     assert_no_fabricated_lines(&repo, "ours")
 }
 
-
 #[test]
 fn history_and_drift_reject_git_replacement_topology_before_output() -> Result<()> {
     // The span name cannot be the bare `replace` — it is a reserved
@@ -240,7 +236,6 @@ fn history_and_drift_reject_git_replacement_topology_before_output() -> Result<(
     }
     Ok(())
 }
-
 
 #[test]
 fn replacement_controls_and_head_reachability_define_the_shared_boundary() -> Result<()> {
@@ -294,7 +289,6 @@ fn replacement_controls_and_head_reachability_define_the_shared_boundary() -> Re
     );
     Ok(())
 }
-
 
 #[test]
 fn custom_replacement_namespace_rejects_history_and_drift_before_effects() -> Result<()> {
@@ -360,7 +354,6 @@ fn custom_replacement_namespace_rejects_history_and_drift_before_effects() -> Re
     Ok(())
 }
 
-
 #[test]
 fn empty_replacement_base_cannot_bypass_the_shared_boundary() -> Result<()> {
     let repo = committed_drift_repo("empty-replace-base")?;
@@ -400,7 +393,6 @@ fn empty_replacement_base_cannot_bypass_the_shared_boundary() -> Result<()> {
     )?;
     Ok(())
 }
-
 
 #[test]
 fn same_parent_tree_replacements_are_rejected_in_default_and_custom_namespaces() -> Result<()> {
@@ -474,7 +466,6 @@ fn same_parent_tree_replacements_are_rejected_in_default_and_custom_namespaces()
     Ok(())
 }
 
-
 #[test]
 fn grafts_only_block_when_their_changed_commit_is_reachable() -> Result<()> {
     let repo = committed_drift_repo("graft-reachability")?;
@@ -517,7 +508,6 @@ fn grafts_only_block_when_their_changed_commit_is_reachable() -> Result<()> {
     )?;
     Ok(())
 }
-
 
 #[test]
 fn non_utf8_graft_metadata_cannot_hide_valid_entries_or_fail_open() -> Result<()> {
@@ -576,7 +566,6 @@ fn non_utf8_graft_metadata_cannot_hide_valid_entries_or_fail_open() -> Result<()
     Ok(())
 }
 
-
 #[test]
 fn config_disabled_replacements_define_the_same_boundary_as_the_env_var() -> Result<()> {
     let repo = committed_drift_repo("replace-config-off")?;
@@ -624,7 +613,6 @@ fn config_disabled_replacements_define_the_same_boundary_as_the_env_var() -> Res
     Ok(())
 }
 
-
 #[test]
 fn config_disabled_replacements_leave_grafts_active() -> Result<()> {
     let repo = committed_drift_repo("graft-config-off")?;
@@ -633,10 +621,7 @@ fn config_disabled_replacements_leave_grafts_active() -> Result<()> {
     // replacement processing disabled by config, a reachable graft entry
     // still rejects, mirroring the env-var independence proven above.
     repo.run_git(["config", "core.useReplaceRefs", "false"])?;
-    std::fs::write(
-        repo.path().join(".git/info/grafts"),
-        format!("{head}\n"),
-    )?;
+    std::fs::write(repo.path().join(".git/info/grafts"), format!("{head}\n"))?;
     assert_topology_rejected_without_effects(
         &repo,
         "graft-config-off",
@@ -645,7 +630,6 @@ fn config_disabled_replacements_leave_grafts_active() -> Result<()> {
     )?;
     Ok(())
 }
-
 
 #[test]
 fn a_non_boolean_use_replace_refs_fails_closed() -> Result<()> {
@@ -677,7 +661,6 @@ fn a_non_boolean_use_replace_refs_fails_closed() -> Result<()> {
     Ok(())
 }
 
-
 /// A first-parent timeline does not surface commits that happened only on a
 /// merged side branch; their contribution is represented by the merge itself.
 #[test]
@@ -701,7 +684,6 @@ fn a_side_branch_tip_is_not_a_timeline_entry() -> Result<()> {
     );
     assert_no_fabricated_lines(&repo, "mg")
 }
-
 
 /// The commit *after* a merge is the acceptance case for the two halves
 /// together, and it is the one neither half fixes alone.
@@ -739,7 +721,6 @@ fn the_first_commit_after_a_merge_carries_only_its_own_edit() -> Result<()> {
     );
     assert_no_fabricated_lines(&repo, "mg")
 }
-
 
 /// The walk is ordered by commit *time*, and commit time is not topology.
 ///
@@ -854,7 +835,6 @@ fn limit_scopes_the_window_seeds_the_baseline_and_warns() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn limit_counts_rendered_entries_not_walked_commits() -> Result<()> {

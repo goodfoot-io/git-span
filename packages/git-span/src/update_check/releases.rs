@@ -34,7 +34,9 @@ struct ReleaseEntry {
 /// tag → `None` (no finding).
 pub fn latest_release_from_payload(json: &str) -> Option<Version> {
     let entries: Vec<ReleaseEntry> = serde_json::from_str(json).ok()?;
-    let latest = entries.into_iter().find(|entry| !entry.draft && !entry.prerelease)?;
+    let latest = entries
+        .into_iter()
+        .find(|entry| !entry.draft && !entry.prerelease)?;
     let version = strip_tag_prefix(&latest.tag_name)?;
     Version::parse(version).ok()
 }

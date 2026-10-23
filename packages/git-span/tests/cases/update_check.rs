@@ -83,7 +83,9 @@ fn update_env(port: u16, db: &Path, cache: &Path) -> Vec<(String, String)> {
 
 /// Borrowed view of [`update_env`]'s output for the harness entry points.
 fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
-    env.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect()
+    env.iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect()
 }
 
 /// The binary under test. `run_pty` invokes it explicitly — a bare
@@ -136,7 +138,11 @@ fn first_tty_run_prints_nothing_and_only_spawns() -> Result<()> {
     let port = serve_once(synthetic_payload(), Duration::from_secs(2))?;
     let db_dir = tempfile::tempdir()?;
     let cache_dir = tempfile::tempdir()?;
-    let env = update_env(port, &db_dir.path().join("update-check.db"), cache_dir.path());
+    let env = update_env(
+        port,
+        &db_dir.path().join("update-check.db"),
+        cache_dir.path(),
+    );
     let env = env_refs(&env);
 
     let Some(out) = run_pty(&repo, &env, "list")? else {
@@ -195,7 +201,10 @@ fn direct_sync_child_stamps_the_store() -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(version, "9.9.9", "the cli finding must record the newer tag");
+    assert_eq!(
+        version, "9.9.9",
+        "the cli finding must record the newer tag"
+    );
 
     // The child also appends its one diagnostic line to the log beside the
     // store — the audit trail that separates "up to date" from "check
@@ -214,7 +223,11 @@ fn tty_first_run_prints_note_second_run_prints_nothing() -> Result<()> {
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
     let db_dir = tempfile::tempdir()?;
     let cache_dir = tempfile::tempdir()?;
-    let env = update_env(port, &db_dir.path().join("update-check.db"), cache_dir.path());
+    let env = update_env(
+        port,
+        &db_dir.path().join("update-check.db"),
+        cache_dir.path(),
+    );
     let env = env_refs(&env);
 
     // Seed the store synchronously so the reminder has findings to show —
@@ -265,7 +278,11 @@ fn porcelain_invocation_prints_nothing() -> Result<()> {
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
     let db_dir = tempfile::tempdir()?;
     let cache_dir = tempfile::tempdir()?;
-    let env = update_env(port, &db_dir.path().join("update-check.db"), cache_dir.path());
+    let env = update_env(
+        port,
+        &db_dir.path().join("update-check.db"),
+        cache_dir.path(),
+    );
     let env = env_refs(&env);
 
     let Some(out) = run_pty(&repo, &env, "list --porcelain")? else {
@@ -286,7 +303,11 @@ fn piped_stdout_prints_nothing() -> Result<()> {
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
     let db_dir = tempfile::tempdir()?;
     let cache_dir = tempfile::tempdir()?;
-    let env = update_env(port, &db_dir.path().join("update-check.db"), cache_dir.path());
+    let env = update_env(
+        port,
+        &db_dir.path().join("update-check.db"),
+        cache_dir.path(),
+    );
     let env = env_refs(&env);
 
     // run_span captures stdout through a pipe — the harness itself is the
@@ -307,11 +328,12 @@ fn disable_env_var_prints_nothing() -> Result<()> {
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
     let db_dir = tempfile::tempdir()?;
     let cache_dir = tempfile::tempdir()?;
-    let mut env = update_env(port, &db_dir.path().join("update-check.db"), cache_dir.path());
-    env.push((
-        "GIT_SPAN_DISABLE_UPDATE_CHECK".to_string(),
-        "1".to_string(),
-    ));
+    let mut env = update_env(
+        port,
+        &db_dir.path().join("update-check.db"),
+        cache_dir.path(),
+    );
+    env.push(("GIT_SPAN_DISABLE_UPDATE_CHECK".to_string(), "1".to_string()));
     let env = env_refs(&env);
 
     let Some(out) = run_pty(&repo, &env, "list")? else {
@@ -332,7 +354,11 @@ fn update_check_subcommand_runs_synchronously_and_is_not_a_span_name() -> Result
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
     let db_dir = tempfile::tempdir()?;
     let cache_dir = tempfile::tempdir()?;
-    let env = update_env(port, &db_dir.path().join("update-check.db"), cache_dir.path());
+    let env = update_env(
+        port,
+        &db_dir.path().join("update-check.db"),
+        cache_dir.path(),
+    );
     let env = env_refs(&env);
 
     let out = repo.run_span_with_envs(["__update-check"], &env)?;
@@ -361,7 +387,11 @@ fn exit_codes_unchanged_with_update_check_env() -> Result<()> {
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
     let db_dir = tempfile::tempdir()?;
     let cache_dir = tempfile::tempdir()?;
-    let env = update_env(port, &db_dir.path().join("update-check.db"), cache_dir.path());
+    let env = update_env(
+        port,
+        &db_dir.path().join("update-check.db"),
+        cache_dir.path(),
+    );
     let env = env_refs(&env);
 
     let ok = repo.run_span_with_envs(["list"], &env)?;

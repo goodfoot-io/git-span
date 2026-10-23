@@ -1038,9 +1038,7 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                     blocker,
                 ));
             }
-            if !in_base
-                && let Some(reason) = boundary_violation(line, in_why_region, name)
-            {
+            if !in_base && let Some(reason) = boundary_violation(line, in_why_region, name) {
                 return Err(refusal(reason, repair_domain::BLOCKER_SEPARATOR_PLACEMENT));
             }
         } else if line.is_empty() && !in_why_region {
@@ -1708,7 +1706,8 @@ fn rehash_validity_failures(
         theirs.anchors.iter().map(|a| (anchor_key(a), a)).collect();
 
     let mut failures = Vec::new();
-    let keys: BTreeSet<(&str, u32, u32)> = ours_map.keys().chain(theirs_map.keys()).copied().collect();
+    let keys: BTreeSet<(&str, u32, u32)> =
+        ours_map.keys().chain(theirs_map.keys()).copied().collect();
     for key in keys {
         let (path, start_line, end_line) = key;
         // Whole-file anchors declare no range to overrun.
@@ -1906,8 +1905,7 @@ fn field_label_config(
             (true, false) => "taken from ours — theirs' `[config]` was never read".to_string(),
             (false, true) => "taken from theirs — ours' `[config]` was never read".to_string(),
             (false, false) => {
-                "written with default settings — no `[config]` in this input stated one"
-                    .to_string()
+                "written with default settings — no `[config]` in this input stated one".to_string()
             }
         }
     }
@@ -1958,13 +1956,18 @@ fn failure_error(
             NextStep::Bash(format!("git span resolve {name} --dry-run")),
             NextStep::Prose(
                 "Then clear what the entries above name — restore a deleted source, finish an \
-                 outer conflict — or resolve this span file by hand.".into(),
+                 outer conflict — or resolve this span file by hand."
+                    .into(),
             ),
         ]
     } else {
         let flags: Vec<&str> = alternatives.iter().map(|s| s.flag()).collect();
         let listed_flags = flags.join(" and ");
-        let verb = if flags.len() == 1 { "settles" } else { "settle" };
+        let verb = if flags.len() == 1 {
+            "settles"
+        } else {
+            "settle"
+        };
         vec![
             NextStep::Prose(format!(
                 "Take a side explicitly. {listed_flags} {verb} every entry listed above — not as \
@@ -2026,10 +2029,7 @@ fn failure_error(
     }
     CliError {
         subcommand: "resolve",
-        summary: format!(
-            "span `{name}` has residue `{}` cannot settle.",
-            side.flag()
-        ),
+        summary: format!("span `{name}` has residue `{}` cannot settle.", side.flag()),
         what_happened: format!(
             "Nothing was written — the span file is byte-identical to what it was before this \
              run. These entries stopped it:\n\n{listed}"
@@ -2046,9 +2046,7 @@ fn settlement_lines(settlement: &Settlement) -> Vec<String> {
         .map(|e| format!("{}: {}", e.address, e.outcome))
         .collect();
     if settlement.structural_only {
-        lines.push(
-            "resolved structurally — no residue required the requested side".to_string(),
-        );
+        lines.push("resolved structurally — no residue required the requested side".to_string());
     }
     lines.push(format!("why: {}", settlement.why_label));
     lines.push(format!("config: {}", settlement.config_label));
@@ -2113,7 +2111,11 @@ pub fn settle_for_test(
         _ => Side::Rehash,
     };
     match evaluate_side(repo, side, ours, theirs, &StageEvidence::default()) {
-        SideOutcome::Resolved(s) => Ok((s.merged.clone(), s.why_label.clone(), s.config_label.clone())),
+        SideOutcome::Resolved(s) => Ok((
+            s.merged.clone(),
+            s.why_label.clone(),
+            s.config_label.clone(),
+        )),
         SideOutcome::Failed { reasons, .. } => Err(reasons),
     }
 }
@@ -2222,7 +2224,8 @@ mod tests {
                 .map(|d| d.command)
                 .collect();
             for alternatives in [&[][..], &[Side::Ours][..]] {
-                let err = failure_error("m", Side::Rehash, &["reason".into()], alternatives, blocker);
+                let err =
+                    failure_error("m", Side::Rehash, &["reason".into()], alternatives, blocker);
                 for step in &err.next_steps {
                     let NextStep::Ordered(cmds) = step else {
                         continue;
@@ -2271,7 +2274,10 @@ mod tests {
              the order the blocker's repairs were accumulated in"
         );
         for cmd in &cmds {
-            assert!(!cmd.contains("--dry-run"), "`{cmd}` reports rather than repairs");
+            assert!(
+                !cmd.contains("--dry-run"),
+                "`{cmd}` reports rather than repairs"
+            );
         }
     }
 

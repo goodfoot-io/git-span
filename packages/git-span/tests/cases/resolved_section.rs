@@ -26,7 +26,9 @@ fn write_span(repo: &TestRepo, name: &str, body: &str) -> Result<()> {
 }
 
 fn read_span(repo: &TestRepo, name: &str) -> Result<SpanFile> {
-    Ok(SpanFile::parse(&std::fs::read_to_string(span_path(repo, name))?)?)
+    Ok(SpanFile::parse(&std::fs::read_to_string(span_path(
+        repo, name,
+    ))?)?)
 }
 
 fn sentinel_span(address: &str, why: &str) -> String {
@@ -51,7 +53,11 @@ fn add_writes_a_current_record_and_acknowledges_it() -> Result<()> {
     write_span(&repo, "audit", &sentinel_span("file1.txt#L1-L5", "why"))?;
 
     let out = repo.run_span(["add", "audit", "file1.txt#L1-L5"])?;
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(String::from_utf8_lossy(&out.stdout).contains(ACK));
 
     let span = read_span(&repo, "audit")?;
@@ -71,13 +77,12 @@ fn replace_records_the_new_identity_and_hash() -> Result<()> {
     let repo = TestRepo::seeded()?;
     write_span(&repo, "audit", &sentinel_span("file1.txt#L1-L5", "why"))?;
 
-    let out = repo.run_span([
-        "replace",
-        "audit",
-        "file1.txt#L1-L5",
-        "file1.txt#L6-L10",
-    ])?;
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = repo.run_span(["replace", "audit", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(String::from_utf8_lossy(&out.stdout).contains(ACK));
 
     let span = read_span(&repo, "audit")?;
@@ -148,19 +153,17 @@ fn show_marks_a_record_stale_when_its_identity_is_gone() -> Result<()> {
 fn json_ack_shapes_gain_no_resolution_fields() -> Result<()> {
     let repo = TestRepo::seeded()?;
     write_span(&repo, "add-json", &sentinel_span("file1.txt#L1-L5", "why"))?;
-    let add = repo.run_span([
-        "add",
-        "add-json",
-        "file1.txt#L1-L5",
-        "--format",
-        "json",
-    ])?;
+    let add = repo.run_span(["add", "add-json", "file1.txt#L1-L5", "--format", "json"])?;
     let _add_json: serde_json::Value = serde_json::from_slice(&add.stdout)?;
     let add_text = String::from_utf8_lossy(&add.stdout);
     assert!(add_text.contains("retired_collapsed_duplicates"));
     assert!(!add_text.contains("\"resolved\"") && !add_text.contains("[resolved]"));
 
-    write_span(&repo, "replace-json", &sentinel_span("file1.txt#L1-L5", "why"))?;
+    write_span(
+        &repo,
+        "replace-json",
+        &sentinel_span("file1.txt#L1-L5", "why"),
+    )?;
     let replace = repo.run_span([
         "replace",
         "replace-json",
@@ -188,10 +191,18 @@ fn ordinary_writers_and_history_preserve_and_read_the_section() -> Result<()> {
     repo.commit_all("commit resolution record")?;
     repo.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
     let drift = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
-    assert!(drift.status.success(), "{}", String::from_utf8_lossy(&drift.stderr));
+    assert!(
+        drift.status.success(),
+        "{}",
+        String::from_utf8_lossy(&drift.stderr)
+    );
     assert_eq!(read_span(&repo, "audit")?.resolved, record);
     let history = repo.run_span(["history", "audit"])?;
-    assert!(history.status.success(), "{}", String::from_utf8_lossy(&history.stderr));
+    assert!(
+        history.status.success(),
+        "{}",
+        String::from_utf8_lossy(&history.stderr)
+    );
     Ok(())
 }
 
@@ -209,7 +220,12 @@ fn merge_driver_unions_a_one_sided_section() -> Result<()> {
     std::fs::write(&theirs, "a.rs rk64:aaaa\n\nwhy\n")?;
 
     let out = run_driver(&base, &ours, &theirs)?;
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let merged = SpanFile::parse(&std::fs::read_to_string(ours)?)?;
     assert_eq!(merged.resolved.len(), 1);
     Ok(())
@@ -237,7 +253,10 @@ fn divergent_sections_fail_rehash_and_resolve_with_ours() -> Result<()> {
     let driver = run_driver(&base, &ours, &theirs)?;
     assert_eq!(driver.status.code(), Some(1));
     let residue = std::fs::read_to_string(&ours)?;
-    assert!(residue.contains("<<<<<<<") && residue.contains("[resolved]"), "{residue}");
+    assert!(
+        residue.contains("<<<<<<<") && residue.contains("[resolved]"),
+        "{residue}"
+    );
     write_span(&repo, "audit", &residue)?;
 
     let before = std::fs::read(span_path(&repo, "audit"))?;
@@ -246,7 +265,11 @@ fn divergent_sections_fail_rehash_and_resolve_with_ours() -> Result<()> {
     assert_eq!(std::fs::read(span_path(&repo, "audit"))?, before);
 
     let ours_out = repo.run_span(["resolve", "audit", "--ours"])?;
-    assert!(ours_out.status.success(), "{}", String::from_utf8_lossy(&ours_out.stderr));
+    assert!(
+        ours_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ours_out.stderr)
+    );
     let settled = read_span(&repo, "audit")?;
     assert_eq!(settled.resolved.len(), 1);
     assert_eq!(&*settled.resolved[0].content_hash, "ours");
@@ -337,7 +360,9 @@ fn one_sided_why_edit_stays_settled_while_records_cross_driver_drift_and_resolve
     let driver = run_driver(&base, &ours, &theirs)?;
     assert_eq!(driver.status.code(), Some(1));
     let driver_residue = std::fs::read_to_string(&ours)?;
-    let marker = driver_residue.find("<<<<<<<").expect("section residue marker");
+    let marker = driver_residue
+        .find("<<<<<<<")
+        .expect("section residue marker");
     assert!(
         driver_residue[..marker].contains("settled why edit"),
         "settled why must stay outside the conflict block:\n{driver_residue}"
@@ -347,7 +372,11 @@ fn one_sided_why_edit_stays_settled_while_records_cross_driver_drift_and_resolve
     let repo = TestRepo::seeded()?;
     write_span(&repo, "audit", &driver_residue)?;
     let drift = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
-    assert!(drift.status.success(), "{}", String::from_utf8_lossy(&drift.stderr));
+    assert!(
+        drift.status.success(),
+        "{}",
+        String::from_utf8_lossy(&drift.stderr)
+    );
     let drift_text = format!(
         "{}{}",
         String::from_utf8_lossy(&drift.stdout),
@@ -388,7 +417,11 @@ fn drift_fix_preserves_divergent_sections_as_residue_then_resolves() -> Result<(
     write_span(&repo, "audit", residue)?;
 
     let fix = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
-    assert!(fix.status.success(), "{}", String::from_utf8_lossy(&fix.stderr));
+    assert!(
+        fix.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fix.stderr)
+    );
     let rewritten = std::fs::read_to_string(span_path(&repo, "audit"))?;
     assert!(
         rewritten.contains("<<<<<<<")
@@ -399,7 +432,11 @@ fn drift_fix_preserves_divergent_sections_as_residue_then_resolves() -> Result<(
     );
 
     let ours = repo.run_span(["resolve", "audit", "--ours"])?;
-    assert!(ours.status.success(), "{}", String::from_utf8_lossy(&ours.stderr));
+    assert!(
+        ours.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ours.stderr)
+    );
     let settled = read_span(&repo, "audit")?;
     assert_eq!(settled.resolved.len(), 1);
     assert_eq!(&*settled.resolved[0].content_hash, "ours");

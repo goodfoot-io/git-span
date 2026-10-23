@@ -73,7 +73,9 @@ fn assert_curated_read_failure(out: &std::process::Output, subcommand: &str) {
         "{subcommand} must render nothing on an unreadable HEAD; stdout: {stdout}"
     );
     assert!(
-        stderr.contains(&format!("git span {subcommand}: span state could not be resolved.")),
+        stderr.contains(&format!(
+            "git span {subcommand}: span state could not be resolved."
+        )),
         "stderr must carry the curated summary; got: {stderr}"
     );
     assert!(

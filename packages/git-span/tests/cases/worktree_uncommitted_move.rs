@@ -40,7 +40,10 @@ fn unstaged_rename_reports_moved_uncommitted_and_fix_reanchors() -> Result<()> {
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     // A shell move: rename on disk, nothing staged.
-    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    std::fs::rename(
+        repo.path().join("file1.txt"),
+        repo.path().join("renamed.txt"),
+    )?;
 
     // The read-only scan surfaces it as Moved (uncommitted), never as a
     // deletion or an orphan.
@@ -107,7 +110,10 @@ fn ambiguous_identical_candidates_fail_closed_with_ranked_proposal() -> Result<(
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     let content = std::fs::read_to_string(repo.path().join("file1.txt"))?;
-    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    std::fs::rename(
+        repo.path().join("file1.txt"),
+        repo.path().join("renamed.txt"),
+    )?;
     repo.write_file("copy/renamed.txt", &content)?;
 
     let before = read_span(&repo, "m")?;
@@ -277,17 +283,32 @@ fn json_contract_reports_moved_worktree_source_and_schema() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
-    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    std::fs::rename(
+        repo.path().join("file1.txt"),
+        repo.path().join("renamed.txt"),
+    )?;
 
     let out = repo.span_stdout(["drift", "--format=json", "--no-exit-code"])?;
     let v: Value = serde_json::from_str(&out)?;
-    assert_eq!(v["schema_version"], 3, "schema_version must stay 3; json={v}");
+    assert_eq!(
+        v["schema_version"], 3,
+        "schema_version must stay 3; json={v}"
+    );
 
     let finding = &v["findings"][0];
     assert_eq!(finding["status"]["code"], "MOVED", "finding={finding}");
-    assert_eq!(finding["moved_to"]["path"], "renamed.txt", "finding={finding}");
-    assert_eq!(finding["moved_to"]["extent"]["kind"], "lines", "finding={finding}");
-    assert_eq!(finding["moved_to"]["extent"]["start"], 1, "finding={finding}");
+    assert_eq!(
+        finding["moved_to"]["path"], "renamed.txt",
+        "finding={finding}"
+    );
+    assert_eq!(
+        finding["moved_to"]["extent"]["kind"], "lines",
+        "finding={finding}"
+    );
+    assert_eq!(
+        finding["moved_to"]["extent"]["start"], 1,
+        "finding={finding}"
+    );
     assert_eq!(finding["moved_to"]["extent"]["end"], 5, "finding={finding}");
     assert_eq!(finding["source"], "WORKTREE", "finding={finding}");
     Ok(())
@@ -302,7 +323,10 @@ fn whole_file_unstaged_rename_reports_moved_uncommitted_and_fix_reanchors() -> R
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt", "why")?;
 
-    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    std::fs::rename(
+        repo.path().join("file1.txt"),
+        repo.path().join("renamed.txt"),
+    )?;
 
     let pre = repo.span_stdout(["drift", "--no-exit-code"])?;
     assert!(
@@ -386,7 +410,10 @@ fn nested_repo_and_unreadable_candidate_never_abort_scan() -> Result<()> {
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     let content = std::fs::read_to_string(repo.path().join("file1.txt"))?;
-    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    std::fs::rename(
+        repo.path().join("file1.txt"),
+        repo.path().join("renamed.txt"),
+    )?;
 
     // An untracked nested git repo whose inner file has content identical
     // to the anchor's blob: if the scan descended into it, it would be a
@@ -470,7 +497,10 @@ fn converted_repo_unstaged_move_reports_moved_uncommitted_and_fix_reanchors() ->
 
     // A shell move: rename on disk, nothing staged. The worktree copy still
     // carries CRLF bytes; the anchor's HEAD blob is LF-normalized.
-    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    std::fs::rename(
+        repo.path().join("file1.txt"),
+        repo.path().join("renamed.txt"),
+    )?;
 
     // The read-only scan surfaces it as Moved (uncommitted) — the fallback
     // must recognize the converted copy, never read it as a deletion.
@@ -593,7 +623,10 @@ fn fix_on_ambiguous_candidates_is_a_zero_rewrite_noop() -> Result<()> {
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     let content = std::fs::read_to_string(repo.path().join("file1.txt"))?;
-    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    std::fs::rename(
+        repo.path().join("file1.txt"),
+        repo.path().join("renamed.txt"),
+    )?;
     repo.write_file("copy/renamed.txt", &content)?;
 
     let before = read_span(&repo, "m")?;
@@ -637,7 +670,8 @@ fn fix_on_ambiguous_candidates_is_a_zero_rewrite_noop() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn path_scoped_conversion_unstaged_move_reports_moved_uncommitted_and_fix_reanchors() -> Result<()> {
+fn path_scoped_conversion_unstaged_move_reports_moved_uncommitted_and_fix_reanchors() -> Result<()>
+{
     let repo = TestRepo::new()?;
     // The conversion attribute is scoped to the anchored path only; the
     // shell-move destination inherits no rules — the destination-uncovered
@@ -679,7 +713,10 @@ fn path_scoped_conversion_unstaged_move_reports_moved_uncommitted_and_fix_reanch
     // A shell move: rename on disk, nothing staged. The destination
     // `renamed.txt` is outside the attribute scope, so its raw CRLF bytes
     // match the LF blob only through the anchor path's conversion rules.
-    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    std::fs::rename(
+        repo.path().join("file1.txt"),
+        repo.path().join("renamed.txt"),
+    )?;
 
     // The read-only scan surfaces it as Moved (uncommitted), never as a
     // deletion.
@@ -740,7 +777,8 @@ fn path_scoped_conversion_unstaged_move_reports_moved_uncommitted_and_fix_reanch
 // ---------------------------------------------------------------------------
 
 #[test]
-fn dir_scoped_conversion_move_out_of_scope_reports_moved_uncommitted_and_fix_reanchors() -> Result<()> {
+fn dir_scoped_conversion_move_out_of_scope_reports_moved_uncommitted_and_fix_reanchors()
+-> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file(".gitattributes", "sub/** text eol=crlf\n")?;
     repo.commit_all("gitattributes: convert sub to crlf")?;
@@ -887,7 +925,10 @@ fn ident_conversion_unstaged_move_reports_moved_uncommitted_and_fix_reanchors() 
     // A shell move: rename on disk, nothing staged. The destination has no
     // attributes, so its expanded bytes match the raw-form blob only through
     // the anchor path's `ident` rules.
-    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    std::fs::rename(
+        repo.path().join("file1.txt"),
+        repo.path().join("renamed.txt"),
+    )?;
 
     let pre = repo.span_stdout(["drift", "--no-exit-code"])?;
     assert!(
@@ -943,7 +984,8 @@ fn ident_conversion_unstaged_move_reports_moved_uncommitted_and_fix_reanchors() 
 // ---------------------------------------------------------------------------
 
 #[test]
-fn mixed_conversion_contexts_unstaged_moves_report_both_moved_uncommitted_and_fix_reanchors() -> Result<()> {
+fn mixed_conversion_contexts_unstaged_moves_report_both_moved_uncommitted_and_fix_reanchors()
+-> Result<()> {
     let repo = TestRepo::new()?;
     // Two DIFFERENT per-path conversion rules in one repository: eol=crlf
     // on a.txt, ident on b.txt. Both anchored; both shell-moved to

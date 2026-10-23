@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn declaration_diffs_match_real_git_for_add_modify_and_delete() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -57,7 +56,6 @@ fn declaration_diffs_match_real_git_for_add_modify_and_delete() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn equal_index_hashes_never_sit_above_hunks() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -82,7 +80,6 @@ fn equal_index_hashes_never_sit_above_hunks() -> Result<()> {
     }
     Ok(())
 }
-
 
 #[test]
 fn hunk_headers_agree_with_their_bodies() -> Result<()> {

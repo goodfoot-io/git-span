@@ -14,6 +14,7 @@ pub const RESERVED_SPAN_NAMES: &[&str] = &[
     "remove",
     "replace",
     "commit",
+    "commit-context",
     "why",
     "restore",
     "revert",

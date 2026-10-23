@@ -51,7 +51,8 @@ fn reconcile_output_successful_refresh_prints_span_wide_clean() -> Result<()> {
         "the existing summary line must be untouched; stdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("- unchanged: `add-refresh` `file1.txt#L1-L5` (content matches stored hash)"),
+        stdout
+            .contains("- unchanged: `add-refresh` `file1.txt#L1-L5` (content matches stored hash)"),
         "the per-address unchanged line must be untouched; stdout:\n{stdout}"
     );
     assert!(
@@ -127,7 +128,11 @@ fn reconcile_output_whole_file_add_supersedes_old_line_range() -> Result<()> {
     let before = span_file_bytes(&repo, "clean-replace");
 
     let out = repo.run_span(["add", "clean-replace", "file1.txt"])?;
-    assert_eq!(out.status.code(), Some(1), "the superseding add must exit 1");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the superseding add must exit 1"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains(
@@ -176,7 +181,11 @@ fn reconcile_output_fresh_range_with_stale_whole_file_remains() -> Result<()> {
     let before = span_file_bytes(&repo, "mixed");
 
     let out = repo.run_span(["add", "mixed", "file1.txt#L1-L3"])?;
-    assert_eq!(out.status.code(), Some(1), "the superseding add must exit 1");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the superseding add must exit 1"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains(
@@ -264,8 +273,12 @@ fn reconcile_output_add_json_clean_document() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_span(["add", "json-clean", "file1.txt#L1-L5", "--format", "json"])?;
     assert_eq!(out.status.code(), Some(0));
-    let v: Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| anyhow::anyhow!("stdout is not the mutation document: {e}\n{}", String::from_utf8_lossy(&out.stdout)))?;
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| {
+        anyhow::anyhow!(
+            "stdout is not the mutation document: {e}\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })?;
     assert_eq!(v["schema_version"], 1);
     assert_eq!(v["command"], "add");
     assert_eq!(v["span"], "json-clean");
@@ -282,7 +295,9 @@ fn reconcile_output_add_json_clean_document() -> Result<()> {
     assert_eq!(v["span_health"]["state"], "DRIFT_FREE");
     assert_eq!(v["span_health"]["drift_count"], 0);
     assert!(
-        v["span_health"]["drifting"].as_array().is_some_and(|a| a.is_empty()),
+        v["span_health"]["drifting"]
+            .as_array()
+            .is_some_and(|a| a.is_empty()),
         "clean add must emit an empty drifting array: {v}"
     );
     assert_eq!(v["span_health"]["resolved_pending_commit_count"], 0);
@@ -296,8 +311,12 @@ fn reconcile_output_why_json_clean_document() -> Result<()> {
 
     let out = repo.run_span(["why", "json-why", "updated reason", "--format", "json"])?;
     assert_eq!(out.status.code(), Some(0));
-    let v: Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| anyhow::anyhow!("stdout is not the mutation document: {e}\n{}", String::from_utf8_lossy(&out.stdout)))?;
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| {
+        anyhow::anyhow!(
+            "stdout is not the mutation document: {e}\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })?;
     assert_eq!(v["schema_version"], 1);
     assert_eq!(v["command"], "why");
     assert_eq!(v["why_written"], true);
@@ -434,7 +453,11 @@ fn reconcile_output_at_drifted_new_anchor_lists_in_span_wide() -> Result<()> {
     )?;
 
     let out = repo.run_span(["add", "at-drift", "file1.txt", "--at", "HEAD"])?;
-    assert_eq!(out.status.code(), Some(1), "the drifted new anchor must exit 1");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the drifted new anchor must exit 1"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("Added 1 anchor to span `at-drift`."),
@@ -549,8 +572,7 @@ fn reconcile_output_check_error_json_unknown_no_indeterminate() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("stdout is not the mutation document: {e}\n{text}"))?;
     assert_eq!(v["command"], "why");
     assert_eq!(
-        v["span_health"]["state"],
-        "UNKNOWN",
+        v["span_health"]["state"], "UNKNOWN",
         "a check error must render UNKNOWN, not DRIFT or DRIFT_FREE: {v}"
     );
     assert!(

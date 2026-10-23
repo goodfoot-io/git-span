@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// A filter that produces no content must never assert a deletion, and must
 /// never call the file absent.
 ///
@@ -161,7 +160,6 @@ fn a_filter_that_produces_no_content_never_asserts_a_deletion() -> Result<()> {
     Ok(())
 }
 
-
 /// A working filter is not a failed one, and no `unavailable` value describes
 /// it. What it breaks is the join between `content` and the header: the hash
 /// was computed over the filtered bytes and the body read from the raw ones,
@@ -209,7 +207,6 @@ fn content_and_the_headers_new_side_name_the_same_bytes() -> Result<()> {
     Ok(())
 }
 
-
 /// `git span add` refuses to declare a range that runs past its file; the
 /// render path must reach the same verdict about the same condition rather
 /// than supplying the missing lines from a second read.
@@ -254,7 +251,6 @@ fn a_range_past_the_filtered_end_reaches_a_structured_field() -> Result<()> {
     );
     Ok(())
 }
-
 
 /// The negative control the two defects above are measured against: an
 /// ordinary uncommitted edit, no `.gitattributes` anywhere. It must still

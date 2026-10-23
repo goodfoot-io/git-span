@@ -78,9 +78,7 @@ fn assert_existing_pairing_report(
         "stdout must name the existing canonical address; stdout:\n{stdout}"
     );
     assert!(
-        stdout.contains(&format!(
-            "git span replace demo '{existing}' '{requested}'"
-        )),
+        stdout.contains(&format!("git span replace demo '{existing}' '{requested}'")),
         "stdout must contain the exact quoted replace command; stdout:\n{stdout}"
     );
     assert!(
@@ -293,7 +291,11 @@ fn add_superseded_address_report_exact_identity_refresh_stays_quiet() -> Result<
 
     // Mutate the region in place, re-add — identity refresh resolves.
     let mut lines: Vec<String> = (1..=100).map(|i| format!("line{i}")).collect();
-    lines[4..7].clone_from_slice(&["ALPHA2".to_string(), "BETA2".to_string(), "GAMMA2".to_string()]);
+    lines[4..7].clone_from_slice(&[
+        "ALPHA2".to_string(),
+        "BETA2".to_string(),
+        "GAMMA2".to_string(),
+    ]);
     lines[49..52].clone_from_slice(&["ALPHA".to_string(), "BETA".to_string(), "GAMMA".to_string()]);
     repo.write_file("src/a.rs", &format!("{}\n", lines.join("\n")))?;
     let third = repo.run_span(["add", "demo", "src/a.rs#L5-L7"])?;

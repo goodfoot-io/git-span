@@ -222,13 +222,13 @@
 //! line, enumerated by *route* rather than by state so that a fix reaching one
 //! path and not the other cannot pass.
 
+use crate::cli::drift_output::SourceDoc;
 use crate::cli::format::format_anchor_address;
 use crate::cli::unified_diff::{
     Absence, AnchorDiffKind, BlobDiffKind, DiffHeader, DiffSide, NULL_ANCHOR_HASH, NULL_BLOB_OID7,
     render_diff_header, render_unified_diff, render_unified_diff_always, similarity,
 };
 use crate::cli::{CliError, HistoryArgs, HistoryFormat, NextStep};
-use crate::cli::drift_output::SourceDoc;
 use crate::span::read::read_span_at_in;
 use crate::types::{Anchor, AnchorExtent, AnchorLocation, Span};
 use anyhow::Result;
@@ -590,7 +590,8 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
                 }
                 Err(crate::Error::SpanConflict { kind, .. }) => {
                     if !unreadable_revisions.iter().any(|(h, _)| h == &cc.hash) {
-                        unreadable_revisions.push((cc.hash.clone(), format!("git conflict ({kind})")));
+                        unreadable_revisions
+                            .push((cc.hash.clone(), format!("git conflict ({kind})")));
                     }
                     None
                 }
@@ -930,7 +931,8 @@ fn state_at_commit(
                 }
                 Err(crate::Error::SpanConflict { kind, .. }) => {
                     if !unreadable_revisions.iter().any(|(h, _)| h == commit_oid) {
-                        unreadable_revisions.push((commit_oid.to_string(), format!("git conflict ({kind})")));
+                        unreadable_revisions
+                            .push((commit_oid.to_string(), format!("git conflict ({kind})")));
                     }
                     None
                 }
@@ -2146,8 +2148,8 @@ fn build_current(
             _ => e.into(),
         }
     };
-    let resolved = crate::resolver::resolve_named_spans(repo, span_root, &names, options)
-        .map_err(curate)?;
+    let resolved =
+        crate::resolver::resolve_named_spans(repo, span_root, &names, options).map_err(curate)?;
 
     // Where HEAD's declaration puts each recorded token — the per-anchor half
     // of the same comparison `span_diff` renders as a blob patch.
@@ -2689,7 +2691,9 @@ fn current_anchor_doc(a: &CurrentAnchor) -> CurrentAnchorDoc {
         diff: a.diff.clone(),
         path: a.path.clone(),
         proposed: a.proposed.clone(),
-        recorded: a.recorded_unrecoverable.then_some(RecordedDoc::Unrecoverable),
+        recorded: a
+            .recorded_unrecoverable
+            .then_some(RecordedDoc::Unrecoverable),
         sources: (!a.sources.is_empty())
             .then(|| a.sources.iter().map(|s| SourceDoc::from(*s)).collect()),
         unavailable: a.unavailable.map(UnavailableDoc::from),

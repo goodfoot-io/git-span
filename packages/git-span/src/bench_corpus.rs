@@ -181,7 +181,7 @@ pub fn generate(
 mod tests {
     use super::*;
     use crate::types::AnchorStatus;
-    use crate::{EngineOptions, resolve_span, drift_spans};
+    use crate::{EngineOptions, drift_spans, resolve_span};
 
     /// A freshly generated corpus must resolve with every anchor `Fresh`.
     ///

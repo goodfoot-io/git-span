@@ -23,8 +23,8 @@
 
 use crate::cli::MergeDriverArgs;
 use crate::cli::drift_fix::format_residue_markers;
-use crate::descriptor_authority::RetainedDirectory;
 use crate::cli::format::{format_same_side_collapse, format_sentinel_preserved};
+use crate::descriptor_authority::RetainedDirectory;
 use crate::span_file::SpanFile;
 use anyhow::Result;
 use git_span_core::merge_span_files;
@@ -85,12 +85,7 @@ pub(crate) fn run_merge_driver(args: MergeDriverArgs) -> Result<i32> {
     } else {
         // Partial resolution: write resolved anchors clean, wrap residue
         // in minimal conflict markers using the requested marker length.
-        let output = serialize_with_driver_markers(
-            &result,
-            &ours,
-            &theirs,
-            args.marker_len,
-        );
+        let output = serialize_with_driver_markers(&result, &ours, &theirs, args.marker_len);
         write_file(&args.ours, &output)?;
         // Exit non-zero: git keeps this path unmerged (the idiomatic
         // partial-resolution signal). The user can then run

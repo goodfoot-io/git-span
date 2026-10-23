@@ -261,7 +261,10 @@ fn write_back_to_default_removes_the_entire_block() -> Result<()> {
     let shown = repo.span_stdout(["show", "restore-defaults"])?;
     let doc = shown.parse::<toml::Value>()?;
     assert_eq!(doc["config"]["ignore_whitespace"].as_bool(), Some(false));
-    assert_eq!(doc["config"]["copy_detection"].as_str(), Some("same-commit"));
+    assert_eq!(
+        doc["config"]["copy_detection"].as_str(),
+        Some("same-commit")
+    );
     Ok(())
 }
 
@@ -279,8 +282,7 @@ fn noop_write_reports_already_set_and_never_touches_the_file() -> Result<()> {
 
     let out = repo.span_stdout(["config", "noop", "copy_detection", "off"])?;
     assert_eq!(
-        out,
-        "copy_detection is already \"off\" on span `noop`; nothing changed.\n",
+        out, "copy_detection is already \"off\" on span `noop`; nothing changed.\n",
         "a no-op write must say so explicitly; got: {out}"
     );
     assert_eq!(
@@ -339,7 +341,12 @@ fn invalid_copy_detection_value_is_rejected_before_io() -> Result<()> {
         stderr.contains("totally-bogus"),
         "error must echo the rejected value; stderr: {stderr}"
     );
-    for accepted in ["off", "same-commit", "any-file-in-commit", "any-file-in-repo"] {
+    for accepted in [
+        "off",
+        "same-commit",
+        "any-file-in-commit",
+        "any-file-in-repo",
+    ] {
         assert!(
             stderr.contains(accepted),
             "error must name accepted value `{accepted}`; stderr: {stderr}"
@@ -479,8 +486,7 @@ fn write_conflicted_span_refuses_without_touching_the_file() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_with_tail(&repo, "wconflict", "A why sentence.\n")?;
     let span_path = repo.path().join(".span").join("wconflict");
-    let poisoned =
-        "<<<<<<< HEAD\na.txt sha256:111\n=======\nb.txt sha256:222\n>>>>>>> other\n";
+    let poisoned = "<<<<<<< HEAD\na.txt sha256:111\n=======\nb.txt sha256:222\n>>>>>>> other\n";
     std::fs::write(&span_path, poisoned)?;
 
     let out = repo.run_span(["config", "wconflict", "copy_detection", "off"])?;

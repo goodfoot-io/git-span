@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// `sources` and the `drift source` marker are one fact with two spellings, and
 /// they are emitted from one place so they cannot disagree. This asserts the
 /// agreement over every state in the enumeration, in both directions: a block
@@ -67,7 +66,6 @@ fn the_drift_source_marker_accompanies_the_sources_key_in_every_current_state() 
     Ok(())
 }
 
-
 /// One anchor, drifted at two layers at once, read on both surfaces.
 ///
 /// This is the case a scalar `source` field cannot express: the edit is
@@ -113,7 +111,6 @@ fn an_anchor_drifted_at_two_layers_names_both_in_both_formats() -> Result<()> {
     );
     Ok(())
 }
-
 
 /// The resolver sequence is extent-dependent, not a globally sortable layer
 /// priority. Both history formats must preserve the exact sequence `drift`
@@ -176,7 +173,6 @@ fn staged_and_worktree_sources_preserve_drifts_extent_dependent_order() -> Resul
     );
     Ok(())
 }
-
 
 /// HEAD is the resolver's observation layer. A declaration moved only in the
 /// worktree can compare against HEAD's declaration and produce HEAD even when
@@ -250,7 +246,6 @@ fn head_source_does_not_claim_a_worktree_only_reanchor_was_committed() -> Result
     Ok(())
 }
 
-
 /// Item 25's conformance oracle, stated the only way that cannot drift with
 /// the renderer: for a one-line declaration file, the rendered hunk must be
 /// byte-identical to what `git diff` prints for the same two blobs — which
@@ -280,7 +275,6 @@ fn a_one_line_declaration_hunk_matches_gits_own_bytes() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn ordinary_pairing_is_unaffected_by_the_content_identity_pass() -> Result<()> {

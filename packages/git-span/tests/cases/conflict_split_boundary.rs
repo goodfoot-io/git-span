@@ -37,7 +37,9 @@ fn line_slice_hash(text: &str, start: u32, end: u32) -> String {
 }
 
 fn read_span(repo: &TestRepo, name: &str) -> Result<String> {
-    Ok(std::fs::read_to_string(repo.path().join(".span").join(name))?)
+    Ok(std::fs::read_to_string(
+        repo.path().join(".span").join(name),
+    )?)
 }
 
 /// Drive one member of the class: a span whose single anchor is uncontested
@@ -89,7 +91,5 @@ fn why_whose_every_line_is_anchor_shaped_keeps_its_separator() -> Result<()> {
 
 #[test]
 fn why_line_ending_in_literal_rk64_token_is_not_absorbed_into_anchor_block() -> Result<()> {
-    assert_why_survives_conflict_resolution(
-        "the recorded fingerprint is rk64:deadbeefcafe1234",
-    )
+    assert_why_survives_conflict_resolution("the recorded fingerprint is rk64:deadbeefcafe1234")
 }

@@ -66,7 +66,9 @@ fn doctor_reports_both_findings_when_nothing_is_registered() -> Result<()> {
         out.status.code()
     );
     assert!(
-        stdout.contains("no `merge=span` for `.span/**` in the committed repository-root `.gitattributes`"),
+        stdout.contains(
+            "no `merge=span` for `.span/**` in the committed repository-root `.gitattributes`"
+        ),
         "stdout must name the missing rule and its committed state;\nstdout:\n{stdout}"
     );
     assert!(
@@ -113,7 +115,9 @@ fn doctor_reports_only_the_rule_when_the_config_block_is_registered() -> Result<
         out.status.code()
     );
     assert!(
-        stdout.contains("no `merge=span` for `.span/**` in the committed repository-root `.gitattributes`"),
+        stdout.contains(
+            "no `merge=span` for `.span/**` in the committed repository-root `.gitattributes`"
+        ),
         "stdout must quote the missing `.gitattributes` rule;\nstdout:\n{stdout}"
     );
     assert!(

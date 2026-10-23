@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// `git span history … | head` must never panic. `main` restores the default
 /// `SIGPIPE` disposition before any output, so once the reader is gone the
 /// renderer dies the way `git log | head` does — killed by the signal, no

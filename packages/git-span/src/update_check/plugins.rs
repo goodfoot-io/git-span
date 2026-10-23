@@ -105,7 +105,9 @@ fn walk_plugin_copies(
             // hosts) directly inside the version dir; existence is the
             // signal, not its type.
             if version_dir.join(".in_use").exists()
-                && best_in_use.as_ref().is_none_or(|current| version > *current)
+                && best_in_use
+                    .as_ref()
+                    .is_none_or(|current| version > *current)
             {
                 *best_in_use = Some(version);
             }
@@ -194,8 +196,20 @@ mod tests {
     #[test]
     fn claude_newest_of_many_copies_wins() {
         let dir = tempfile::tempdir().unwrap();
-        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.134", "git-span", "1.0.134");
-        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.145", "git-span", "1.0.145");
+        write_plugin_copy(
+            dir.path(),
+            ".claude-plugin",
+            "1.0.134",
+            "git-span",
+            "1.0.134",
+        );
+        write_plugin_copy(
+            dir.path(),
+            ".claude-plugin",
+            "1.0.145",
+            "git-span",
+            "1.0.145",
+        );
         assert_eq!(
             ClaudeCodeChecker.find_cached_version(dir.path()),
             Some(Version::new(1, 0, 145))
@@ -209,8 +223,20 @@ mod tests {
         // orphan (1.0.145) sits alongside. The in-use copy's version is the
         // user's truth; the orphan must not mask staleness.
         let dir = tempfile::tempdir().unwrap();
-        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.145", "git-span", "1.0.145");
-        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.134", "git-span", "1.0.134");
+        write_plugin_copy(
+            dir.path(),
+            ".claude-plugin",
+            "1.0.145",
+            "git-span",
+            "1.0.145",
+        );
+        write_plugin_copy(
+            dir.path(),
+            ".claude-plugin",
+            "1.0.134",
+            "git-span",
+            "1.0.134",
+        );
         fs::create_dir(
             dir.path()
                 .join("git-span")
@@ -230,8 +256,20 @@ mod tests {
         // `.orphaned_at` marks a copy as orphaned, never active — with no
         // `.in_use` anywhere, the max-over-all fallback applies.
         let dir = tempfile::tempdir().unwrap();
-        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.145", "git-span", "1.0.145");
-        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.134", "git-span", "1.0.134");
+        write_plugin_copy(
+            dir.path(),
+            ".claude-plugin",
+            "1.0.145",
+            "git-span",
+            "1.0.145",
+        );
+        write_plugin_copy(
+            dir.path(),
+            ".claude-plugin",
+            "1.0.134",
+            "git-span",
+            "1.0.134",
+        );
         fs::write(
             dir.path()
                 .join("git-span")
@@ -272,7 +310,13 @@ mod tests {
         // The cache root also holds unrelated marketplaces; matching on the
         // plugin `name` field bounds the scan.
         let dir = tempfile::tempdir().unwrap();
-        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.134", "other-plugin", "9.9.9");
+        write_plugin_copy(
+            dir.path(),
+            ".claude-plugin",
+            "1.0.134",
+            "other-plugin",
+            "9.9.9",
+        );
         assert_eq!(ClaudeCodeChecker.find_cached_version(dir.path()), None);
     }
 

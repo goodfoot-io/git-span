@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// Emptying a file under a *whole-file* anchor is an honest empty extent, not a
 /// range that ran off the end.
 ///
@@ -56,7 +55,6 @@ fn emptying_a_file_under_a_whole_file_anchor_is_an_empty_extent_not_past_eof() -
     );
     Ok(())
 }
-
 
 /// A live anchor whose declared range starts past end of file is *structurally*
 /// unavailable, exactly as it is when read from a commit.
@@ -123,7 +121,6 @@ fn a_reanchor_past_end_of_file_is_unavailable_not_empty_content() -> Result<()> 
     Ok(())
 }
 
-
 /// Item 52b's route to the same state: the file is still there, so `"absent"` —
 /// glossed "no such file" — was a claim the file system contradicts.
 ///
@@ -151,7 +148,6 @@ fn a_truncated_file_is_past_eof_not_absent() -> Result<()> {
     );
     Ok(())
 }
-
 
 /// The same declaration state, before and after committing it, must not get two
 /// different accounts — the failure shape where a user commits to see whether
@@ -201,7 +197,6 @@ fn both_read_paths_give_one_account_of_a_past_eof_range() -> Result<()> {
     );
     Ok(())
 }
-
 
 /// The clip/past-EOF boundary is a *range* of depths, and every depth in it has
 /// to give the same answer.
@@ -327,7 +322,6 @@ fn the_past_eof_boundary_holds_at_every_depth_below_the_declared_start() -> Resu
     Ok(())
 }
 
-
 /// The default output must tell a past-EOF range from an absent file, on a
 /// *matched* pair: same anchor, same declared address, same recorded content.
 ///
@@ -419,7 +413,6 @@ fn the_human_format_tells_a_past_eof_range_from_an_absent_file() -> Result<()> {
     Ok(())
 }
 
-
 /// `history` may not invent a distinction the resolver never made.
 ///
 /// This is a different detector from the depth sweep beside it, and deliberately
@@ -485,7 +478,6 @@ fn history_invents_no_distinction_the_resolver_did_not_make() -> Result<()> {
     }
     Ok(())
 }
-
 
 /// Every state that renders with a null hash must be tellable apart from every
 /// other one, using only structured fields.
@@ -598,7 +590,6 @@ fn every_null_hash_state_is_distinguishable_from_structured_fields() -> Result<(
     }
     Ok(())
 }
-
 
 /// A commit that moves an anchor between two unreadable states renders an
 /// entry, even though both states carry the null hash and an empty body.

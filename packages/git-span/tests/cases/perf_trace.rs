@@ -36,10 +36,7 @@ fn perf_trace_emits_row_per_anchor() -> Result<()> {
         lines.len() >= 2,
         "expected header + at least one data row; got: {csv}"
     );
-    assert_eq!(
-        lines[0],
-        "span,anchor_id,path,wall_us,status"
-    );
+    assert_eq!(lines[0], "span,anchor_id,path,wall_us,status");
     Ok(())
 }
 
@@ -55,10 +52,7 @@ fn perf_trace_columns_match_schema() -> Result<()> {
     let csv = std::fs::read_to_string(&trace_path)?;
     let mut lines = csv.lines();
     let header = lines.next().expect("header row");
-    assert_eq!(
-        header,
-        "span,anchor_id,path,wall_us,status"
-    );
+    assert_eq!(header, "span,anchor_id,path,wall_us,status");
 
     let row = lines.next().expect("at least one data row");
     let cols: Vec<&str> = row.split(',').collect();

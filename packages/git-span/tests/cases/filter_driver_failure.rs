@@ -159,26 +159,23 @@ fn the_filtered_anchor_is_classified_as_filter_failed_and_names_the_driver() -> 
         let cell = label(form, required, modified);
         let repo = broken_filter_repo(form, required, modified)?;
 
-        let porcelain = String::from_utf8_lossy(
-            &repo.run_span(["drift", "--format", "porcelain"])?.stdout,
-        )
-        .into_owned();
+        let porcelain =
+            String::from_utf8_lossy(&repo.run_span(["drift", "--format", "porcelain"])?.stdout)
+                .into_owned();
         assert!(
             porcelain.contains("FILTER_FAILED\t-\tprotected\tsecret.txt"),
             "[{cell}] porcelain must carry a FILTER_FAILED row for the protected \
              anchor; got: {porcelain}"
         );
 
-        let human =
-            String::from_utf8_lossy(&repo.run_span(["drift"])?.stdout).into_owned();
+        let human = String::from_utf8_lossy(&repo.run_span(["drift"])?.stdout).into_owned();
         assert!(
             human.contains("content unavailable (filter `gc` failed)"),
             "[{cell}] the human row must name the driver; got: {human}"
         );
 
-        let json =
-            String::from_utf8_lossy(&repo.run_span(["drift", "--format", "json"])?.stdout)
-                .into_owned();
+        let json = String::from_utf8_lossy(&repo.run_span(["drift", "--format", "json"])?.stdout)
+            .into_owned();
         let parsed: serde_json::Value = serde_json::from_str(&json)
             .map_err(|e| anyhow::anyhow!("[{cell}] json was not parseable: {e}; got: {json}"))?;
         let statuses = parsed["findings"]

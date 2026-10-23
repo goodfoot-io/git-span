@@ -49,7 +49,6 @@ fn first_add_renders_addition_diff_and_json_content() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn content_edit_without_declaration_change_is_its_own_entry() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -77,7 +76,6 @@ fn content_edit_without_declaration_change_is_its_own_entry() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn why_only_edit_emits_span_diff_without_anchor_entries() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -101,7 +99,6 @@ fn why_only_edit_emits_span_diff_without_anchor_entries() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn noop_qualifying_commit_is_dropped() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -113,7 +110,6 @@ fn noop_qualifying_commit_is_dropped() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn anchor_removal_renders_dev_null_deletion_body() -> Result<()> {
@@ -156,7 +152,6 @@ fn anchor_removal_renders_dev_null_deletion_body() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn pure_reanchor_renders_rename_headers_without_hunks() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -194,7 +189,6 @@ fn pure_reanchor_renders_rename_headers_without_hunks() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn reanchor_with_edit_renders_rename_headers_and_hunks() -> Result<()> {
@@ -237,7 +231,6 @@ fn reanchor_with_edit_renders_rename_headers_and_hunks() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn unavailable_content_renders_as_a_dev_null_side_never_as_prose() -> Result<()> {
@@ -291,7 +284,6 @@ fn unavailable_content_renders_as_a_dev_null_side_never_as_prose() -> Result<()>
     Ok(())
 }
 
-
 #[test]
 fn unrelated_unavailable_anchors_do_not_pair_as_a_rename() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -322,7 +314,6 @@ fn unrelated_unavailable_anchors_do_not_pair_as_a_rename() -> Result<()> {
     assert_eq!(anchors.len(), 2, "both losses are reported; got: {deleted}");
     Ok(())
 }
-
 
 #[test]
 fn anchors_that_swap_addresses_render_as_two_renames() -> Result<()> {
@@ -363,7 +354,6 @@ fn anchors_that_swap_addresses_render_as_two_renames() -> Result<()> {
     }
     Ok(())
 }
-
 
 #[test]
 fn swapped_anchors_render_as_proposals_in_the_current_block() -> Result<()> {
@@ -422,7 +412,6 @@ fn swapped_anchors_render_as_proposals_in_the_current_block() -> Result<()> {
     }
     Ok(())
 }
-
 
 /// The oracle behind the whole current block: whatever content stands as an
 /// old side must hash to the token the declaration recorded. It is enforced by

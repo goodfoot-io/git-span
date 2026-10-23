@@ -5,12 +5,12 @@
 
 use crate::cli::drift_fix::FixResult;
 use crate::cli::duplicate_identity::{AddAvailability, AddRefusal};
-use crate::cli::{CliError, NextStep, DriftArgs, DriftFormat, resolver_read_error};
+use crate::cli::{CliError, DriftArgs, DriftFormat, NextStep, resolver_read_error};
 use crate::resolver::{
-    SourceLayers, WholeResult, anchor_status_is_drift, resolve_named_spans,
+    SourceLayers, WholeResult, anchor_status_is_drift, drift_spans,
+    drift_spans_retaining_source_layers, drift_spans_with_trace, resolve_named_spans,
     resolve_named_spans_retaining_source_layers, resolve_named_spans_with_source_layers,
-    sort_spans_by_anchor_path, span_has_actionable_drift, drift_spans,
-    drift_spans_retaining_source_layers, drift_spans_with_trace,
+    sort_spans_by_anchor_path, span_has_actionable_drift,
 };
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, DriftSource, EngineOptions, Finding,
@@ -2355,12 +2355,18 @@ struct FindingDoc {
     auto_followed: Option<bool>,
     #[schemars(required, schema_with = "crate::schemas::nullable_schema::<bool>")]
     collapsed_duplicate: Option<bool>,
-    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<LocationDoc>")]
+    #[schemars(
+        required,
+        schema_with = "crate::schemas::nullable_schema::<LocationDoc>"
+    )]
     current: Option<LocationDoc>,
     fuzzy_successors: Vec<FuzzySuccessorDoc>,
     #[schemars(required, schema_with = "crate::schemas::nullable_schema::<LocusDoc>")]
     locus: Option<LocusDoc>,
-    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<MovedToDoc>")]
+    #[schemars(
+        required,
+        schema_with = "crate::schemas::nullable_schema::<MovedToDoc>"
+    )]
     moved_to: Option<MovedToDoc>,
     #[schemars(required, schema_with = "crate::schemas::nullable_schema::<SourceDoc>")]
     source: Option<SourceDoc>,
@@ -2473,8 +2479,13 @@ struct MovedToDoc {
 #[schemars(deny_unknown_fields)]
 #[serde(untagged)]
 enum LocusDoc {
-    Orphaned { deleted_in: String },
-    Renamed { renamed_at: String, renamed_to: String },
+    Orphaned {
+        deleted_in: String,
+    },
+    Renamed {
+        renamed_at: String,
+        renamed_to: String,
+    },
 }
 
 impl From<&DriftLocus> for LocusDoc {
@@ -2562,16 +2573,12 @@ impl From<&UnavailableReason> for UnavailableReasonCodeDoc {
 
 fn status_detail(reason: &UnavailableReason) -> Option<StatusDetailDoc> {
     match reason {
-        UnavailableReason::FilterFailed { filter } => {
-            Some(StatusDetailDoc::FilterFailed {
-                filter: filter.clone(),
-            })
-        }
-        UnavailableReason::IoError { message } => {
-            Some(StatusDetailDoc::IoError {
-                message: message.clone(),
-            })
-        }
+        UnavailableReason::FilterFailed { filter } => Some(StatusDetailDoc::FilterFailed {
+            filter: filter.clone(),
+        }),
+        UnavailableReason::IoError { message } => Some(StatusDetailDoc::IoError {
+            message: message.clone(),
+        }),
         _ => None,
     }
 }
@@ -2623,7 +2630,10 @@ fn render_json(
                 shared_files: c.shared_files.clone(),
             })
             .collect(),
-        findings: findings.iter().map(|f| finding_doc(f, followed_ids)).collect(),
+        findings: findings
+            .iter()
+            .map(|f| finding_doc(f, followed_ids))
+            .collect(),
         schema_version: DRIFT_JSON_SCHEMA_VERSION,
         span: spans.first().map(|m| m.name.clone()).unwrap_or_default(),
     };

@@ -20,12 +20,7 @@ fn fix_collapses_two_head_moved_anchors_that_converge() -> Result<()> {
     repo.write_file("source.txt", initial)?;
     repo.commit_all("initial source")?;
 
-    repo.span_stdout([
-        "add",
-        "m",
-        "source.txt#L2-L4",
-        "source.txt#L7-L9",
-    ])?;
+    repo.span_stdout(["add", "m", "source.txt#L2-L4", "source.txt#L7-L9"])?;
     repo.span_stdout(["why", "m", "two references to the repeated block"])?;
     repo.commit_all("record both source ranges")?;
 

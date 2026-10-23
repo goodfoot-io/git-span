@@ -24,7 +24,6 @@ fn uncommitted_drift_renders_headerless_before_the_first_commit() -> Result<()> 
     Ok(())
 }
 
-
 #[test]
 fn current_anchor_carries_both_diff_and_content() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -54,7 +53,6 @@ fn current_anchor_carries_both_diff_and_content() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn uncommitted_declaration_edit_surfaces_as_current_span_diff() -> Result<()> {
@@ -98,7 +96,6 @@ fn uncommitted_declaration_edit_surfaces_as_current_span_diff() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn changed_bytes_beneath_a_promoted_submodule_keep_drifts_cause_in_both_formats() -> Result<()> {
@@ -152,7 +149,6 @@ fn changed_bytes_beneath_a_promoted_submodule_keep_drifts_cause_in_both_formats(
     Ok(())
 }
 
-
 #[test]
 fn equal_bytes_beneath_a_promoted_submodule_remain_informational_only() -> Result<()> {
     let repo = directory_promoted_to_submodule(true)?;
@@ -197,7 +193,6 @@ fn equal_bytes_beneath_a_promoted_submodule_remain_informational_only() -> Resul
     Ok(())
 }
 
-
 #[test]
 fn clean_worktree_has_no_current_section() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -231,7 +226,6 @@ fn clean_worktree_has_no_current_section() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn current_absent_for_unedited_whole_file_anchor() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -251,7 +245,6 @@ fn current_absent_for_unedited_whole_file_anchor() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn current_surfaces_committed_drift_agreeing_with_drift() -> Result<()> {
@@ -287,7 +280,6 @@ fn current_surfaces_committed_drift_agreeing_with_drift() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn current_moved_anchor_reports_a_proposal_not_a_completed_rename() -> Result<()> {
@@ -363,7 +355,6 @@ fn current_moved_anchor_reports_a_proposal_not_a_completed_rename() -> Result<()
     Ok(())
 }
 
-
 #[test]
 fn committed_in_place_drift_is_visible_in_both_formats() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -418,7 +409,6 @@ fn committed_in_place_drift_is_visible_in_both_formats() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn resolved_pending_reanchor_reports_only_the_declaration_diff() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -454,7 +444,6 @@ fn resolved_pending_reanchor_reports_only_the_declaration_diff() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn every_current_anchor_carries_both_payloads_in_both_formats() -> Result<()> {
@@ -499,7 +488,6 @@ fn every_current_anchor_carries_both_payloads_in_both_formats() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn current_paths_are_declared_addresses_present_in_the_live_span_file() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -520,7 +508,6 @@ fn current_paths_are_declared_addresses_present_in_the_live_span_file() -> Resul
     }
     Ok(())
 }
-
 
 #[test]
 fn worktree_drift_is_not_rendered_as_a_total_deletion() -> Result<()> {
@@ -626,7 +613,6 @@ fn uncommitted_declaration_with_drifted_anchor_is_a_header_only_drift() -> Resul
     );
     Ok(())
 }
-
 
 #[test]
 fn uncommitted_declaration_without_drift_reports_only_the_declaration() -> Result<()> {

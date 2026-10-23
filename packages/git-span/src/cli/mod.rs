@@ -17,6 +17,7 @@
 //!   `Show` handler.
 
 pub mod commit;
+pub mod commit_context;
 pub mod config;
 pub mod context;
 pub(crate) mod context_repair;
@@ -163,6 +164,9 @@ pub enum Commands {
     /// makes repair retries idempotent. Output is always the versioned
     /// context document.
     Context(ContextArgs),
+
+    /// Return complete current relationship context selected by immutable commit changes.
+    CommitContext(CommitContextArgs),
 
     #[command(name = "__context-service", hide = true)]
     ContextService(ContextServiceArgs),
@@ -490,6 +494,13 @@ pub struct ContextArgs {
     /// Stable idempotency key for a repair retry. Valid only with `--fix`.
     #[arg(long, value_name = "UUID", requires = "fix")]
     pub operation_id: Option<uuid::Uuid>,
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct CommitContextArgs {
+    /// Full immutable commit object IDs; revisions and abbreviations are rejected.
+    #[arg(required = true, num_args = 1..=4096)]
+    pub commits: Vec<String>,
 }
 
 #[derive(Debug, Clone, clap::Args)]
@@ -896,6 +907,10 @@ pub fn dispatch(
         Commands::Context(args) => {
             let _perf = crate::perf::span("command.context");
             context::run_context(repo, args, span_root)
+        }
+        Commands::CommitContext(args) => {
+            let _perf = crate::perf::span("command.commit-context");
+            commit_context::run_commit_context(repo, args, span_root)
         }
         Commands::ContextService(args) => context_service::serve(repo, args),
         Commands::UpdateCheck => update_check::run_update_check(),

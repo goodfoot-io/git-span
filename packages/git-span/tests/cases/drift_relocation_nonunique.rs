@@ -91,10 +91,7 @@ fn assert_ambiguous_finding(human_stdout: &str, json: &Value, expected_candidate
         let succ = f["fuzzy_successors"]
             .as_array()
             .unwrap_or_else(|| panic!("finding `fuzzy_successors` must be an array; finding={f}"));
-        let mut seen: Vec<&str> = succ
-            .iter()
-            .filter_map(|s| s["path"].as_str())
-            .collect();
+        let mut seen: Vec<&str> = succ.iter().filter_map(|s| s["path"].as_str()).collect();
         seen.sort_unstable();
         let mut want: Vec<&str> = expected_candidates.to_vec();
         want.sort_unstable();
@@ -205,12 +202,13 @@ fn fuzzy_scan_nonunique_stays_drifted() -> Result<()> {
             "non-unique fuzzy relocation must not be MOVED; finding={f}"
         );
         let succ = f["fuzzy_successors"].as_array().unwrap();
-        let mut seen: Vec<&str> = succ
-            .iter()
-            .filter_map(|s| s["path"].as_str())
-            .collect();
+        let mut seen: Vec<&str> = succ.iter().filter_map(|s| s["path"].as_str()).collect();
         seen.sort_unstable();
-        assert_eq!(seen, ["f2.txt", "f3.txt"], "both candidates surfaced; finding={f}");
+        assert_eq!(
+            seen,
+            ["f2.txt", "f3.txt"],
+            "both candidates surfaced; finding={f}"
+        );
         for s in succ {
             assert!(
                 s["confidence"].as_f64().unwrap() >= 0.95,

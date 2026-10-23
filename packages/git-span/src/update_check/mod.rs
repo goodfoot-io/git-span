@@ -259,9 +259,7 @@ fn spawn_detached_child() {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        use windows_sys::Win32::System::Threading::{
-            CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
-        };
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
         // First Windows detached-spawn in the crate: no console window, and
         // its own process group. The child still belongs to the parent's
         // console session, so closing the terminal can interrupt it

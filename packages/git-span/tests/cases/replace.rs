@@ -41,7 +41,12 @@ fn replace_range_to_range_retires_old_installs_new() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "test/race", "file1.txt#L1-L5"])?;
 
-    let out = repo.run_span(["replace", "test/race", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    let out = repo.run_span([
+        "replace",
+        "test/race",
+        "file1.txt#L1-L5",
+        "file1.txt#L6-L10",
+    ])?;
     assert!(
         out.status.success(),
         "replace failed (code {:?}): {}",
@@ -139,7 +144,11 @@ fn replace_same_identity_rejected() -> Result<()> {
     let before = span_bytes(&repo, "test/race")?;
 
     let out = repo.run_span(["replace", "test/race", "file1.txt#L1-L5", "file1.txt#L1-L5"])?;
-    assert_eq!(out.status.code(), Some(1), "same-identity replace must fail");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "same-identity replace must fail"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("git span add"),
@@ -160,7 +169,12 @@ fn replace_missing_old_anchor_fails_closed() -> Result<()> {
     repo.span_stdout(["add", "test/race", "file1.txt#L1-L5"])?;
     let before = span_bytes(&repo, "test/race")?;
 
-    let out = repo.run_span(["replace", "test/race", "file2.txt#L10-L14", "file1.txt#L6-L10"])?;
+    let out = repo.run_span([
+        "replace",
+        "test/race",
+        "file2.txt#L10-L14",
+        "file1.txt#L6-L10",
+    ])?;
     assert_eq!(out.status.code(), Some(1), "missing old anchor must fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -195,7 +209,12 @@ fn replace_duplicate_old_records_resolved() -> Result<()> {
          why: duplicate records from a legacy edit.\n",
     )?;
 
-    let out = repo.run_span(["replace", "test/race", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    let out = repo.run_span([
+        "replace",
+        "test/race",
+        "file1.txt#L1-L5",
+        "file1.txt#L6-L10",
+    ])?;
     assert!(
         out.status.success(),
         "a duplicate old identity must be resolved, not refused (code {:?}): {}",
@@ -258,7 +277,12 @@ fn replace_gitignored_new_anchor_rejected() -> Result<()> {
     repo.span_stdout(["add", "ignored-demo", "doc.md#L1-L5"])?;
     let before = span_bytes(&repo, "ignored-demo")?;
 
-    let out = repo.run_span(["replace", "ignored-demo", "doc.md#L1-L5", "generated.ts#L1-L5"])?;
+    let out = repo.run_span([
+        "replace",
+        "ignored-demo",
+        "doc.md#L1-L5",
+        "generated.ts#L1-L5",
+    ])?;
     assert!(
         !out.status.success(),
         "replace must reject a gitignored new target; got {:?}",
@@ -311,8 +335,17 @@ fn replace_new_identity_already_tracked_rejected() -> Result<()> {
     repo.span_stdout(["add", "test/race", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
     let before = span_bytes(&repo, "test/race")?;
 
-    let out = repo.run_span(["replace", "test/race", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
-    assert_eq!(out.status.code(), Some(1), "already-tracked new identity must fail");
+    let out = repo.run_span([
+        "replace",
+        "test/race",
+        "file1.txt#L1-L5",
+        "file1.txt#L6-L10",
+    ])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "already-tracked new identity must fail"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("file1.txt#L6-L10") && stderr.contains("test/race"),
@@ -334,8 +367,17 @@ fn replace_new_range_exceeds_line_count_rejected() -> Result<()> {
     repo.span_stdout(["add", "test/race", "file1.txt#L1-L5"])?;
     let before = span_bytes(&repo, "test/race")?;
 
-    let out = repo.run_span(["replace", "test/race", "file1.txt#L1-L5", "file1.txt#L9-L11"])?;
-    assert_eq!(out.status.code(), Some(1), "out-of-range new anchor must fail");
+    let out = repo.run_span([
+        "replace",
+        "test/race",
+        "file1.txt#L1-L5",
+        "file1.txt#L9-L11",
+    ])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "out-of-range new anchor must fail"
+    );
     assert_eq!(
         span_bytes(&repo, "test/race")?,
         before,
@@ -431,7 +473,11 @@ fn replace_json_output_carries_state() -> Result<()> {
         "--format",
         "json",
     ])?;
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let v: Value = serde_json::from_slice(&out.stdout)?;
     assert_eq!(v["span"], "test/race");
     assert_eq!(v["retired"], "file1.txt#L1-L5");
@@ -453,7 +499,12 @@ fn replace_preserves_and_structurally_reports_other_anchor_drift() -> Result<()>
         "line1\nline2\nCHANGED\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\n",
     )?;
 
-    let out = repo.run_span(["replace", "test/race", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    let out = repo.run_span([
+        "replace",
+        "test/race",
+        "file1.txt#L1-L5",
+        "file1.txt#L6-L10",
+    ])?;
     assert!(
         out.status.success(),
         "replace failed (code {:?}): {}",
@@ -479,10 +530,12 @@ fn replace_preserves_and_structurally_reports_other_anchor_drift() -> Result<()>
     assert_eq!(drift.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&drift.stdout)?;
     let findings = report["findings"].as_array().expect("findings array");
-    assert!(findings.iter().any(|finding| {
-        finding["status"]["code"] == "CHANGED"
-            && finding["anchored"]["path"] == "file2.txt"
-    }), "structured report must attribute drift to untouched file2 anchor: {report}");
+    assert!(
+        findings.iter().any(|finding| {
+            finding["status"]["code"] == "CHANGED" && finding["anchored"]["path"] == "file2.txt"
+        }),
+        "structured report must attribute drift to untouched file2 anchor: {report}"
+    );
     Ok(())
 }
 
@@ -499,7 +552,11 @@ fn replace_is_reserved_span_name() -> Result<()> {
 
     // As a span name, `replace` is refused.
     let out = repo.run_span(["add", "replace", "file1.txt#L1-L5"])?;
-    assert_eq!(out.status.code(), Some(1), "span named `replace` must be refused");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "span named `replace` must be refused"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.to_lowercase().contains("reserved"),
@@ -509,6 +566,10 @@ fn replace_is_reserved_span_name() -> Result<()> {
     // As a subcommand, `replace` is clap-routed: missing required args is
     // a usage error (exit 2), not a missing span (exit 1).
     let out = repo.run_span(["replace"])?;
-    assert_eq!(out.status.code(), Some(2), "bare `replace` must be a usage error");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "bare `replace` must be a usage error"
+    );
     Ok(())
 }

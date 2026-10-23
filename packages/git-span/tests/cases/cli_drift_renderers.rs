@@ -502,7 +502,10 @@ fn multiple_untracked_args_are_combined_without_mutating_repository() -> Result<
         2,
         "bad2 must appear in both the summary and explanation: {stderr}"
     );
-    assert!(!stderr.contains("bad3"), "diagnostic must not invent an argument: {stderr}");
+    assert!(
+        !stderr.contains("bad3"),
+        "diagnostic must not invent an argument: {stderr}"
+    );
     assert_eq!(repo.git_stdout(["status", "--porcelain=v1"])?, before);
     Ok(())
 }

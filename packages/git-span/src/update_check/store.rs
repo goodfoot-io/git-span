@@ -308,10 +308,16 @@ mod tests {
         let first = store.claim_reminded(0, 1_700_000_100).expect("claim");
         let second = store.claim_reminded(0, 1_700_000_101).expect("claim");
         assert!(first, "one racer wins");
-        assert!(!second, "the second racer must lose against the same expected value");
+        assert!(
+            !second,
+            "the second racer must lose against the same expected value"
+        );
 
         let state = store.read_state().expect("state");
-        assert_eq!(state.last_reminded_at, 1_700_000_100, "the winner's stamp holds");
+        assert_eq!(
+            state.last_reminded_at, 1_700_000_100,
+            "the winner's stamp holds"
+        );
     }
 
     #[test]
@@ -339,7 +345,10 @@ mod tests {
 
         store.stamp_checked(1_700_000_200).expect("stamp");
         let state = store.read_state().expect("state");
-        assert_eq!(state.last_checked_at, 1_700_000_200, "the claim refreshes the check");
+        assert_eq!(
+            state.last_checked_at, 1_700_000_200,
+            "the claim refreshes the check"
+        );
         assert_eq!(
             state.last_reminded_at, 1_700_000_100,
             "the reminder stamp survives the pre-fetch claim"

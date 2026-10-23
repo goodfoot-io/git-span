@@ -12,7 +12,10 @@ use crate::cli::drift_label::format_drift_label;
 use crate::cli::drift_output::status_json;
 use crate::cli::error::from_lib_error;
 use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address, quote_shell};
-use crate::cli::{AddArgs, AddFormat, CliError, NextStep, RemoveArgs, ReplaceArgs, ReplaceFormat, WhyArgs, WhyFormat};
+use crate::cli::{
+    AddArgs, AddFormat, CliError, NextStep, RemoveArgs, ReplaceArgs, ReplaceFormat, WhyArgs,
+    WhyFormat,
+};
 use crate::descriptor_authority::DirectoryPolicy;
 use crate::git::IndexEntrySnapshot;
 use crate::resolver::{anchor_status_is_drift, resolve_named_spans_retaining_source_layers};
@@ -25,11 +28,11 @@ use crate::types::{
     validate_add_target,
 };
 use anyhow::Result;
-use schemars::JsonSchema;
 use git_span_core::{
-    RK64_ALGORITHM, ResolveCommand, ResolvedRecord, carried_sentinel, cheap_fingerprint_with_extent,
-    rk64_to_hex,
+    RK64_ALGORITHM, ResolveCommand, ResolvedRecord, carried_sentinel,
+    cheap_fingerprint_with_extent, rk64_to_hex,
 };
+use schemars::JsonSchema;
 use std::io::IsTerminal;
 
 // ---------------------------------------------------------------------------
@@ -176,9 +179,7 @@ pub(crate) fn hash_anchor_content(
         // tracked-but-deleted file falls through to the count check
         // below (which rejects on the empty content), and the
         // `--at`/gitlink/`FilterFailed` paths never reach here.
-        if normalized_worktree_read
-            && let Ok(raw) = crate::git::read_worktree_bytes(repo, path)
-        {
+        if normalized_worktree_read && let Ok(raw) = crate::git::read_worktree_bytes(repo, path) {
             let raw_line_count = count_lines(&raw);
             if raw_line_count != line_count {
                 anyhow::bail!(
@@ -679,7 +680,10 @@ pub(crate) fn content_identity_pairings(
             if *r.path != *c.path || (r.start_line, r.end_line) == (start_line, end_line) {
                 continue;
             }
-            if *r.algorithm != *c.algorithm || carried_sentinel(r) || *r.content_hash != *c.content_hash {
+            if *r.algorithm != *c.algorithm
+                || carried_sentinel(r)
+                || *r.content_hash != *c.content_hash
+            {
                 continue;
             }
             pairings.push(ContentIdentityPairing {
@@ -1026,7 +1030,9 @@ pub(super) fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) ->
         /// The identity carried more than one record; every one of them was
         /// replaced by the single freshly-hashed record. `records_before` is
         /// the pre-collapse count (the count after is always 1).
-        Collapsed { records_before: usize },
+        Collapsed {
+            records_before: usize,
+        },
     }
 
     // Hash every requested anchor once, up front: the content-identity
@@ -1094,7 +1100,8 @@ pub(super) fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) ->
             // never a hash of anything and exited 0. An operator who answered
             // "yes, still here" got silence; one who answered "it moved" got
             // a paragraph.
-            let retired = remove_all_at_identity(&mut span_file.anchors, &c.path, start_line, end_line);
+            let retired =
+                remove_all_at_identity(&mut span_file.anchors, &c.path, start_line, end_line);
             let retired_sentinels = retired.iter().filter(|r| carried_sentinel(r)).count();
 
             // The durable half of the acknowledgement: a sentinel retired
@@ -1255,9 +1262,7 @@ pub(super) fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) ->
                     if retired_sentinels == 1 { "" } else { "s" },
                     args.name,
                 );
-                println!(
-                    "The resolution is recorded in the span file's `[resolved]` section."
-                );
+                println!("The resolution is recorded in the span file's `[resolved]` section.");
             }
 
             // Content-identity pairings: a requested anchor hashes to the
@@ -1435,7 +1440,11 @@ pub(super) fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &s
 // ---------------------------------------------------------------------------
 
 /// Caller must hold the exclusive repository recovery-domain lock; `dispatch` does.
-pub(super) fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -> Result<i32> {
+pub(super) fn run_replace(
+    repo: &gix::Repository,
+    args: ReplaceArgs,
+    span_root: &str,
+) -> Result<i32> {
     crate::validation::validate_span_name(&args.name)?;
 
     // Parse both addresses first; fail-closed with no partial state.
@@ -1444,8 +1453,8 @@ pub(super) fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: 
         parse_address(&args.old_anchor)
             .ok_or_else(|| invalid_anchor_error("replace", &args.old_anchor))?
     };
-    let (new_path, new_extent) =
-        parse_address(&args.new_anchor).ok_or_else(|| invalid_anchor_error("replace", &args.new_anchor))?;
+    let (new_path, new_extent) = parse_address(&args.new_anchor)
+        .ok_or_else(|| invalid_anchor_error("replace", &args.new_anchor))?;
 
     let (old_start, old_end) = match &old_extent {
         AnchorExtent::LineRange { start, end } => (*start, *end),
@@ -1543,29 +1552,34 @@ pub(super) fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: 
             .into());
         }
 
-        validate_add_target(repo, std::path::Path::new(&new_path), &new_extent, &index_snapshot)
-            .map_err(|err| {
-                let next_steps = match &err {
-                    crate::types::AddPrecheckError::GitignoredPath { .. } => vec![
-                        NextStep::Prose(
-                            "git-span tracks content through git and cannot resolve a path \
+        validate_add_target(
+            repo,
+            std::path::Path::new(&new_path),
+            &new_extent,
+            &index_snapshot,
+        )
+        .map_err(|err| {
+            let next_steps = match &err {
+                crate::types::AddPrecheckError::GitignoredPath { .. } => vec![
+                    NextStep::Prose(
+                        "git-span tracks content through git and cannot resolve a path \
                              git never sees. Un-ignore the path (edit `.gitignore`) or anchor \
                              a committed file instead."
-                                .into(),
-                        ),
-                        NextStep::Bash(format!("git check-ignore -v {new_path}")),
-                    ],
-                    _ => vec![NextStep::Prose(
-                        "Fix the path or choose a different extent.".into(),
-                    )],
-                };
-                from_lib_error(
-                    "replace",
-                    format!("anchor precheck failed for `{new_path}`."),
-                    err,
-                    next_steps,
-                )
-            })?;
+                            .into(),
+                    ),
+                    NextStep::Bash(format!("git check-ignore -v {new_path}")),
+                ],
+                _ => vec![NextStep::Prose(
+                    "Fix the path or choose a different extent.".into(),
+                )],
+            };
+            from_lib_error(
+                "replace",
+                format!("anchor precheck failed for `{new_path}`."),
+                err,
+                next_steps,
+            )
+        })?;
     }
 
     // The exclusive repository lock taken at dispatch
@@ -1620,12 +1634,17 @@ pub(super) fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: 
     // than resolving one that pre-exists, which is a different concern from
     // the old identity retired above. Retiring the old anchor on its own is
     // the one-command path.
-    if span_file.anchors.iter().any(|a| {
-        *a.path == *new_path && a.start_line == new_start && a.end_line == new_end
-    }) {
+    if span_file
+        .anchors
+        .iter()
+        .any(|a| *a.path == *new_path && a.start_line == new_start && a.end_line == new_end)
+    {
         return Err(CliError {
             subcommand: "replace",
-            summary: format!("`{}` is already an anchor on `{}`.", args.new_anchor, args.name),
+            summary: format!(
+                "`{}` is already an anchor on `{}`.",
+                args.new_anchor, args.name
+            ),
             what_happened: "The new identity is already tracked, so a swap would leave two \
                 records with the same identity (the writer sorts but does not dedupe)."
                 .to_string(),
@@ -1732,9 +1751,7 @@ pub(super) fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: 
                     if retired_sentinels == 1 { "" } else { "s" },
                     args.new_anchor
                 );
-                println!(
-                    "The resolution is recorded in the span file's `[resolved]` section."
-                );
+                println!("The resolution is recorded in the span file's `[resolved]` section.");
             }
             if drift_free {
                 println!("Span is drift-free.");
@@ -1903,10 +1920,11 @@ fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result
                 // already put a `git status` in front; match it, so the first
                 // command shows the operator where they actually are.
                 next_steps: {
-                    let mut steps =
-                        vec![NextStep::Bash(format!("git status {span_root}/{name}"))];
+                    let mut steps = vec![NextStep::Bash(format!("git status {span_root}/{name}"))];
                     steps.extend(crate::cli::resolve::conflict_remediation(
-                        &[name], span_root, kind,
+                        &[name],
+                        span_root,
+                        kind,
                     ));
                     steps
                 },
@@ -2246,14 +2264,18 @@ pub fn run_reconcile_check(
         fuzzy_threshold: 0.95,
     };
     let names = vec![name.to_string()];
-    let (resolved, source_layers) = match resolve_named_spans_retaining_source_layers(
-        repo, span_root, &names, options,
-    ) {
-        Ok(pair) => pair,
-        Err(e) => {
-            return Ok(check_error_result(name, touched, pre_write_anchors, e.to_string()));
-        }
-    };
+    let (resolved, source_layers) =
+        match resolve_named_spans_retaining_source_layers(repo, span_root, &names, options) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return Ok(check_error_result(
+                    name,
+                    touched,
+                    pre_write_anchors,
+                    e.to_string(),
+                ));
+            }
+        };
     let (_, resolution) = resolved.into_iter().next().unwrap_or_else(|| {
         (
             name.to_string(),
@@ -2263,19 +2285,23 @@ pub fn run_reconcile_check(
     let span = match resolution {
         Ok(span) => span,
         Err(e) => {
-            return Ok(check_error_result(name, touched, pre_write_anchors, e.to_string()));
+            return Ok(check_error_result(
+                name,
+                touched,
+                pre_write_anchors,
+                e.to_string(),
+            ));
         }
     };
 
     let superseded = superseded_for(name, touched, pre_write_anchors);
     // (path, extent) keys of the pre-write anchors reported as superseded —
     // such an anchor's fate is the supersession fact, never the remains fact.
-    let superseded_keys: std::collections::HashSet<(String, AnchorExtent)> =
-        pre_write_anchors
-            .iter()
-            .filter(|old| touched.iter().any(|(p, e)| is_superseded(old, p, e)))
-            .map(|old| (old.path.to_string(), anchor_record_extent(old)))
-            .collect();
+    let superseded_keys: std::collections::HashSet<(String, AnchorExtent)> = pre_write_anchors
+        .iter()
+        .filter(|old| touched.iter().any(|(p, e)| is_superseded(old, p, e)))
+        .map(|old| (old.path.to_string(), anchor_record_extent(old)))
+        .collect();
     let touched_keys: std::collections::HashSet<(String, AnchorExtent)> =
         touched.iter().cloned().collect();
 
@@ -2300,7 +2326,10 @@ pub fn run_reconcile_check(
         remaining.push(RemainingAnchor {
             address,
             status: status_json(&a.status),
-            next_step: format!("git span remove {name} {}", resolved_anchor_address(&a.anchored)),
+            next_step: format!(
+                "git span remove {name} {}",
+                resolved_anchor_address(&a.anchored)
+            ),
             label: drift_label_for(a),
         });
     }
@@ -2315,7 +2344,11 @@ pub fn run_reconcile_check(
         superseded,
         remaining: if indeterminate { Vec::new() } else { remaining },
         drifting: if indeterminate { Vec::new() } else { drifting },
-        clean: !indeterminate && !span.anchors.iter().any(|a| anchor_status_is_drift(&a.status)),
+        clean: !indeterminate
+            && !span
+                .anchors
+                .iter()
+                .any(|a| anchor_status_is_drift(&a.status)),
         indeterminate,
         check_error: None,
         total_anchors: span.anchors.len(),
@@ -2356,9 +2389,7 @@ fn superseded_for(
 ) -> Vec<SupersededAnchor> {
     let mut out = Vec::new();
     for old in pre_write_anchors {
-        let Some((new_path, new_extent)) = touched
-            .iter()
-            .find(|(p, e)| is_superseded(old, p, e))
+        let Some((new_path, new_extent)) = touched.iter().find(|(p, e)| is_superseded(old, p, e))
         else {
             continue;
         };
@@ -2411,7 +2442,10 @@ pub(crate) fn reconcile_exit_code(check: &ReconcileCheck) -> i32 {
 /// Build the JSON `span_health` block from a check verdict.
 fn span_health_from_check(check: &ReconcileCheck) -> SpanHealth {
     let (state, reason) = if check.indeterminate {
-        (SpanHealthState::Unknown, Some("index changed during scan".into()))
+        (
+            SpanHealthState::Unknown,
+            Some("index changed during scan".into()),
+        )
     } else if let Some(detail) = &check.check_error {
         (SpanHealthState::Unknown, Some(detail.clone()))
     } else if check.clean {
@@ -2453,9 +2487,7 @@ fn render_reconcile_block(name: &str, check: &ReconcileCheck, include_superseded
         println!();
     }
     if let Some(detail) = &check.check_error {
-        println!(
-            "Span `{name}`: state unverified ({detail}) — run `git span drift {name}`."
-        );
+        println!("Span `{name}`: state unverified ({detail}) — run `git span drift {name}`.");
     } else if check.indeterminate {
         println!(
             "Span `{name}`: state indeterminate (index changed during check) — re-run the command or `git span drift {name}`."
@@ -2472,7 +2504,11 @@ fn render_reconcile_block(name: &str, check: &ReconcileCheck, include_superseded
             line.push_str(&format!(
                 " ; {} anchor{} resolved, pending commit",
                 check.pending_commit_count,
-                if check.pending_commit_count == 1 { "" } else { "s" }
+                if check.pending_commit_count == 1 {
+                    ""
+                } else {
+                    "s"
+                }
             ));
         }
         println!("{line}");
@@ -2773,10 +2809,18 @@ mod tests {
         // Identical (path, extent) is NOT supersession — the resolved-in-place
         // (hash update) case, for both line ranges and whole-file anchors.
         assert!(!is_superseded(&old_range, "src/a.ts", &lines(1, 5)));
-        assert!(!is_superseded(&old_whole, "src/a.ts", &AnchorExtent::WholeFile));
+        assert!(!is_superseded(
+            &old_whole,
+            "src/a.ts",
+            &AnchorExtent::WholeFile
+        ));
 
         // Whole-file covers any old extent on the path (line range).
-        assert!(is_superseded(&old_range, "src/a.ts", &AnchorExtent::WholeFile));
+        assert!(is_superseded(
+            &old_range,
+            "src/a.ts",
+            &AnchorExtent::WholeFile
+        ));
 
         // Range covers range iff new.start <= old.start && new.end >= old.end.
         assert!(is_superseded(&old_range, "src/a.ts", &lines(1, 6)));
@@ -2796,9 +2840,17 @@ mod tests {
         assert!(!is_superseded(&old_whole, "src/a.ts", &lines(1, 100)));
 
         // Cross-path → never superseded, regardless of extents.
-        assert!(!is_superseded(&old_range, "src/b.ts", &AnchorExtent::WholeFile));
+        assert!(!is_superseded(
+            &old_range,
+            "src/b.ts",
+            &AnchorExtent::WholeFile
+        ));
         assert!(!is_superseded(&old_range, "src/b.ts", &lines(0, 100)));
-        assert!(!is_superseded(&old_whole, "src/b.ts", &AnchorExtent::WholeFile));
+        assert!(!is_superseded(
+            &old_whole,
+            "src/b.ts",
+            &AnchorExtent::WholeFile
+        ));
     }
 
     // ---------------------------------------------------------------------
@@ -2858,47 +2910,57 @@ mod tests {
         );
 
         // Exact identity → the supported refresh path, never a pairing.
-        assert!(content_identity_pairings(
-            &[computed("src/a.rs", lines(5, 7), "h")],
-            &[rec_hash("src/a.rs", 5, 7, "h")],
-        )
-        .is_empty());
+        assert!(
+            content_identity_pairings(
+                &[computed("src/a.rs", lines(5, 7), "h")],
+                &[rec_hash("src/a.rs", 5, 7, "h")],
+            )
+            .is_empty()
+        );
 
         // Same path, different hash → no pairing.
-        assert!(content_identity_pairings(
-            &[computed("src/a.rs", lines(50, 52), "g")],
-            &[rec_hash("src/a.rs", 5, 7, "h")],
-        )
-        .is_empty());
+        assert!(
+            content_identity_pairings(
+                &[computed("src/a.rs", lines(50, 52), "g")],
+                &[rec_hash("src/a.rs", 5, 7, "h")],
+            )
+            .is_empty()
+        );
 
         // Different path, same hash → a legitimate coupling, no pairing.
-        assert!(content_identity_pairings(
-            &[computed("src/b.rs", lines(1, 3), "h")],
-            &[rec_hash("src/a.rs", 5, 7, "h")],
-        )
-        .is_empty());
+        assert!(
+            content_identity_pairings(
+                &[computed("src/b.rs", lines(1, 3), "h")],
+                &[rec_hash("src/a.rs", 5, 7, "h")],
+            )
+            .is_empty()
+        );
 
         // A different algorithm's hash is not comparable, even when equal.
-        assert!(content_identity_pairings(
-            &[computed("src/a.rs", lines(50, 52), "h")],
-            &[AnchorRecord {
-                path: "src/a.rs".into(),
-                start_line: 5,
-                end_line: 7,
-                algorithm: "sha256".into(),
-                content_hash: "h".into(),
-            }],
-        )
-        .is_empty());
+        assert!(
+            content_identity_pairings(
+                &[computed("src/a.rs", lines(50, 52), "h")],
+                &[AnchorRecord {
+                    path: "src/a.rs".into(),
+                    start_line: 5,
+                    end_line: 7,
+                    algorithm: "sha256".into(),
+                    content_hash: "h".into(),
+                }],
+            )
+            .is_empty()
+        );
 
         // A sentinel record hashes nothing and cannot attest to content,
         // even against a hash that compares equal.
         let sentinel = git_span_core::rk64_unmatched_sentinel();
-        assert!(content_identity_pairings(
-            &[computed("src/a.rs", lines(50, 52), &sentinel)],
-            &[rec_hash("src/a.rs", 5, 7, &sentinel)],
-        )
-        .is_empty());
+        assert!(
+            content_identity_pairings(
+                &[computed("src/a.rs", lines(50, 52), &sentinel)],
+                &[rec_hash("src/a.rs", 5, 7, &sentinel)],
+            )
+            .is_empty()
+        );
 
         // Co-requested pair: same path, same hash, different identity.
         assert_eq!(
@@ -2917,14 +2979,16 @@ mod tests {
         );
 
         // Co-requested with different hashes → no pairing.
-        assert!(content_identity_pairings(
-            &[
-                computed("src/a.rs", lines(5, 7), "h"),
-                computed("src/a.rs", lines(50, 52), "g"),
-            ],
-            &[],
-        )
-        .is_empty());
+        assert!(
+            content_identity_pairings(
+                &[
+                    computed("src/a.rs", lines(5, 7), "h"),
+                    computed("src/a.rs", lines(50, 52), "g"),
+                ],
+                &[],
+            )
+            .is_empty()
+        );
 
         // Existing pairings are reported before co-requested ones, and one
         // requested anchor can pair with several existing records — every
@@ -3077,10 +3141,7 @@ mod tests {
         // nothing is tracked on the span yet, so no remove command applies.
         let requested = vec![
             requested("src/lib.rs", AnchorExtent::WholeFile),
-            requested(
-                "src/lib.rs",
-                AnchorExtent::LineRange { start: 1, end: 5 },
-            ),
+            requested("src/lib.rs", AnchorExtent::LineRange { start: 1, end: 5 }),
         ];
         let existing: Vec<AnchorRecord> = Vec::new();
         assert_eq!(
@@ -3099,10 +3160,7 @@ mod tests {
         // The reversed order (`add name P#L1-L2 P`) reports the range as the
         // requested anchor and the whole-file as the co-requested conflict.
         let requested = vec![
-            requested(
-                "src/lib.rs",
-                AnchorExtent::LineRange { start: 1, end: 5 },
-            ),
+            requested("src/lib.rs", AnchorExtent::LineRange { start: 1, end: 5 }),
             requested("src/lib.rs", AnchorExtent::WholeFile),
         ];
         let existing: Vec<AnchorRecord> = Vec::new();
@@ -3125,10 +3183,7 @@ mod tests {
         // first rejection is actionable with a remove command.
         let existing = vec![record("src/lib.rs", 0, 0)];
         let requested = vec![
-            requested(
-                "src/lib.rs",
-                AnchorExtent::LineRange { start: 1, end: 5 },
-            ),
+            requested("src/lib.rs", AnchorExtent::LineRange { start: 1, end: 5 }),
             requested("src/lib.rs", AnchorExtent::WholeFile),
         ];
         assert_eq!(
@@ -3149,14 +3204,8 @@ mod tests {
         // existing-inner order must win.
         let existing = vec![record("src/a.rs", 0, 0), record("src/b.rs", 0, 0)];
         let requested = vec![
-            requested(
-                "src/a.rs",
-                AnchorExtent::LineRange { start: 1, end: 2 },
-            ),
-            requested(
-                "src/b.rs",
-                AnchorExtent::LineRange { start: 3, end: 4 },
-            ),
+            requested("src/a.rs", AnchorExtent::LineRange { start: 1, end: 2 }),
+            requested("src/b.rs", AnchorExtent::LineRange { start: 3, end: 4 }),
         ];
         assert_eq!(
             supersession_conflict(&requested, &existing),
@@ -3212,7 +3261,10 @@ mod tests {
         assert_eq!(v["span"], "user-id-lifecycle");
         assert_eq!(v["addresses"][0]["outcome"], "ADDED");
         assert_eq!(v["superseded"][0]["state"], "REMAINS");
-        assert_eq!(v["superseded"][0]["superseded_by"], "src/read-user.ts#L1-L3");
+        assert_eq!(
+            v["superseded"][0]["superseded_by"],
+            "src/read-user.ts#L1-L3"
+        );
         assert_eq!(v["remaining"][0]["status"]["code"], "CHANGED");
         assert_eq!(v["span_health"]["state"], "DRIFT");
         assert_eq!(v["span_health"]["drift_count"], 1);

@@ -174,7 +174,10 @@ file2.txt#L1-L5 rk64:{h2}
     assert_eq!(out.status.code(), Some(0), "--rehash must succeed");
     let explicit = read_span(&repo, "m")?;
 
-    assert_eq!(bare, explicit, "--rehash is the default; outputs must match");
+    assert_eq!(
+        bare, explicit,
+        "--rehash is the default; outputs must match"
+    );
     assert!(
         explicit.contains(&format!("file1.txt#L1-L5 rk64:{h1}")),
         "file1 anchor; span:\n{explicit}"
@@ -273,7 +276,11 @@ fn orphan_unreadable_case(orphan_in_ours: bool) -> Result<()> {
         "error must name the orphan; stderr=\n{stderr}"
     );
     assert!(
-        stderr.contains(if orphan_in_ours { "only by ours" } else { "only by theirs" }),
+        stderr.contains(if orphan_in_ours {
+            "only by ours"
+        } else {
+            "only by theirs"
+        }),
         "error must name the side the orphan came from; stderr=\n{stderr}"
     );
     assert_eq!(
@@ -323,7 +330,11 @@ file2.txt#L1-L5 rk64:{h2}
         stderr.contains("file1.txt#L1-L40") && stderr.contains("only 10 lines"),
         "error must cite the source's real line count; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
     Ok(())
 }
 
@@ -349,7 +360,11 @@ file1.txt#L1-L40 rk64:{THIRD_HASH}
         stderr.contains("file1.txt#L1-L40") && stderr.contains("only 10 lines"),
         "error must cite the source's real line count; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
     Ok(())
 }
 
@@ -372,7 +387,9 @@ fn resolve_help_explains_side_value_arbitration_not_membership() -> Result<()> {
         .collect::<Vec<_>>()
         .join(" ");
     assert!(
-        help.contains("`--ours`/`--theirs` choose between conflicting values for the same anchor key;"),
+        help.contains(
+            "`--ours`/`--theirs` choose between conflicting values for the same anchor key;"
+        ),
         "the command description must distinguish value arbitration from membership union; help=\n{help}"
     );
     assert!(
@@ -466,7 +483,9 @@ file2.txt#L1-L5 rk64:{h2}
     assert_eq!(unverified_out.status.code(), Some(0));
     let unverified_stdout = String::from_utf8_lossy(&unverified_out.stdout);
     assert!(
-        unverified_stdout.contains(&format!("{membership_outcome} (unverified — no readable source)")),
+        unverified_stdout.contains(&format!(
+            "{membership_outcome} (unverified — no readable source)"
+        )),
         "the unverified suffix must remain grammatical after the membership explanation; stdout=\n{unverified_stdout}"
     );
     Ok(())
@@ -497,12 +516,18 @@ file1.txt#L1-L5 rk64:{THIRD_HASH}
         String::from_utf8_lossy(&out.stderr)
     );
     let span = read_span(&repo, "m")?;
-    assert!(span.contains(kept), "{side} must keep its own record; span:\n{span}");
+    assert!(
+        span.contains(kept),
+        "{side} must keep its own record; span:\n{span}"
+    );
     assert!(
         !span.contains(dropped),
         "the other side's hash must be absent; span:\n{span}"
     );
-    assert!(!span.contains("<<<<<<<"), "no markers may remain; span:\n{span}");
+    assert!(
+        !span.contains("<<<<<<<"),
+        "no markers may remain; span:\n{span}"
+    );
     Ok(())
 }
 
@@ -545,9 +570,18 @@ fn why_divergence_case(side: &str, kept: &str, dropped: &str) -> Result<()> {
         String::from_utf8_lossy(&out.stderr)
     );
     let span = read_span(&repo, "m")?;
-    assert!(span.contains(kept), "{side} must keep its own prose; span:\n{span}");
-    assert!(!span.contains(dropped), "the other prose must be gone; span:\n{span}");
-    assert!(!span.contains("<<<<<<<"), "no markers may remain; span:\n{span}");
+    assert!(
+        span.contains(kept),
+        "{side} must keep its own prose; span:\n{span}"
+    );
+    assert!(
+        !span.contains(dropped),
+        "the other prose must be gone; span:\n{span}"
+    );
+    assert!(
+        !span.contains("<<<<<<<"),
+        "no markers may remain; span:\n{span}"
+    );
     assert!(
         String::from_utf8_lossy(&out.stdout).contains(&format!("why: kept {}", &side[2..])),
         "report must attribute the why to the chosen side; stdout=\n{}",
@@ -584,7 +618,11 @@ fn resolve_rehash_fails_on_why_divergence() -> Result<()> {
         stderr.contains("--ours") && stderr.contains("--theirs"),
         "the error must point at the sides that can settle it; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
     Ok(())
 }
 
@@ -642,13 +680,20 @@ fn resolve_config_conflict_settlement_unit_test() -> Result<()> {
     let (merged, _, config_label) =
         git_span::cli::resolve::settle_for_test(&gix_repo, "ours", &ours, &theirs)
             .expect("--ours settles a config divergence");
-    assert_eq!(merged.config, ours_config, "--ours keeps ours' whole config");
+    assert_eq!(
+        merged.config, ours_config,
+        "--ours keeps ours' whole config"
+    );
     assert_eq!(config_label, "kept ours");
 
     let (merged, _, config_label) =
         git_span::cli::resolve::settle_for_test(&gix_repo, "theirs", &ours, &theirs)
             .expect("--theirs settles a config divergence");
-    assert_eq!(merged.config, SpanConfig::default(), "--theirs keeps theirs'");
+    assert_eq!(
+        merged.config,
+        SpanConfig::default(),
+        "--theirs keeps theirs'"
+    );
     assert_eq!(config_label, "kept theirs");
     Ok(())
 }
@@ -732,7 +777,10 @@ fn resolve_preserves_one_sided_why_without_index_stages() -> Result<()> {
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0));
-    assert!(!stdout.contains("The why text was written empty"), "stdout=\n{stdout}");
+    assert!(
+        !stdout.contains("The why text was written empty"),
+        "stdout=\n{stdout}"
+    );
     assert_eq!(
         field_lines(&stdout, "why:").len(),
         1,
@@ -903,15 +951,20 @@ fn resolve_ours_keeps_hand_edited_config_residue_over_stale_stage_two() -> Resul
          copy_detection = \"same-commit\"\nignore_whitespace = false\nfollow_moves = true\n"
     );
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
-    let staged_ours = "copy_detection = \"same-commit\"\nignore_whitespace = true\nfollow_moves = false";
+    let staged_ours =
+        "copy_detection = \"same-commit\"\nignore_whitespace = true\nfollow_moves = false";
     assert!(residue.contains(staged_ours), "residue=\n{residue}");
 
     // The worktree is the live resolution surface. Once the operator edits
     // the config carried by its ours arm, frozen stage 2 must not overwrite
     // that newer evidence while claiming to have kept ours.
-    let hand_config = "copy_detection = \"any-file-in-repo\"\nignore_whitespace = false\nfollow_moves = true";
+    let hand_config =
+        "copy_detection = \"any-file-in-repo\"\nignore_whitespace = false\nfollow_moves = true";
     let hand_edited = residue.replacen(staged_ours, hand_config, 1);
-    assert_ne!(hand_edited, residue, "fixture must edit the ours config arm");
+    assert_ne!(
+        hand_edited, residue,
+        "fixture must edit the ours config arm"
+    );
     repo.write_file(".span/m", &hand_edited)?;
 
     let out = repo.run_span(["resolve", "m", "--ours"])?;
@@ -996,7 +1049,10 @@ fn resolve_preserves_hand_edited_worktree_content() -> Result<()> {
         "neither stage record may reappear; span:\n{span}"
     );
     assert!(
-        span.contains(&format!("later.txt#L1-L3 rk64:{}", line_slice_hash(LATER, 1, 3))),
+        span.contains(&format!(
+            "later.txt#L1-L3 rk64:{}",
+            line_slice_hash(LATER, 1, 3)
+        )),
         "the still-marked anchor must be re-hashed from the worktree; span:\n{span}"
     );
     Ok(())
@@ -1056,10 +1112,7 @@ fn resolve_ours_preserves_non_diverged_why_change() -> Result<()> {
         stdout.contains("why: unchanged"),
         "the plain settled field is identical on both residue sides; stdout=\n{stdout}"
     );
-    assert!(
-        !stdout.contains("why: kept ours"),
-        "stdout=\n{stdout}"
-    );
+    assert!(!stdout.contains("why: kept ours"), "stdout=\n{stdout}");
     Ok(())
 }
 
@@ -1087,10 +1140,7 @@ fn resolve_ours_preserves_non_diverged_config_change() -> Result<()> {
         "`--ours` must not revert theirs' uncontested setting to ours' default; span:\n{span}"
     );
     assert!(stdout.contains("config: unchanged"), "stdout=\n{stdout}");
-    assert!(
-        !stdout.contains("config: kept ours"),
-        "stdout=\n{stdout}"
-    );
+    assert!(!stdout.contains("config: kept ours"), "stdout=\n{stdout}");
     Ok(())
 }
 
@@ -1196,7 +1246,11 @@ fn resolve_why_cleared_by_hand_stands_on_ours_and_is_restored_on_theirs() -> Res
         stderr.contains("--why"),
         "the restored divergence must be named; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
 
     // `--theirs` writes the stage-supplied prose back — the disclosed choice
     // of restore over preserve-empty — and says so rather than calling it
@@ -1305,12 +1359,20 @@ ignore_whitespace = false
 
     let rehash = repo.run_span(["resolve", "m", "--rehash"])?;
     let stderr = String::from_utf8_lossy(&rehash.stderr);
-    assert_ne!(rehash.status.code(), Some(0), "--rehash must refuse; stderr=\n{stderr}");
+    assert_ne!(
+        rehash.status.code(),
+        Some(0),
+        "--rehash must refuse; stderr=\n{stderr}"
+    );
     assert!(
         stderr.contains("[config]") && stderr.contains("diverged"),
         "--rehash must name the unresolved region; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
 
     for (side, expected) in [("--ours", true), ("--theirs", false)] {
         repo.write_file(".span/m", &fixture)?;
@@ -1372,7 +1434,11 @@ file2.txt#L1-L5 rk64:{THIRD_HASH}
         stderr.contains("2 conflict blocks in its anchor block"),
         "the refusal must name the count and the region; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
     Ok(())
 }
 
@@ -1400,7 +1466,11 @@ fn resolve_settles_real_driver_output_with_a_divergent_why() -> Result<()> {
         !stderr.contains("conflict blocks"),
         "the driver's own output must never be refused as unshaped; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
 
     let out = repo.run_span(["resolve", "m", "--theirs"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1422,11 +1492,11 @@ fn resolve_settles_real_driver_output_with_a_divergent_why() -> Result<()> {
         )) || span.contains(&format!("file1.txt#L1-L5 rk64:{THIRD_HASH}")),
         "the anchor residue must be settled too; span:\n{span}"
     );
-    assert!(!span.contains("<<<<<<<"), "no markers may remain; span:\n{span}");
     assert!(
-        stdout.contains("why: kept theirs"),
-        "stdout=\n{stdout}"
+        !span.contains("<<<<<<<"),
+        "no markers may remain; span:\n{span}"
     );
+    assert!(stdout.contains("why: kept theirs"), "stdout=\n{stdout}");
     Ok(())
 }
 
@@ -1443,11 +1513,8 @@ fn resolve_settles_real_driver_output_with_a_divergent_why() -> Result<()> {
 #[test]
 fn resolve_round_trips_url_ending_why_prose_the_old_gate_refused() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let residue = anchor_and_why_residue(
-        &repo,
-        "docs at https://example.com",
-        "moved, see rfc:1234",
-    )?;
+    let residue =
+        anchor_and_why_residue(&repo, "docs at https://example.com", "moved, see rfc:1234")?;
     repo.write_file(".span/m", &residue)?;
 
     let out = repo.run_span(["resolve", "m", "--ours"])?;
@@ -1503,7 +1570,11 @@ fn resolve_no_markers_is_a_noop() -> Result<()> {
         stdout.contains("no conflict markers") && stdout.contains("nothing to resolve"),
         "stdout=\n{stdout}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
     Ok(())
 }
 
@@ -1579,7 +1650,11 @@ gone.txt#L1-L3 rk64:{THIRD_HASH}
         stdout.contains(OTHER_HASH) && stdout.contains(THIRD_HASH),
         "each side's outcome must show what it would keep; stdout=\n{stdout}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "a dry run writes nothing");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "a dry run writes nothing"
+    );
     Ok(())
 }
 
@@ -1619,7 +1694,11 @@ file1.txt#L1-L5 rk64:{THIRD_HASH}
         stdout.contains("--ours: would resolve") && stdout.contains("--theirs: would resolve"),
         "the other two sides must still be evaluated; stdout=\n{stdout}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "a dry run writes nothing");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "a dry run writes nothing"
+    );
     Ok(())
 }
 
@@ -1653,7 +1732,11 @@ file1.txt#L1-L5 rk64:{THIRD_HASH}
         stderr.contains("source file") && stderr.contains("conflict markers"),
         "the poisoned source must be named; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
 
     // The identical fixture settles under --ours: no source is read at all.
     let out = repo.run_span(["resolve", "m", "--ours"])?;
@@ -2226,7 +2309,11 @@ fn resolve_rehash_refuses_an_anchor_whose_source_is_gone() -> Result<()> {
         stderr.contains("evaluating them against this file just now"),
         "it must say the offer was derived from this input; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
     Ok(())
 }
 
@@ -2253,7 +2340,11 @@ fn resolve_rehash_why_divergence_refuses_then_the_offered_side_works() -> Result
             && stderr.contains("git span resolve m --theirs"),
         "and both sides must still be offered as the exit; stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
 
     // The offer is only honest if it holds, so take it.
     let out = repo.run_span(["resolve", "m", "--theirs"])?;
@@ -2468,7 +2559,11 @@ fn renamed_away_case(candidates: &[&str]) -> Result<()> {
         "the refusal must name the path that is gone rather than guess its new home; \
          stderr=\n{stderr}"
     );
-    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    assert_eq!(
+        before,
+        read_span_bytes(&repo, "m")?,
+        "file must be untouched"
+    );
 
     let out = repo.run_span(["resolve", "m", "--ours"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -2508,10 +2603,7 @@ fn resolve_honors_a_why_the_peer_deleted() -> Result<()> {
     let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nours prose\n");
     let theirs = format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n");
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
-    assert!(
-        !residue.contains("ours prose"),
-        "residue=\n{residue}"
-    );
+    assert!(!residue.contains("ours prose"), "residue=\n{residue}");
 
     for side in ["--rehash", "--theirs"] {
         repo.write_file(".span/m", &residue)?;
@@ -2612,9 +2704,8 @@ fn stage_all_three(repo: &TestRepo, s1: &str, s2: &str, s3: &str) -> Result<()> 
 fn unreadable_stage_case(unreadable_stage: u8) -> Result<()> {
     let repo = TestRepo::seeded()?;
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
-    let good = format!(
-        "file1.txt#L1-L5 rk64:{h1}\n\nshared rationale\n\n[config]\nfollow_moves = true\n"
-    );
+    let good =
+        format!("file1.txt#L1-L5 rk64:{h1}\n\nshared rationale\n\n[config]\nfollow_moves = true\n");
     // A span file someone committed mid-conflict: markers intact, so
     // `SpanFile::parse` fails closed on it exactly as designed.
     let marked = format!(
@@ -2661,12 +2752,20 @@ fn unreadable_stage_case(unreadable_stage: u8) -> Result<()> {
         !stdout.contains("config: unchanged"),
         "a side whose blob failed to parse asserted nothing to agree with; stdout=\n{stdout}"
     );
-    let side_that_spoke = if unreadable_stage == 2 { "theirs" } else { "ours" };
+    let side_that_spoke = if unreadable_stage == 2 {
+        "theirs"
+    } else {
+        "ours"
+    };
     assert_eq!(
         field_lines(&stdout, "config:"),
         vec![format!(
             "config: taken from {side_that_spoke} — {}' `[config]` was never read",
-            if unreadable_stage == 2 { "ours" } else { "theirs" }
+            if unreadable_stage == 2 {
+                "ours"
+            } else {
+                "theirs"
+            }
         )],
         "the label must name the side the value actually came from; stdout=\n{stdout}"
     );
@@ -2766,7 +2865,7 @@ fn drift_conflict_report_preserves_stages_and_names_a_working_resolve_probe() ->
     );
     assert_names_resolve(&stdout, "drift");
     assert_eq!(
-        repo.git_stdout(["ls-files", "-u", "--", ".span/m"])? ,
+        repo.git_stdout(["ls-files", "-u", "--", ".span/m"])?,
         stages_before,
         "reporting drift must not consume or rewrite the conflict stages"
     );
@@ -2874,11 +2973,7 @@ fn drift_fix_does_not_advise_re_running_itself_on_a_pure_conflict() -> Result<()
 /// there. Every structural assumption is asserted against the generated text
 /// before the edit, so the fixture cannot drift into some other shape and keep
 /// passing.
-fn hand_edited_anchor_block(
-    repo: &TestRepo,
-    ours_line: &str,
-    theirs_line: &str,
-) -> Result<String> {
+fn hand_edited_anchor_block(repo: &TestRepo, ours_line: &str, theirs_line: &str) -> Result<String> {
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
     let h2 = line_slice_hash(FILE2, 1, 5);
     let kept = format!("file1.txt#L1-L5 rk64:{h1}");
@@ -2937,7 +3032,10 @@ fn resolve_refuses_prose_inside_the_anchor_residue_block() -> Result<()> {
         "See https://example.com",
         "Ref https://other.example",
     )?;
-    every_side_refuses(&fixture, "content hash is not the sixteen lowercase hex digits")?;
+    every_side_refuses(
+        &fixture,
+        "content hash is not the sixteen lowercase hex digits",
+    )?;
 
     // Not just refused — refused naming the line the operator typed, so the
     // message points at the edit rather than at the block in general.
@@ -2967,8 +3065,11 @@ fn resolve_refuses_a_colon_bearing_word_inside_the_anchor_residue_block() -> Res
     ] {
         let repo = TestRepo::seeded()?;
         let fixture = hand_edited_anchor_block(&repo, ours_line, theirs_line)?;
-        every_side_refuses(&fixture, "content hash is not the sixteen lowercase hex digits")
-            .map_err(|e| e.context(format!("line `{ours_line}`")))?;
+        every_side_refuses(
+            &fixture,
+            "content hash is not the sixteen lowercase hex digits",
+        )
+        .map_err(|e| e.context(format!("line `{ours_line}`")))?;
     }
     Ok(())
 }
@@ -2991,7 +3092,10 @@ fn resolve_still_settles_a_genuine_anchor_record_before_the_separator() -> Resul
         let ours_line = format!("{address} rk64:{OTHER_HASH}");
         let theirs_line = format!("{address} rk64:{THIRD_HASH}");
         assert_writer_shaped_hash(&ours_line);
-        let base = format!("{kept}\n{address} rk64:{}\n\nshared rationale\n", "1".repeat(16));
+        let base = format!(
+            "{kept}\n{address} rk64:{}\n\nshared rationale\n",
+            "1".repeat(16)
+        );
         let ours = format!("{kept}\n{ours_line}\n\nshared rationale\n");
         let theirs = format!("{kept}\n{theirs_line}\n\nshared rationale\n");
         let fixture = driver_residue(&repo, &base, &ours, &theirs, "7")?;

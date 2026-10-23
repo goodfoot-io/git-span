@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn human_date_line_carries_gits_full_author_date() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -20,7 +19,6 @@ fn human_date_line_carries_gits_full_author_date() -> Result<()> {
     }
     Ok(())
 }
-
 
 #[test]
 fn git_valid_extended_author_offset_is_preserved_in_both_formats() -> Result<()> {
@@ -53,7 +51,6 @@ fn git_valid_extended_author_offset_is_preserved_in_both_formats() -> Result<()>
     );
     Ok(())
 }
-
 
 #[test]
 fn noncanonical_author_minutes_preserve_gits_raw_offset_spelling() -> Result<()> {
@@ -91,7 +88,6 @@ fn noncanonical_author_minutes_preserve_gits_raw_offset_spelling() -> Result<()>
     Ok(())
 }
 
-
 #[test]
 fn overflowing_author_offsets_fail_closed_without_panicking() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -122,7 +118,6 @@ fn overflowing_author_offsets_fail_closed_without_panicking() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn hostile_author_metadata_on_a_no_op_commit_does_not_fail_history() -> Result<()> {
     // Author metadata is a contract for *rendered* commits only: a walked
@@ -145,7 +140,6 @@ fn hostile_author_metadata_on_a_no_op_commit_does_not_fail_history() -> Result<(
     );
     Ok(())
 }
-
 
 #[test]
 fn hostile_author_metadata_on_a_rendered_commit_still_fails_closed() -> Result<()> {

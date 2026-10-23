@@ -11,7 +11,7 @@ use git_span::types::{
     AnchorExtent, AnchorStatus, ContentRef, DriftSource, EngineOptions, LayerSet, Scope,
     UnavailableReason,
 };
-use git_span::{resolve_anchor, resolve_span, drift_spans};
+use git_span::{drift_spans, resolve_anchor, resolve_span};
 use std::path::PathBuf;
 use support::TestRepo;
 

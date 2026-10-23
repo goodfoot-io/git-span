@@ -195,7 +195,12 @@ fn sentinel_beside_neighbour(
 /// Neighbour *after* the collapsed anchor.
 #[test]
 fn a_deleted_collapse_keeps_its_marker_on_all_three_surfaces_neighbour_after() -> Result<()> {
-    let repo = sentinel_beside_neighbour("reach-del-after", "file1.txt#L3-L5", "file1.txt#L8-L9", true)?;
+    let repo = sentinel_beside_neighbour(
+        "reach-del-after",
+        "file1.txt#L3-L5",
+        "file1.txt#L8-L9",
+        true,
+    )?;
     repo.run_git(["rm", "-q", "file1.txt"])?;
     repo.run_git(["commit", "-m", "delete the anchored file"])?;
 
@@ -250,7 +255,12 @@ fn a_deleted_collapse_keeps_its_marker_on_all_three_surfaces_neighbour_after() -
 /// these two and fail the other.
 #[test]
 fn a_deleted_collapse_keeps_its_marker_on_all_three_surfaces_neighbour_before() -> Result<()> {
-    let repo = sentinel_beside_neighbour("reach-del-before", "file1.txt#L8-L9", "file1.txt#L1-L2", false)?;
+    let repo = sentinel_beside_neighbour(
+        "reach-del-before",
+        "file1.txt#L8-L9",
+        "file1.txt#L1-L2",
+        false,
+    )?;
     repo.run_git(["rm", "-q", "file1.txt"])?;
     repo.run_git(["commit", "-m", "delete the anchored file"])?;
 
@@ -293,7 +303,11 @@ fn a_deleted_collapse_keeps_its_marker_on_all_three_surfaces_neighbour_before() 
 fn porcelain_marks_a_changed_collapse_without_disturbing_the_row_columns() -> Result<()> {
     let repo = sentinel_beside_neighbour("reach-porc", "file1.txt#L3-L5", "file1.txt#L8-L9", true)?;
 
-    let rows = parse_porcelain(&stdout_of(&repo.run_span(["drift", "--format", "porcelain"])?));
+    let rows = parse_porcelain(&stdout_of(&repo.run_span([
+        "drift",
+        "--format",
+        "porcelain",
+    ])?));
     let collapsed = porcelain_row(&rows, "file1.txt#L3-L5");
     assert_eq!(
         collapsed.fields,
@@ -326,7 +340,8 @@ fn porcelain_marks_a_changed_collapse_without_disturbing_the_row_columns() -> Re
 /// Also asserts the record set: nothing about reporting an unreadable
 /// collapse may rewrite the span.
 #[test]
-fn a_sparse_excluded_collapse_is_marked_but_offered_the_step_that_makes_it_readable() -> Result<()> {
+fn a_sparse_excluded_collapse_is_marked_but_offered_the_step_that_makes_it_readable() -> Result<()>
+{
     let repo = TestRepo::new()?;
     repo.write_file("src/data.txt", "l1\nl2\nl3\nl4\nl5\nl6\n")?;
     repo.commit_all("add data file")?;

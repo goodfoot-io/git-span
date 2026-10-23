@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 const SCHEMA_DIR: &str = "public/schemas/cli/v1";
 
 fn website_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("website")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("website")
 }
 
 fn gen_schemas(args: &[&str]) -> assert_cmd::Command {
@@ -107,7 +109,8 @@ fn generate_rewrites_identical_bytes() {
     for (path, expected) in first_pass {
         let regenerated = std::fs::read(&path).expect("read regenerated schema");
         assert_eq!(
-            regenerated, expected,
+            regenerated,
+            expected,
             "{} regenerated to different bytes",
             path.display()
         );

@@ -270,7 +270,11 @@ impl<'repo> SpanFileReader<'repo> {
         self.read_head_layers(None, name)
     }
 
-    fn read_head_layers(&self, layers: Option<&LayerSnapshot>, name: &str) -> Result<Option<SpanFile>> {
+    fn read_head_layers(
+        &self,
+        layers: Option<&LayerSnapshot>,
+        name: &str,
+    ) -> Result<Option<SpanFile>> {
         if let Some(names) = self.head_names(layers) {
             // The capture is complete (strict-or-failed), so a missing key
             // is authoritative absence — no fallback probe needed.
@@ -492,10 +496,12 @@ impl<'repo> SpanFileReader<'repo> {
             // `or_insert` keeps the FIRST entry per path (lowest stage in
             // git's `(path, stage)` sort order), matching the legacy
             // first-match scan `read_staged` performed.
-            let slot = table.entry(entry.path.into_boxed_str()).or_insert(IndexPathEntry {
-                unmerged: false,
-                oid: entry.oid,
-            });
+            let slot = table
+                .entry(entry.path.into_boxed_str())
+                .or_insert(IndexPathEntry {
+                    unmerged: false,
+                    oid: entry.oid,
+                });
             slot.unmerged |= entry.stage != gix::index::entry::Stage::Unconflicted;
         }
         LayerCapture::Complete(Arc::new(table))
@@ -583,11 +589,7 @@ impl<'repo> SpanFileReader<'repo> {
 
     /// Check whether the span file has an unmerged (stage 1/2/3) index
     /// entry — the canonical Git signal for an unresolved merge conflict.
-    fn is_unmerged_in_index(
-        &self,
-        layers: Option<&LayerSnapshot>,
-        name: &str,
-    ) -> Result<bool> {
+    fn is_unmerged_in_index(&self, layers: Option<&LayerSnapshot>, name: &str) -> Result<bool> {
         let span_path = self.span_path(name);
         if let Some(table) = self.index_table(layers) {
             return Ok(table
@@ -953,7 +955,11 @@ mod tests {
         git(dir, &["commit", "-m", "add spans"]);
 
         // dirty: staged edit (index blob differs from HEAD's).
-        write(dir, ".span/dirty", &format!("{}\n# edited\n", span_text("file.txt")));
+        write(
+            dir,
+            ".span/dirty",
+            &format!("{}\n# edited\n", span_text("file.txt")),
+        );
         git(dir, &["add", ".span/dirty"]);
 
         std::fs::remove_file(dir.join(".span/tombstoned")).unwrap();
@@ -985,8 +991,9 @@ mod tests {
         );
         {
             use std::io::Write;
-            let input =
-                format!("100644 {oid_ours} 2\t.span/unmerged\n100644 {oid_theirs} 3\t.span/unmerged\n");
+            let input = format!(
+                "100644 {oid_ours} 2\t.span/unmerged\n100644 {oid_theirs} 3\t.span/unmerged\n"
+            );
             let mut child = std::process::Command::new("git")
                 .current_dir(dir)
                 .args(["update-index", "--index-info"])
@@ -1106,8 +1113,7 @@ mod tests {
             }
             if let Some(i) = spot("unmerged") {
                 assert!(
-                    snapshotted[i]
-                        .starts_with("err:span `unmerged` is in a Git conflict state"),
+                    snapshotted[i].starts_with("err:span `unmerged` is in a Git conflict state"),
                     "unmerged entry must still surface its conflict"
                 );
             }

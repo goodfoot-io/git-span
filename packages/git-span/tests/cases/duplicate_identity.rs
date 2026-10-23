@@ -315,10 +315,7 @@ fn non_collapse_json_rows_omit_records_before_entirely() -> Result<()> {
 
     let added = repo.run_span(["add", "json-added", "file1.txt#L1-L5", "--format", "json"])?;
     let added = String::from_utf8_lossy(&added.stdout).into_owned();
-    assert!(
-        added.contains("\"outcome\": \"ADDED\""),
-        "stdout:\n{added}"
-    );
+    assert!(added.contains("\"outcome\": \"ADDED\""), "stdout:\n{added}");
     assert!(
         !added.contains("records_before"),
         "an ADDED row must not carry the field at all — not even as null; \
@@ -986,7 +983,9 @@ fn doctor_names_add_for_an_existing_path_and_running_it_collapses_only_that_iden
             "the finding names the identity; stdout:\n{stdout}"
         );
         assert!(
-            stdout.contains(&format!("fix:          git span add {name} file1.txt#L1-L5")),
+            stdout.contains(&format!(
+                "fix:          git span add {name} file1.txt#L1-L5"
+            )),
             "the one-step repair is named, ready to run; stdout:\n{stdout}"
         );
 
@@ -1547,7 +1546,9 @@ fn the_fix_summary_counts_a_divergent_collapse_and_names_the_step_that_ends_it()
             "{orientation}: the survivor keeps the unverified marker:\n{text}"
         );
         assert!(
-            lines.iter().any(|l| l.starts_with(&format!("{neighbour} "))),
+            lines
+                .iter()
+                .any(|l| l.starts_with(&format!("{neighbour} "))),
             "{orientation}: the neighbour is untouched:\n{text}"
         );
 
@@ -1701,7 +1702,8 @@ fn a_sentinel_arriving_from_elsewhere_still_gets_the_terminating_advice() -> Res
 fn two_spans_collapsing_in_one_sweep_each_name_their_own_span() -> Result<()> {
     let repo = TestRepo::seeded()?;
     for (name, addr) in [("alpha", "file1.txt#L1-L5"), ("beta", "file2.txt#L1-L5")] {
-        let neighbour = seed_real_line(&repo, &format!("{}#L7-L9", addr.split('#').next().unwrap()))?;
+        let neighbour =
+            seed_real_line(&repo, &format!("{}#L7-L9", addr.split('#').next().unwrap()))?;
         commit_span(
             &repo,
             name,
@@ -2034,9 +2036,8 @@ fn a_held_repository_lock_fails_loudly_instead_of_blocking_forever() -> Result<(
          (took {elapsed:?})"
     );
     assert!(
-        stderr.contains(
-            "waiting for another `git span` process to release the repository lock `"
-        ) && stderr.contains("recovery-domain.lock"),
+        stderr.contains("waiting for another `git span` process to release the repository lock `")
+            && stderr.contains("recovery-domain.lock"),
         "the wait names the repository lock path it is blocked on, before \
          blocking; stderr:\n{stderr}"
     );
@@ -2081,10 +2082,7 @@ fn an_uncontended_span_lock_is_silent() -> Result<()> {
     )?;
     let out = repo.run_span(["drift", "--fix"])?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !stderr.contains("waiting for another"),
-        "stderr:\n{stderr}"
-    );
+    assert!(!stderr.contains("waiting for another"), "stderr:\n{stderr}");
     assert!(
         span_text(&repo, "quiet")?.contains(SENTINEL),
         "and the sweep did its work"
@@ -2120,8 +2118,10 @@ fn a_collapse_never_presents_its_recorded_address_as_confirmed() -> Result<()> {
     let out = repo.run_span(["drift", "--fix"])?;
     let stdout = stdout_of(&out);
     assert!(
-        stdout.contains("This address is where the records were, not a location this \
-                         collapse confirmed"),
+        stdout.contains(
+            "This address is where the records were, not a location this \
+                         collapse confirmed"
+        ),
         "the line says plainly that the address is unconfirmed; stdout:\n{stdout}"
     );
     assert!(
@@ -2221,8 +2221,10 @@ fn replace_narrates_the_unverified_collapse_it_resolves() -> Result<()> {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(
-            stdout.contains("Resolved an unverified collapse: 1 retired record carried the \
-                             collapsed-duplicate marker"),
+            stdout.contains(
+                "Resolved an unverified collapse: 1 retired record carried the \
+                             collapsed-duplicate marker"
+            ),
             "the destruction of an unverified record is never silent; \
              stdout:\n{stdout}"
         );
@@ -2312,7 +2314,11 @@ fn replace_reports_every_record_it_retired_at_one_identity() -> Result<()> {
 
         let text = span_text(&repo, name)?;
         let lines = anchor_lines(&text);
-        assert_eq!(lines.len(), 2, "both old records left, one arrived:\n{text}");
+        assert_eq!(
+            lines.len(),
+            2,
+            "both old records left, one arrived:\n{text}"
+        );
         assert!(
             !text.contains("file1.txt#L2-L3"),
             "no record survives at the retired identity:\n{text}"
@@ -2419,8 +2425,7 @@ fn replace_json_carries_the_retired_and_collapsed_counts() -> Result<()> {
 /// The `--fix` summary clause for a report whose every unverified collapse
 /// sits on a deleted address. `add` cannot run against any of them, so the
 /// clause must not offer it.
-const TERMINATING_ADVICE_DELETED: &str =
-    "an unverified collapse is not cleared by re-running: settle each collapsed address named \
+const TERMINATING_ADVICE_DELETED: &str = "an unverified collapse is not cleared by re-running: settle each collapsed address named \
      above with `git span replace`, then run git span drift again";
 
 /// The `--fix` summary clause for a report whose every unverified collapse

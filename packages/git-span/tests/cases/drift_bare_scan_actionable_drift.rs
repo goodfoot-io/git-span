@@ -32,7 +32,11 @@ fn commit_anchor(repo: &TestRepo, span: &str, path: &str, lines: u32) -> Result<
     repo.commit_all(&format!("add {path}"))?;
     repo.run_span(["add", span, &format!("{path}#L1-L5")])?;
     repo.run_git(["add", ".span"])?;
-    repo.run_git(["commit", "-m", format!("seed {span} anchor on {path}").as_str()])?;
+    repo.run_git([
+        "commit",
+        "-m",
+        format!("seed {span} anchor on {path}").as_str(),
+    ])?;
     Ok(())
 }
 
@@ -241,7 +245,9 @@ fn bare_scan_other_formats_omit_pending_only_span() -> Result<()> {
         "JSON findings must omit the pending-only span; got:\n{json_stdout}"
     );
     assert!(
-        findings.iter().any(|f| f["span"].as_str() == Some("control")),
+        findings
+            .iter()
+            .any(|f| f["span"].as_str() == Some("control")),
         "JSON findings must still include the control span; got:\n{json_stdout}"
     );
 

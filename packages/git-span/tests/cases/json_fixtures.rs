@@ -23,7 +23,7 @@
 
 use crate::support::TestRepo;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use std::path::Path;
 
 pub(super) const FIXTURE_DIR: &str = "tests/fixtures/json";
@@ -97,7 +97,11 @@ pub(super) fn mutation_scenario() -> Result<Vec<u8>> {
 /// not demand the never-serialized `label` key.
 pub(super) fn mutation_drift_remains_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
-    ensure!(repo.run_span(["add", "m", "file1.txt#L1-L5"])?.status.success());
+    ensure!(
+        repo.run_span(["add", "m", "file1.txt#L1-L5"])?
+            .status
+            .success()
+    );
     {
         repo.run_git(["add", ".span"])?;
         pinned_commit(&repo, "span commit")?;
@@ -134,7 +138,11 @@ pub(super) fn resolve_dry_run_scenario() -> Result<Vec<u8>> {
 /// `context --format json` for a span queried at its own anchor address.
 pub(super) fn context_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
-    ensure!(repo.run_span(["add", "ctx", "file1.txt#L1-L2"])?.status.success());
+    ensure!(
+        repo.run_span(["add", "ctx", "file1.txt#L1-L2"])?
+            .status
+            .success()
+    );
     let out = repo.run_span(["context", "file1.txt#L1-L2", "--format", "json"])?;
     Ok(out.stdout)
 }
@@ -148,8 +156,16 @@ pub(super) fn history_scenario() -> Result<Vec<u8>> {
     )?;
     repo.write_file("file2.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n")?;
     pinned_commit(&repo, "C0: initial files")?;
-    ensure!(repo.run_span(["add", "h", "file1.txt#L1-L5"])?.status.success());
-    ensure!(repo.run_span(["add", "h", "file2.txt#L1-L3"])?.status.success());
+    ensure!(
+        repo.run_span(["add", "h", "file1.txt#L1-L5"])?
+            .status
+            .success()
+    );
+    ensure!(
+        repo.run_span(["add", "h", "file2.txt#L1-L3"])?
+            .status
+            .success()
+    );
     ensure!(
         repo.run_span(["why", "h", "First why: tracks the two source files."])?
             .status
@@ -166,7 +182,11 @@ pub(super) fn history_scenario() -> Result<Vec<u8>> {
 /// `drift --format json` for a mutated anchor.
 pub(super) fn drift_dirty_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
-    ensure!(repo.run_span(["add", "d", "file1.txt#L1-L5"])?.status.success());
+    ensure!(
+        repo.run_span(["add", "d", "file1.txt#L1-L5"])?
+            .status
+            .success()
+    );
     ensure!(repo.run_span(["why", "d", "seed"])?.status.success());
     {
         repo.run_git(["add", ".span"])?;
@@ -184,7 +204,11 @@ pub(super) fn drift_dirty_scenario() -> Result<Vec<u8>> {
 /// `drift --format json` for a clean scan — the always-emitted-keys shape.
 pub(super) fn drift_clean_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
-    ensure!(repo.run_span(["add", "d", "file1.txt#L1-L5"])?.status.success());
+    ensure!(
+        repo.run_span(["add", "d", "file1.txt#L1-L5"])?
+            .status
+            .success()
+    );
     ensure!(repo.run_span(["why", "d", "seed"])?.status.success());
     {
         repo.run_git(["add", ".span"])?;
@@ -203,7 +227,10 @@ fn capture_all_families() -> Result<()> {
         &capture_twice(mutation_drift_remains_scenario)?,
     )?;
     write_fixture("resolve.json", &capture_twice(resolve_scenario)?)?;
-    write_fixture("resolve-dry-run.json", &capture_twice(resolve_dry_run_scenario)?)?;
+    write_fixture(
+        "resolve-dry-run.json",
+        &capture_twice(resolve_dry_run_scenario)?,
+    )?;
     write_fixture("context.json", &capture_twice(context_scenario)?)?;
     write_fixture("history.json", &capture_twice(history_scenario)?)?;
     write_fixture("drift.json", &capture_twice(drift_dirty_scenario)?)?;

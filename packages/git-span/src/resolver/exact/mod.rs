@@ -282,8 +282,7 @@ fn cache_disabled() -> bool {
 /// [`capture_resolution_core`] resolves with a fixed `0.95` threshold; any
 /// other value must fall back so the projected result cannot silently diverge.
 fn eligible(options: &EngineOptions) -> bool {
-    options.layers == LayerSet::full()
-        && (options.fuzzy_threshold - 0.95).abs() < 1e-9
+    options.layers == LayerSet::full() && (options.fuzzy_threshold - 0.95).abs() < 1e-9
 }
 
 /// Whether the whole invocation's effective copy-detection mode is a genuinely
@@ -804,7 +803,9 @@ fn publish_if_eligible(
         Err(e) => {
             incr_publish_failures();
             crate::perf::counter("cache-path.publish-failed", 1);
-            crate::perf::note(&format!("cache-path.publish-failed: encode reuse rows: {e}"));
+            crate::perf::note(&format!(
+                "cache-path.publish-failed: encode reuse rows: {e}"
+            ));
             return;
         }
     };

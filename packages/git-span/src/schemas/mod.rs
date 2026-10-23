@@ -330,7 +330,17 @@ const SECTION_GROUPS: &[(&str, &[&str])] = &[
         "Commit documents",
         &["notes add", "notes list", "notes show", "notes remove"],
     ),
-    ("Inspect", &["show", "list", "tree", "history", "context"]),
+    (
+        "Inspect",
+        &[
+            "show",
+            "list",
+            "tree",
+            "history",
+            "context",
+            "commit-context",
+        ],
+    ),
     (
         "Audit and automate",
         &["drift", "doctor", "merge-driver", "resolve", "preflight"],

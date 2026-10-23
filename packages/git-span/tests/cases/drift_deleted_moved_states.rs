@@ -12,7 +12,7 @@ use crate::support;
 
 use anyhow::Result;
 use git_span::types::{AnchorStatus, EngineOptions};
-use git_span::{resolve_span, drift_spans};
+use git_span::{drift_spans, resolve_span};
 use serde_json::Value;
 use support::TestRepo;
 

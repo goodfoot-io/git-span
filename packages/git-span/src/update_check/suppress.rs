@@ -64,7 +64,7 @@ fn is_machine_output(command: &Commands) -> bool {
         Commands::History(args) => args.format != HistoryFormat::Human,
         // `ContextFormat` has only a `Json` variant — the command's output
         // is machine-readable by construction.
-        Commands::Context(_) => true,
+        Commands::Context(_) | Commands::CommitContext(_) => true,
         // git's own merge-driver protocol is machine output.
         Commands::MergeDriver(_) => true,
         // Every remaining command has a single human output form (show,

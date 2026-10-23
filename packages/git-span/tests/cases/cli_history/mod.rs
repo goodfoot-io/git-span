@@ -34,18 +34,18 @@ use anyhow::Result;
 use serde_json::Value;
 use support::TestRepo;
 
+mod current_block;
+mod dates;
+mod documented_contract;
+mod filters;
 mod format_surface;
+mod invariants;
+mod past_eof;
+mod pipe;
+mod reanchors;
+mod rendering_diffs;
 mod timeline;
 mod topology;
-mod reanchors;
-mod invariants;
-mod documented_contract;
-mod current_block;
-mod rendering_diffs;
-mod dates;
-mod past_eof;
-mod filters;
-mod pipe;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -62,7 +62,6 @@ fn history_text(repo: &TestRepo, span: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-
 /// Run `git span history --format=json` and parse stdout.
 fn history_json(repo: &TestRepo, span: &str) -> Result<Value> {
     let out = repo.run_span(["history", span, "--format=json"])?;
@@ -74,7 +73,6 @@ fn history_json(repo: &TestRepo, span: &str) -> Result<Value> {
     Ok(serde_json::from_slice(&out.stdout)?)
 }
 
-
 /// Find the commit object whose `summary` contains `needle`.
 fn commit_with<'a>(json: &'a Value, needle: &str) -> &'a Value {
     json["commits"]
@@ -85,7 +83,6 @@ fn commit_with<'a>(json: &'a Value, needle: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no commit whose summary contains {needle:?} in {json:#}"))
 }
 
-
 /// Index of the commit whose `summary` contains `needle`.
 fn commit_index(json: &Value, needle: &str) -> usize {
     json["commits"]
@@ -95,7 +92,6 @@ fn commit_index(json: &Value, needle: &str) -> usize {
         .position(|c| c["summary"].as_str().unwrap_or("").contains(needle))
         .unwrap_or_else(|| panic!("no commit whose summary contains {needle:?} in {json:#}"))
 }
-
 
 /// The text block of `out` that renders the diff whose `diff --git` header
 /// contains `needle`, up to the next blank-line-separated block.
@@ -114,7 +110,6 @@ fn diff_block<'a>(out: &'a str, needle: &str) -> &'a str {
         None => rest,
     }
 }
-
 
 /// Seed the swap scenario: two anchors whose contents exchange addresses in
 /// one commit, with the declaration left untouched. Both anchors end up
@@ -144,7 +139,6 @@ fn swap_repo() -> Result<TestRepo> {
     repo.commit_all("swap the two blocks")?;
     Ok(repo)
 }
-
 
 /// Seed the main timeline scenario for span `m`:
 ///
@@ -228,7 +222,6 @@ fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
     Ok((repo, span))
 }
 
-
 /// Promote a tracked directory containing a line-range anchor to a submodule.
 /// The submodule may preserve the recorded bytes (the resolver's
 /// `ResolvedPendingCommit` case) or replace them (the terminal `Submodule`
@@ -291,7 +284,6 @@ fn directory_promoted_to_submodule(equal_bytes: bool) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// Every `rk64` token the declaration records, read from the worktree file and
 /// from HEAD's copy of it.
 fn recorded_tokens(repo: &TestRepo, span: &str) -> Result<Vec<String>> {
@@ -316,7 +308,6 @@ fn recorded_tokens(repo: &TestRepo, span: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-
 /// The old-side hash of every `index rk64:<old>..rk64:<new>` line in `diff`.
 fn old_index_hashes(diff: &str) -> Vec<&str> {
     diff.lines()
@@ -325,7 +316,6 @@ fn old_index_hashes(diff: &str) -> Vec<&str> {
         .map(|(old, _)| old)
         .collect()
 }
-
 
 /// The same drift as [`drifted_repo`], but *committed* and never re-anchored.
 /// `git status` is clean; `git span drift` still reports the anchor, sourced at
@@ -337,7 +327,6 @@ fn committed_drift_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// The drift staged and not committed: the index holds bytes the declaration
 /// does not record, and `HEAD` is clean. The third of `drift`'s three layers,
 /// and the one no `current` fixture reached before.
@@ -346,7 +335,6 @@ fn staged_drift_repo(span: &str) -> Result<TestRepo> {
     repo.run_git(["add", "f.txt"])?;
     Ok(repo)
 }
-
 
 /// Drift at two layers at once: committed without re-anchoring, then edited
 /// again in the working tree. `git span drift` names both, and this is the
@@ -361,7 +349,6 @@ fn composed_drift_repo(span: &str) -> Result<TestRepo> {
     repo.write_file("f.txt", "h1\nH2-AGAIN\nalpha\nBETA\ngamma\n")?;
     Ok(repo)
 }
-
 
 /// One line-range and one whole-file anchor, with independent edits at all
 /// three resolver layers. The sequence deliberately reaches HEAD first, then
@@ -388,7 +375,6 @@ fn extent_dependent_source_order_repo(span: &str) -> Result<TestRepo> {
     repo.write_file("whole.txt", "alpha\nWORKTREE-WHOLE\n")?;
     Ok(repo)
 }
-
 
 /// Move a declaration to different, already-committed content without
 /// committing source content or the declaration edit. The resulting HEAD
@@ -443,7 +429,6 @@ fn merge_diamond_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// A side branch whose newer timestamp must not let it leak into the timeline:
 /// an `-s ours` merge discards its file edit, leaving HEAD on the mainline's
 /// bytes.  This is deliberately dated so the former time-ordered DAG walk
@@ -486,7 +471,6 @@ fn ours_merge_repo(span: &str) -> Result<TestRepo> {
     repo.write_commit_graph()?;
     Ok(repo)
 }
-
 
 /// Every signed line in every rendered anchor block, checked against git.
 ///
@@ -558,7 +542,6 @@ fn assert_no_fabricated_lines(repo: &TestRepo, span: &str) -> Result<()> {
     Ok(())
 }
 
-
 fn assert_topology_rejected_without_effects(
     repo: &TestRepo,
     span: &str,
@@ -592,7 +575,6 @@ fn assert_topology_rejected_without_effects(
     Ok(())
 }
 
-
 /// Commit `alpha/beta/gamma` anchored at `f.txt#L1-L3`, then prepend two
 /// lines in the worktree and edit `beta` — the ordinary drift state, with the
 /// declaration untouched. `drift` calls it "changed in the working tree" and
@@ -609,7 +591,6 @@ fn drifted_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// A declaration added but never committed, whose anchored lines are then
 /// edited: the recorded token describes bytes that no commit ever carried, so
 /// no snapshot this command can reach hashes to it.
@@ -625,7 +606,6 @@ fn never_recorded_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// Rewrite the worktree declaration, leaving the recorded tokens alone. This
 /// is how a user (or `git span drift --fix`) re-anchors: the address moves,
 /// the token stays, and HEAD's copy still names the old address.
@@ -636,7 +616,6 @@ fn rewrite_declaration(repo: &TestRepo, span: &str, from: &str, to: &str) -> Res
     std::fs::write(&decl, text.replace(from, to))?;
     Ok(())
 }
-
 
 /// Two anchors whose *declared addresses* are exchanged in the worktree — each
 /// token is now declared where the other's content lives — with both blocks
@@ -665,7 +644,6 @@ fn declaration_swap_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// Re-anchor onto an address the declaration never used, then edit inside the
 /// new range while the recorded block sits untouched elsewhere — the one shape
 /// where a declaration re-anchor and a resolver relocation both apply.
@@ -688,7 +666,6 @@ fn reanchor_over_relocation_repo(span: &str) -> Result<TestRepo> {
     )?;
     Ok(repo)
 }
-
 
 /// Two anchors in *different files* whose declared addresses are exchanged in
 /// the worktree declaration, content untouched. The resolver cannot follow a
@@ -713,7 +690,6 @@ fn cross_file_swap_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// The minimal false-unrecoverable reproduction: re-anchor by editing the
 /// declaration, then replace the recorded block's content in the worktree. The
 /// token's bytes are gone from the worktree but still sit in HEAD at an
@@ -732,7 +708,6 @@ fn abandoned_block_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// The single `current` anchor entry whose `path` is `address`.
 fn anchor_at<'a>(anchors: &'a [Value], address: &str) -> &'a Value {
     let mut found = anchors.iter().filter(|a| a["path"] == address);
@@ -745,7 +720,6 @@ fn anchor_at<'a>(anchors: &'a [Value], address: &str) -> &'a Value {
     );
     first
 }
-
 
 /// Two anchors in different files holding *identical* content, so one `rk64`
 /// token binds both addresses — then drift one of them. `rk64` is a
@@ -765,7 +739,6 @@ fn twin_token_repo(span: &str) -> Result<TestRepo> {
     repo.write_file("x.txt", "alpha\nBETA\ngamma\n")?;
     Ok(repo)
 }
-
 
 /// The five shapes a rendered anchor block can take, as a reader of the patch
 /// would classify it — from the header lines alone, never from the code that
@@ -792,7 +765,6 @@ enum BlockForm {
     Modified,
 }
 
-
 fn block_form(diff: &str) -> BlockForm {
     let head = diff.split("\n--- ").next().unwrap_or(diff);
     if head.contains("\nrebound anchor\n") {
@@ -818,7 +790,6 @@ fn block_form(diff: &str) -> BlockForm {
     }
 }
 
-
 /// The `(address, token)` pairs `.span/<span>` declares, read from the
 /// worktree file (`rev` = `None`) or from a committed copy — an oracle for
 /// "does this declaration still bind this token here" that shares nothing with
@@ -837,7 +808,6 @@ fn declared_pairs(repo: &TestRepo, span: &str, rev: Option<&str>) -> Result<Vec<
         .collect())
 }
 
-
 /// Every block rendered for one address. One address carries more than one
 /// block whenever two independent facts are true of it at once — a rebinding
 /// and a content edit in the same commit — which is why this exists beside
@@ -846,7 +816,6 @@ fn declared_pairs(repo: &TestRepo, span: &str, rev: Option<&str>) -> Result<Vec<
 fn anchors_at<'a>(anchors: &'a [Value], address: &str) -> Vec<&'a Value> {
     anchors.iter().filter(|a| a["path"] == address).collect()
 }
-
 
 /// The new-side `rk64:` token an anchor block's `index` line names.
 fn new_token(diff: &str) -> String {
@@ -857,7 +826,6 @@ fn new_token(diff: &str) -> String {
         .unwrap_or_else(|| panic!("no index line in:\n{diff}"))
 }
 
-
 /// The token `.span/<span>` records for `address` at `rev`.
 fn declared_token(repo: &TestRepo, span: &str, rev: Option<&str>, address: &str) -> Result<String> {
     Ok(declared_pairs(repo, span, rev)?
@@ -867,7 +835,6 @@ fn declared_token(repo: &TestRepo, span: &str, rev: Option<&str>, address: &str)
         .1)
 }
 
-
 /// The old-side `rk64:` token an anchor block's `index` line names.
 fn old_token(diff: &str) -> String {
     diff.lines()
@@ -876,7 +843,6 @@ fn old_token(diff: &str) -> String {
         .map(|(old, _)| old.to_string())
         .unwrap_or_else(|| panic!("no index line in:\n{diff}"))
 }
-
 
 /// `n` files with distinct three-line blocks, all anchored, then one commit
 /// that rotates the addresses among the recorded tokens. Every anchor is
@@ -904,7 +870,6 @@ fn rebinding_repo(span: &str, n: usize) -> Result<TestRepo> {
     repo.commit_all("rebind every anchor to its neighbour's block")?;
     Ok(repo)
 }
-
 
 /// Rotate a declaration's address column, leaving the token column alone:
 /// every token now names a block it does not describe, while every address and
@@ -947,7 +912,6 @@ fn rotate_address_column(repo: &TestRepo, span: &str, n: usize) -> Result<()> {
     Ok(())
 }
 
-
 /// A rebinding and a content edit landing in the *same* commit at the same
 /// address — the composed state, and the one every other rebinding fixture
 /// misses by pairing its rebinding with untouched content.
@@ -987,7 +951,6 @@ fn rebound_and_edited_repo(span: &str, n: usize) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// Every anchor block form the `current` section renders, in order.
 fn current_forms(repo: &TestRepo, span: &str) -> Result<Vec<BlockForm>> {
     let json = history_json(repo, span)?;
@@ -998,7 +961,6 @@ fn current_forms(repo: &TestRepo, span: &str) -> Result<Vec<BlockForm>> {
         .map(|a| block_form(a["diff"].as_str().expect("diff string")))
         .collect())
 }
-
 
 /// The block form of one timeline anchor object. An anchor that carries
 /// `content` instead of `diff` is a first-add, which is the timeline's
@@ -1017,7 +979,6 @@ fn timeline_form(anchor: &Value) -> BlockForm {
     }
 }
 
-
 /// Every anchor block form the newest timeline entry renders, in order.
 ///
 /// **Projection:** discards `path`. A `Vec<BlockForm>` cannot tell one address
@@ -1029,7 +990,6 @@ fn newest_commit_forms(repo: &TestRepo, span: &str) -> Result<Vec<BlockForm>> {
         .map(|(_, form)| form)
         .collect())
 }
-
 
 /// Every anchor block the newest timeline entry renders, as `(path, form)`.
 ///
@@ -1052,7 +1012,6 @@ fn newest_commit_blocks(repo: &TestRepo, span: &str) -> Result<Vec<(String, Bloc
         })
         .collect())
 }
-
 
 /// One entry of [`every_timeline_state`]: the state's label, the repository
 /// standing in that state, the declared address to read, and the block forms
@@ -1227,7 +1186,6 @@ fn every_timeline_state() -> Result<Vec<TimelineState>> {
     ])
 }
 
-
 /// One repository per shape a `current` anchor can take, labelled. Every
 /// property asserted over the current block is asserted over this whole set,
 /// so a state that only one fixture reaches cannot drift unobserved.
@@ -1333,7 +1291,6 @@ fn every_current_state() -> Result<Vec<(&'static str, TestRepo, &'static str)>> 
     ])
 }
 
-
 /// A re-anchor whose recorded bytes cannot be read anywhere — the product of
 /// two states already enumerated above ("never recorded" and "drifted
 /// re-anchor"), and the one where a similarity number has nothing to measure.
@@ -1370,7 +1327,6 @@ fn unrecoverable_reanchor_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// A whole-file pin on a non-UTF-8 file, committed, then re-anchored in the
 /// worktree to a *different* non-UTF-8 file. The recorded token is the binary
 /// fingerprint of `a.bin`, and the same render's declare entry prints that
@@ -1388,7 +1344,6 @@ fn binary_reanchor_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// The span-diff body of `render` for `.span/<span>`: everything from the
 /// first hunk header to the end of that block, which is the part git itself
 /// can be asked to produce independently.
@@ -1399,7 +1354,6 @@ fn span_diff_body<'a>(render: &'a str, span: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no hunk header in:\n{block}"));
     &block[at..]
 }
-
 
 /// git's own rendering of the same blob pair, with the header lines dropped.
 fn git_diff_body(repo: &TestRepo, span: &str) -> Result<String> {
@@ -1419,7 +1373,6 @@ fn git_diff_body(repo: &TestRepo, span: &str) -> Result<String> {
         .unwrap_or_else(|| panic!("no hunk header in git's own diff:\n{out}"));
     Ok(format!("{}\n", &out[at..]))
 }
-
 
 /// The live bytes at `address` (`path#Lstart-Lend` or a bare path), read from
 /// the worktree — an oracle for `content` that shares no code with the
@@ -1457,7 +1410,6 @@ fn git_diff(repo: &TestRepo, from: &str, to: &str, path: &str) -> Result<String>
     let raw = repo.git_stdout(["diff", "--no-color", from, to, "--", path])?;
     Ok(normalize_index_lines(&raw))
 }
-
 
 fn normalize_index_lines(patch: &str) -> String {
     patch
@@ -1503,7 +1455,6 @@ fn diff_blocks(patch: &str) -> Vec<String> {
     blocks
 }
 
-
 fn commit_span_declaration_with_raw_author_offset(
     repo: &TestRepo,
     span: &str,
@@ -1515,7 +1466,6 @@ fn commit_span_declaration_with_raw_author_offset(
     repo.run_git(["add", ".span"])?;
     commit_staged_with_raw_author_offset(repo, offset, summary)
 }
-
 
 /// Commit whatever is staged through raw plumbing so the author line carries
 /// `offset` verbatim — including spellings `git commit` itself would reject.
@@ -1543,7 +1493,6 @@ fn commit_staged_with_raw_author_offset(
     repo.run_git(["reset", "--mixed", "HEAD"])?;
     Ok(oid)
 }
-
 
 /// Seed a span on `f.txt#L1-L3`, then commit a change to `f.txt` through raw
 /// plumbing with an out-of-range author offset. `edit` decides whether that
@@ -1588,7 +1537,6 @@ fn truncated_past_eof_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// The other route: a hand-edited re-anchor onto a range the file does not
 /// have. `git span add` fails closed on such a range; editing `.span` by hand —
 /// the ordinary way a reconcile loop leaves a declaration — does not, and here
@@ -1606,7 +1554,6 @@ fn reanchored_past_eof_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// The anchored file deleted in the working tree, declaration untouched — the
 /// state whose name `absent` actually is.
 fn vanished_worktree_file_repo(span: &str) -> Result<TestRepo> {
@@ -1621,7 +1568,6 @@ fn vanished_worktree_file_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// A *whole-file* anchor whose file is emptied in the working tree — the state
 /// the range boundary must not swallow.
 fn emptied_whole_file_repo(span: &str) -> Result<TestRepo> {
@@ -1635,7 +1581,6 @@ fn emptied_whole_file_repo(span: &str) -> Result<TestRepo> {
     repo.write_file("f.txt", "")?;
     Ok(repo)
 }
-
 
 /// A re-anchor onto a genuinely empty file — the *honest* twin of the past-EOF
 /// render, and the reason the dishonest one was plausible.
@@ -1657,7 +1602,6 @@ fn empty_extent_reanchor_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// The declared range's live state, as the two structured fields a consumer
 /// reads: `(content, unavailable)`. `path` and `diff` are deliberately excluded
 /// — `path` is the join key every object differs in trivially, and `diff` is
@@ -1672,7 +1616,6 @@ fn payload_fields(anchor: &Value) -> (Option<&str>, Option<&str>) {
             .map(|u| u.as_str().expect("unavailable string")),
     )
 }
-
 
 /// A file anchored at `L{start}-L{end}` and then truncated to exactly `depth`
 /// lines, the declaration committed first so the truncation reads as drift.
@@ -1698,7 +1641,6 @@ fn truncated_to_depth_repo(span: &str, start: u32, end: u32, depth: u32) -> Resu
     Ok(repo)
 }
 
-
 /// The declared address as `current[]` and `commits[]` key it.
 fn sole_anchor_in<'a>(container: &'a Value, address: &str, whose: &str) -> &'a Value {
     container["anchors"]
@@ -1710,7 +1652,6 @@ fn sole_anchor_in<'a>(container: &'a Value, address: &str, whose: &str) -> &'a V
             panic!("{whose}: no object at {address}; the fixture stopped reaching this state:\n{container:#}")
         })
 }
-
 
 /// `git span drift`'s verdict for one anchor, as the resolver computed it.
 fn drift_status(repo: &TestRepo, span: &str) -> Result<String> {
@@ -1757,7 +1698,6 @@ fn path_is_filtered(repo: &TestRepo, address: &str) -> Result<bool> {
     Ok(!out.ends_with("unspecified"))
 }
 
-
 /// A `filter.<name>.process` command line for the test-helper driver, quoted
 /// for the `sh -c` the resolver spawns it through.
 fn filter_process_command(transform: &str) -> String {
@@ -1766,7 +1706,6 @@ fn filter_process_command(transform: &str) -> String {
         env!("CARGO_BIN_EXE_git-span-test-helper")
     )
 }
-
 
 /// A five-line file, an anchor declared and committed over it, and *then* a
 /// `.gitattributes` naming a filter for it. The order is the point: the anchor
@@ -1801,7 +1740,6 @@ fn filter_attribute_repo(
     Ok(repo)
 }
 
-
 /// Discard the index's cached stat for `path` without changing a byte of it,
 /// by replacing the file with a copy of itself. The new inode and ctime cannot
 /// match what the index recorded, so git has to read the file to decide whether
@@ -1829,13 +1767,11 @@ fn drop_stat_cache(repo: &TestRepo, path: &str) -> Result<()> {
     Ok(())
 }
 
-
 /// **State A** — `.gitattributes` names a filter and nothing configures it.
 /// The state of any clone whose filter the user has not installed.
 fn unconfigured_filter_repo(span: &str) -> Result<TestRepo> {
     filter_attribute_repo(span, "f.txt#L4-L5", "missingtool", None)
 }
-
 
 /// **State B** — the filter *is* configured and its driver cannot run: the
 /// shape of a tool that was installed when the config was written and is not
@@ -1861,7 +1797,6 @@ fn missing_driver_filter_repo(span: &str) -> Result<TestRepo> {
     ])?;
     Ok(repo)
 }
-
 
 /// **State B as the tools in the wild actually spell it** — git-crypt and
 /// nbstripout configure `filter.<name>.clean` and `.smudge`, not `.process`.
@@ -1889,7 +1824,6 @@ fn missing_clean_driver_filter_repo(span: &str) -> Result<TestRepo> {
     Ok(repo)
 }
 
-
 /// **State C, in range** — the driver runs, exits 0, and returns a three-line
 /// pointer instead of the file. Content is available; it is simply not the
 /// content on disk. Nothing failed, so no `unavailable` reason has a producer
@@ -1899,7 +1833,6 @@ fn working_filter_repo(span: &str) -> Result<TestRepo> {
     filter_attribute_repo(span, "f.txt#L1-L2", "ptr", Some("pointer"))
 }
 
-
 /// **State C, past the end** — the same working driver, with the anchor
 /// declared over lines the *filtered* content does not reach. `git span add`
 /// refuses this state on the declaration side (`end=5 exceeds file line count
@@ -1908,7 +1841,6 @@ fn working_filter_repo(span: &str) -> Result<TestRepo> {
 fn working_filter_past_eof_repo(span: &str) -> Result<TestRepo> {
     filter_attribute_repo(span, "f.txt#L4-L5", "ptr", Some("pointer"))
 }
-
 
 /// The `rk64:` token `git span add` records for `text`, obtained by declaring
 /// it in a throwaway repository.
@@ -1926,7 +1858,6 @@ fn token_recorded_for(text: &str) -> Result<String> {
     repo.span_stdout(["add", "probe", &address])?;
     declared_token(&repo, "probe", None, &address)
 }
-
 
 /// Reconstruct a block's new side from its hunks — context and added lines, in
 /// order. The `content` field carries the same bytes for the block forms that

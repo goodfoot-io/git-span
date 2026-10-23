@@ -98,7 +98,11 @@ pub enum AddRefusal {
 /// the record when it was written. Existence and range are the two that a
 /// *later* edit to the repository can introduce under a record that was
 /// legal when it was made, which is exactly why they are the two that bite.
-pub fn add_refusal(path_exists: bool, end_line: u32, line_count: Option<u32>) -> Option<AddRefusal> {
+pub fn add_refusal(
+    path_exists: bool,
+    end_line: u32,
+    line_count: Option<u32>,
+) -> Option<AddRefusal> {
     if !path_exists {
         return Some(AddRefusal::PathMissing);
     }
@@ -151,10 +155,7 @@ impl AddAvailability {
     /// outrun and is therefore never gated on length.
     pub fn refusal(&self, path: &str, end_line: u32) -> Option<AddRefusal> {
         let exists = self.index_paths.contains(path)
-            || self
-                .workdir
-                .as_ref()
-                .is_some_and(|w| w.join(path).exists());
+            || self.workdir.as_ref().is_some_and(|w| w.join(path).exists());
         let line_count = if end_line == 0 {
             None
         } else {
@@ -437,7 +438,11 @@ mod tests {
             record("src/a.rs", 9, 9, "bbbbbbbbbbbbbbbb"),
         ];
         let found = duplicates_in("billing/flow", &anchors, &add_runs);
-        assert_eq!(found.len(), 1, "the neighbour is not a duplicate: {found:?}");
+        assert_eq!(
+            found.len(),
+            1,
+            "the neighbour is not a duplicate: {found:?}"
+        );
         assert!(
             found[0].hashes_agree,
             "two records with one hash agree: {found:?}"

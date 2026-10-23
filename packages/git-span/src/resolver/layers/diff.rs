@@ -819,7 +819,10 @@ mod tests {
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", "seed"]);
         let before = std::fs::read(dir.join(".git/index")).unwrap();
-        let before_modified = std::fs::metadata(dir.join(".git/index")).unwrap().modified().unwrap();
+        let before_modified = std::fs::metadata(dir.join(".git/index"))
+            .unwrap()
+            .modified()
+            .unwrap();
         // Same contents, different stat: ordinary status refreshes the index
         // even though the resolver only requested an observation.
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -827,10 +830,19 @@ mod tests {
         let repo = gix::open(dir).unwrap();
         let status = read_layer_status(&repo).unwrap();
         assert!(status.is_clean());
-        assert_eq!(std::fs::metadata(dir.join(".git/index")).unwrap().modified().unwrap(), before_modified,
-            "read-only context discovery republished index metadata");
-        assert_eq!(std::fs::read(dir.join(".git/index")).unwrap(), before,
-            "read-only context discovery published an index refresh and invalidated its own generation");
+        assert_eq!(
+            std::fs::metadata(dir.join(".git/index"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before_modified,
+            "read-only context discovery republished index metadata"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(".git/index")).unwrap(),
+            before,
+            "read-only context discovery published an index refresh and invalidated its own generation"
+        );
     }
 
     fn committed_blob_hex(dir: &std::path::Path) -> String {

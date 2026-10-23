@@ -49,7 +49,9 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
         }
         let retired = crate::validation::retired_replacement(name)
             .map(|replacement| {
-                format!(" `{name}` was retired as a subcommand; `git span {replacement}` replaced it.")
+                format!(
+                    " `{name}` was retired as a subcommand; `git span {replacement}` replaced it."
+                )
             })
             .unwrap_or_default();
         findings.push(format!(

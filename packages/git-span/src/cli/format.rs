@@ -25,11 +25,7 @@ pub fn format_same_side_collapse(
         git_span_core::MergeSide::Ours => "ours",
         git_span_core::MergeSide::Theirs => "theirs",
     };
-    let address = merge_report_address(
-        &collapsed.path,
-        collapsed.start_line,
-        collapsed.end_line,
-    );
+    let address = merge_report_address(&collapsed.path, collapsed.start_line, collapsed.end_line);
     format!(
         "collapsed same-side duplicate ({side_name}): `{address}` — \
          {} records → 1",

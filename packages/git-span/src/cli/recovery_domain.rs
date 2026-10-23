@@ -25,6 +25,7 @@ pub(crate) fn command_mode(command: &Commands) -> Option<Mode> {
         | Commands::Notes(_)
         | Commands::ReceiptLock(_)
         | Commands::Context(_)
+        | Commands::CommitContext(_)
         | Commands::ContextService(_)
         | Commands::UpdateCheck => None,
         Commands::Drift(args) if args.fix => Some(Mode::Exclusive),

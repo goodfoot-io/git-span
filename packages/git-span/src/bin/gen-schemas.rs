@@ -22,8 +22,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     let website_dir = website_dir.unwrap_or_else(|| {
-        let manifest_dir =
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         PathBuf::from(manifest_dir).join("..").join("website")
     });
     git_span::schemas::run(check, &website_dir)

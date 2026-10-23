@@ -38,7 +38,10 @@ fn history_succeeds_when_historical_revision_is_malformed() -> Result<()> {
 
     // Verify current state is healthy across other commands
     let show = repo.run_span(["show", "my-span"])?;
-    assert!(show.status.success(), "show must succeed on healthy current state");
+    assert!(
+        show.status.success(),
+        "show must succeed on healthy current state"
+    );
 
     // History must not abort with exit 1; prints trail and warns to stderr
     let out = repo.run_span(["history", "my-span"])?;
@@ -62,7 +65,10 @@ fn history_succeeds_when_historical_revision_is_malformed() -> Result<()> {
 
     // JSON format also succeeds and returns valid HistoryDocument
     let json_out = repo.run_span(["history", "my-span", "--format=json"])?;
-    assert!(json_out.status.success(), "history --format=json must succeed");
+    assert!(
+        json_out.status.success(),
+        "history --format=json must succeed"
+    );
     let json: serde_json::Value = serde_json::from_slice(&json_out.stdout)?;
     assert_eq!(json["span"], "my-span");
 

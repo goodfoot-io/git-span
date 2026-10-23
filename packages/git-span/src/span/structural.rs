@@ -77,8 +77,9 @@ fn reconcile_control_file(
     canonical: &str,
 ) -> Result<()> {
     let current = match directory.read_optional(name).map_err(authority_error)? {
-        Some(bytes) => String::from_utf8(bytes)
-            .map_err(|error| Error::InvalidSpanFile(error.to_string()))?,
+        Some(bytes) => {
+            String::from_utf8(bytes).map_err(|error| Error::InvalidSpanFile(error.to_string()))?
+        }
         None => String::new(),
     };
     if current.trim().is_empty() {
@@ -135,16 +136,10 @@ pub(crate) fn ensure_span_dir(workdir: &Path, span_root: &str) -> Result<()> {
     ensure_span_authority(workdir, span_root).map(|_| ())
 }
 
-pub(crate) fn ensure_span_authority(
-    workdir: &Path,
-    span_root: &str,
-) -> Result<SpanRootAuthority> {
-    let authority = SpanRootAuthority::open(
-        workdir,
-        span_root,
-        DirectoryPolicy::Create { mode: 0o755 },
-    )
-    .map_err(authority_error)?;
+pub(crate) fn ensure_span_authority(workdir: &Path, span_root: &str) -> Result<SpanRootAuthority> {
+    let authority =
+        SpanRootAuthority::open(workdir, span_root, DirectoryPolicy::Create { mode: 0o755 })
+            .map_err(authority_error)?;
     let directory = authority.root().map_err(authority_error)?;
 
     reconcile_control_file(
@@ -162,12 +157,13 @@ pub(crate) fn ensure_span_authority(
         .map_err(authority_error)?
         .is_none()
     {
-        directory.atomic_write(
-            OsStr::new(".hookignore"),
-            HOOKIGNORE_CONTENTS.as_bytes(),
-            0o644,
-        )
-        .map_err(authority_error)?;
+        directory
+            .atomic_write(
+                OsStr::new(".hookignore"),
+                HOOKIGNORE_CONTENTS.as_bytes(),
+                0o644,
+            )
+            .map_err(authority_error)?;
     }
 
     Ok(authority)

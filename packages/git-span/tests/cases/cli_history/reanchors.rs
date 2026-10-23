@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn a_changed_anchor_is_read_at_its_declared_address_and_proposes_nothing() -> Result<()> {
     let repo = drifted_repo("ch")?;
@@ -57,7 +56,6 @@ fn a_changed_anchor_is_read_at_its_declared_address_and_proposes_nothing() -> Re
     Ok(())
 }
 
-
 #[test]
 fn a_drifted_reanchor_labels_the_old_side_with_heads_address() -> Result<()> {
     let repo = drifted_repo("re")?;
@@ -111,7 +109,6 @@ fn a_drifted_reanchor_labels_the_old_side_with_heads_address() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn an_unrecoverable_recorded_snapshot_is_named_in_the_human_block() -> Result<()> {
     let repo = never_recorded_repo("ff")?;
@@ -146,7 +143,6 @@ fn an_unrecoverable_recorded_snapshot_is_named_in_the_human_block() -> Result<()
     );
     Ok(())
 }
-
 
 #[test]
 fn a_declaration_swap_recovers_both_old_sides() -> Result<()> {
@@ -199,7 +195,6 @@ fn a_declaration_swap_recovers_both_old_sides() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn a_reanchor_over_a_relocation_never_states_two_directions() -> Result<()> {
     let repo = reanchor_over_relocation_repo("both")?;
@@ -247,7 +242,6 @@ fn a_reanchor_over_a_relocation_never_states_two_directions() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn a_cross_file_declaration_swap_recovers_both_old_sides() -> Result<()> {
@@ -299,7 +293,6 @@ fn a_cross_file_declaration_swap_recovers_both_old_sides() -> Result<()> {
     }
     Ok(())
 }
-
 
 #[test]
 fn a_reanchor_that_abandons_its_recorded_block_still_shows_it() -> Result<()> {
@@ -358,7 +351,6 @@ fn a_reanchor_that_abandons_its_recorded_block_still_shows_it() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn anchors_sharing_a_token_resolve_against_their_own_address() -> Result<()> {
     let repo = twin_token_repo("twin")?;
@@ -387,7 +379,6 @@ fn anchors_sharing_a_token_resolve_against_their_own_address() -> Result<()> {
     );
     Ok(())
 }
-
 
 /// A commit that breaks anchors must account for them. The declaration
 /// permutation is invisible to a content comparison — same addresses, same
@@ -486,7 +477,6 @@ fn no_commit_that_breaks_an_anchor_is_anchor_silent() -> Result<()> {
     }
     Ok(())
 }
-
 
 /// Whether an address was rebound is a question about the declaration, and it
 /// is answered per address — not per commit, and not only when the content
@@ -647,7 +637,6 @@ fn a_rebinding_that_also_edits_its_block_states_both_facts() -> Result<()> {
     );
     Ok(())
 }
-
 
 /// The same declaration change must describe the same event whether it is
 /// still in the worktree or already committed. The timeline path has enforced

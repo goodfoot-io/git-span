@@ -76,7 +76,8 @@ fn write_mini_crate(root: &Path, repo: &Path) {
         pkg.join("scripts/cc.mold-wrapper.sh"),
     )
     .expect("copy linker wrapper");
-    support::make_executable(&pkg.join("scripts/cc.mold-wrapper.sh")).expect("make wrapper executable");
+    support::make_executable(&pkg.join("scripts/cc.mold-wrapper.sh"))
+        .expect("make wrapper executable");
 }
 
 /// `cargo build` from `cwd` into the shared `target_dir`, with `path` (a
@@ -126,7 +127,11 @@ fn cargo_config_linker_worktree_invariance() {
     // PATH directory (not used by the current config, but part of the shape
     // the fixed config resolves to).
     let bare = wrapper_bin.join("cc.mold-wrapper");
-    fs::copy(repo.join("packages/git-span/scripts/cc.mold-wrapper.sh"), &bare).expect("copy bare wrapper");
+    fs::copy(
+        repo.join("packages/git-span/scripts/cc.mold-wrapper.sh"),
+        &bare,
+    )
+    .expect("copy bare wrapper");
     support::make_executable(&bare).expect("make bare wrapper executable");
     let path = wrapper_bin.to_string_lossy().into_owned();
 

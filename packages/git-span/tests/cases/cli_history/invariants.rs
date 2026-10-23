@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// Every invariant a *timeline* block must satisfy, checked across every shape
 /// the timeline can render, each branch naming the oracle outside `history`'s
 /// renderer that anchors it.
@@ -169,7 +168,6 @@ fn timeline_block_invariants_hold_in_every_state() -> Result<()> {
     Ok(())
 }
 
-
 /// A re-anchor the renderer cannot measure still states the move — the user's
 /// declaration asserted it — but states nothing about how alike the two blocks
 /// are, because it could not read one of them.
@@ -232,7 +230,6 @@ fn an_unmeasurable_reanchor_states_the_move_and_no_similarity() -> Result<()> {
     Ok(())
 }
 
-
 /// The worktree read path applies the same decoding policy as the commit read
 /// path: non-UTF-8 content is `unavailable: "binary"` — structural, never a
 /// lossily-decoded `content` string of control bytes and U+FFFD replacement
@@ -264,7 +261,6 @@ fn a_binary_live_side_is_structural_never_lossy_prose() -> Result<()> {
     );
     Ok(())
 }
-
 
 /// A binary recorded side whose token is rendered as first-add content in the
 /// same output is recoverable by that render's own account: the by-hash search
@@ -305,7 +301,6 @@ fn a_binary_recorded_side_is_recovered_not_declared_lost() -> Result<()> {
     );
     Ok(())
 }
-
 
 /// Every invariant the current block must satisfy no matter which state an
 /// anchor is in, checked across every shape at once.

@@ -92,7 +92,10 @@ mod tests {
     #[test]
     fn claude_finding_names_the_update_command() {
         let note = render(&reminder(&[("claude", "1.1.4")]), &Version::new(1, 1, 5));
-        assert!(note.contains("claude plugin update git-span@git-span"), "{note}");
+        assert!(
+            note.contains("claude plugin update git-span@git-span"),
+            "{note}"
+        );
     }
 
     #[test]
@@ -100,7 +103,10 @@ mod tests {
         // Codex has no update subcommand; the spiked refresh path is a
         // re-add, which installs/refreshes idempotently.
         let note = render(&reminder(&[("codex", "1.1.4")]), &Version::new(1, 1, 5));
-        assert!(note.contains("codex plugin add git-span@git-span"), "{note}");
+        assert!(
+            note.contains("codex plugin add git-span@git-span"),
+            "{note}"
+        );
     }
 
     #[test]
@@ -110,7 +116,13 @@ mod tests {
             &Version::new(1, 1, 5),
         );
         assert!(note.contains("npm install -g git-span"), "{note}");
-        assert!(note.contains("claude plugin update git-span@git-span"), "{note}");
-        assert!(note.contains("codex plugin add git-span@git-span"), "{note}");
+        assert!(
+            note.contains("claude plugin update git-span@git-span"),
+            "{note}"
+        );
+        assert!(
+            note.contains("codex plugin add git-span@git-span"),
+            "{note}"
+        );
     }
 }

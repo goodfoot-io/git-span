@@ -294,10 +294,7 @@ fn add_superseding_overlap_reject_disjoint_ranges_same_file_succeed() -> Result<
 #[test]
 fn add_superseding_overlap_reject_partially_overlapping_ranges_succeed() -> Result<()> {
     let repo = TestRepo::new()?;
-    repo.write_file(
-        "src/lib.rs",
-        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n",
-    )?;
+    repo.write_file("src/lib.rs", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n")?;
     repo.commit_all("seed")?;
 
     let out = repo.run_span(["add", "demo", "src/lib.rs#L1-L6", "src/lib.rs#L4-L9"])?;
@@ -324,10 +321,7 @@ fn add_superseding_overlap_reject_partially_overlapping_ranges_succeed() -> Resu
 #[test]
 fn add_superseding_overlap_reject_nested_ranges_succeed() -> Result<()> {
     let repo = TestRepo::new()?;
-    repo.write_file(
-        "src/lib.rs",
-        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n",
-    )?;
+    repo.write_file("src/lib.rs", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n")?;
     repo.commit_all("seed")?;
 
     let out = repo.run_span(["add", "demo", "src/lib.rs#L1-L10", "src/lib.rs#L3-L5"])?;
@@ -441,8 +435,7 @@ fn add_superseding_overlap_reject_printed_remove_command_round_trips() -> Result
         .unwrap_or(stderr.len());
     let printed = &stderr[start..end];
     assert_eq!(
-        printed,
-        "git span remove demo 'dir with'\\''quote/file name.txt'",
+        printed, "git span remove demo 'dir with'\\''quote/file name.txt'",
         "the printed command must be single-quoted with `'\\''` escaping; stderr:\n{stderr}"
     );
     let tokens = tokenize_shell_words(printed);

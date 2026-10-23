@@ -27,12 +27,12 @@ pub(crate) mod walker;
 pub(crate) mod worktree_move;
 
 pub(crate) use engine::{
-    SourceLayers, anchor_status_is_drift, build_source_layers, resolve_loaded_spans,
-    resolve_named_spans, resolve_named_spans_retaining_source_layers,
+    SourceLayers, anchor_status_is_drift, build_source_layers, drift_spans_retaining_source_layers,
+    resolve_loaded_spans, resolve_named_spans, resolve_named_spans_retaining_source_layers,
     resolve_named_spans_with_source_layers, sort_spans_by_anchor_path, span_has_actionable_drift,
-    span_is_reportable_in_drift_discovery, drift_spans_retaining_source_layers,
+    span_is_reportable_in_drift_discovery,
 };
 pub use engine::{
-    resolve_anchor, resolve_span, resolve_span_at, drift_spans, drift_spans_with_trace,
+    drift_spans, drift_spans_with_trace, resolve_anchor, resolve_span, resolve_span_at,
 };
 pub(crate) use store::WholeResult;

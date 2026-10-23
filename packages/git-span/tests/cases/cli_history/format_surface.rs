@@ -23,7 +23,6 @@ fn xml_format_is_rejected_by_clap() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn default_format_is_git_log_style_text() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -50,7 +49,6 @@ fn default_format_is_git_log_style_text() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn json_is_schema_version_2_without_event_or_why() -> Result<()> {
     let (repo, span) = seed_history_scenario()?;
@@ -74,7 +72,6 @@ fn json_is_schema_version_2_without_event_or_why() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn both_formats_are_newest_first_and_agree_on_commit_count() -> Result<()> {
@@ -110,7 +107,6 @@ fn both_formats_are_newest_first_and_agree_on_commit_count() -> Result<()> {
     );
     Ok(())
 }
-
 
 #[test]
 fn json_date_is_a_full_iso8601_timestamp() -> Result<()> {
