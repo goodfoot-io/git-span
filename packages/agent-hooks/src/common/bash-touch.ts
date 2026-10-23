@@ -642,7 +642,8 @@ export function observedBashTouches(
   cwd: string,
   toolResponse: unknown,
   scopeAlreadyResolved: boolean = false,
-  warn: CoreLogger['warn'] = console.warn
+  warn: CoreLogger['warn'] = console.warn,
+  preExistingDeletes: ReadonlyMap<number, ReadonlySet<string>> = new Map()
 ): { touches: TouchInput[]; probeCache: RealityProbeCache | undefined; executionGateDrops: number } {
   // Gate prelude (phases A+B): triage, interruption drop, candidate budget.
   const prelude = bashGatePrelude(matches, toolResponse);
@@ -662,6 +663,30 @@ export function observedBashTouches(
 
   // Pass A (phase E): one translation and gate evaluation per span.
   const evals = translateAndGateSpans(groups, commandOrder, sessionId, cwd, scopeAlreadyResolved, probeCache);
+  // Observation-only pre-state evidence proves removal reality without granting
+  // tracked/span eligibility. Context callers supply no evidence and retain
+  // the existing delete/copy gates. Join selection still runs after this pass.
+  if (exitCode === undefined || exitCode === 0) {
+    for (const [index, entries] of evals) {
+      const existed = preExistingDeletes.get(index);
+      if (existed === undefined) continue;
+      for (const entry of entries) {
+        const touch = entry.touch;
+        if (touch?.kind !== 'write') continue;
+        if (touch.targetState === 'absent' && existed.has(touch.filePath) && !fileExists(touch.filePath)) {
+          entry.outcome = 'decisivePass';
+        } else if (
+          touch.renameSourcePath !== undefined &&
+          existed.has(touch.renameSourcePath) &&
+          !fileExists(touch.renameSourcePath) &&
+          evaluateWriteGate({ ...touch, renameSourcePath: undefined }, probeCache) !== 'decisiveFail'
+        ) {
+          entry.outcome = 'decisivePass';
+        }
+      }
+    }
+  }
+
   // Explanation map (phase F), then pending/explained reconciliation (G).
   const passByPath = buildPassByPath(evals, commandOrder);
   reconcileAgainstPassMap(evals, commandOrder, passByPath);

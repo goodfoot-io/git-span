@@ -3049,6 +3049,11 @@ export type PreStateEvidence =
       readonly range: LineRange;
     }
   | {
+      /** A scoped regular file observed before an untracked removal. */
+      readonly kind: 'existence';
+      readonly existed: true;
+    }
+  | {
       readonly kind: 'tracked';
       readonly tracked: true;
     };
@@ -3286,6 +3291,9 @@ function normalizeEvidence(value: unknown): PreStateEvidence | undefined {
         digest: value.digest,
         range: { start: value.range.start, end: value.range.end }
       };
+    case 'existence':
+      if (value.existed !== true) throw new Error('invalid existence evidence');
+      return { kind: value.kind, existed: true };
     case 'tracked':
       if (value.tracked !== true) throw new Error('invalid tracked evidence');
       return { kind: value.kind, tracked: true };
@@ -3348,6 +3356,8 @@ function normalizePlannedTouchRecord(record: unknown, budgets: PlannedTouchBudge
     if (touch.contextEligible !== undefined && typeof touch.contextEligible !== 'boolean')
       throw new Error('invalid planned-touch context eligibility');
     const evidence = normalizeEvidence(touch.evidence);
+    if (evidence?.kind === 'existence' && (touch.contextEligible !== false || touch.operation !== 'delete'))
+      throw new Error('existence evidence requires an observation-only delete');
     if (evidence !== undefined) evidenceBytes += Buffer.byteLength(JSON.stringify(evidence));
     return {
       repoRelativePath,

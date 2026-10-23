@@ -72,7 +72,8 @@ describe('native first-write host delivery', () => {
       const f = fixture();
       let sequence = 0;
       const executors = emptyExecutors();
-      const run = async (command: string, sessionId = 's', reusedId?: string) => {
+      const completed = new Map<string, { stdout: string; status: number | null }>();
+      const run = async (command: string, sessionId = 's', reusedId?: string, replay = false) => {
         const toolUseId = reusedId ?? String(++sequence);
         const base = {
           session_id: sessionId,
@@ -82,10 +83,17 @@ describe('native first-write host delivery', () => {
           tool_name: 'exec_command',
           tool_input: { cmd: command, workdir: f.repo.root }
         };
-        planBashTouches(command, f.repo.root, sessionId, toolUseId, logger, createDefaultPlannedTouchStore(f.layout));
-        if (host === 'codex')
-          await codexPre(f.layout)({ ...base, hook_event_name: 'PreToolUse' } as never, ctx as never);
-        const response = spawnSync('bash', ['-c', command], { cwd: f.repo.root, encoding: 'utf8' });
+        if (!replay) {
+          planBashTouches(command, f.repo.root, sessionId, toolUseId, logger, createDefaultPlannedTouchStore(f.layout));
+          if (host === 'codex')
+            await codexPre(f.layout)({ ...base, hook_event_name: 'PreToolUse' } as never, ctx as never);
+        }
+        const identity = `${sessionId}:${toolUseId}`;
+        const response = replay
+          ? completed.get(identity)
+          : spawnSync('bash', ['-c', command], { cwd: f.repo.root, encoding: 'utf8' });
+        if (response === undefined) throw new Error('no completed event available for replay');
+        completed.set(identity, response);
         const toolResponse = { stdout: response.stdout, exit_code: response.status, interrupted: false };
         if (host === 'claude')
           return context(
@@ -119,10 +127,11 @@ describe('native first-write host delivery', () => {
           })({ sessionID: sessionId, callID: toolUseId, tool: 'bash', args: { command } }, output);
           return output.output.slice(response.stdout.length);
         }
-        stashToolCall(f.layout, sessionId, Number(toolUseId), {
-          name: 'run_command',
-          args: { CommandLine: command, Cwd: f.repo.root }
-        });
+        if (!replay)
+          stashToolCall(f.layout, sessionId, Number(toolUseId), {
+            name: 'run_command',
+            args: { CommandLine: command, Cwd: f.repo.root }
+          });
         await antigravityPost(
           executors,
           undefined,
@@ -146,7 +155,7 @@ describe('native first-write host delivery', () => {
         expect(await run('false && printf seed > seed.ts || true')).not.toContain(FIRST_WRITE_GUIDANCE);
         const firstWrite = await run('printf value > new.ts; printf extra > second.ts', 's', '100');
         expect(firstWrite.split(FIRST_WRITE_GUIDANCE)).toHaveLength(2);
-        expect(await run('printf value > new.ts; printf extra > second.ts', 's', '100')).not.toContain(
+        expect(await run('printf value > new.ts; printf extra > second.ts', 's', '100', true)).not.toContain(
           FIRST_WRITE_GUIDANCE
         );
         expect(await run('printf next > next.ts')).not.toContain(FIRST_WRITE_GUIDANCE);
@@ -163,6 +172,23 @@ describe('native first-write host delivery', () => {
             'python'
           )
         ).toContain(FIRST_WRITE_GUIDANCE);
+        for (const operation of ['rm', 'mv'] as const) {
+          const source = `${operation}-source.txt`;
+          const destination = `${operation}-destination.txt`;
+          const command = operation === 'rm' ? `rm ${source}` : `mv ${source} ${destination}`;
+          const session = `${operation}-untracked`;
+          // A pre-existing destination must not make a missing source look successful.
+          if (operation === 'mv') writeFileSync(join(f.repo.root, destination), 'old target\n');
+          expect(await run(command, session)).not.toContain(FIRST_WRITE_GUIDANCE);
+          expect(await run(`${command} || true`, session)).not.toContain(FIRST_WRITE_GUIDANCE);
+          writeFileSync(join(f.repo.root, source), 'untracked source\n');
+          expect(await run(`false && ${command} || true`, session)).not.toContain(FIRST_WRITE_GUIDANCE);
+          const id = operation === 'rm' ? '200' : '300';
+          expect(await run(command, session, id)).toContain(FIRST_WRITE_GUIDANCE);
+          expect(await run(command, session, id, true)).not.toContain(FIRST_WRITE_GUIDANCE);
+          writeFileSync(join(f.repo.root, source), 'another session source\n');
+          expect(await run(command, `${session}-independent`)).toContain(FIRST_WRITE_GUIDANCE);
+        }
       } finally {
         f.cleanup();
       }
@@ -450,4 +476,45 @@ describe('write guidance remains independent from context failures', () => {
       f.cleanup();
     }
   });
+});
+
+describe('untracked source removal evidence', () => {
+  it.each(['rm new.txt', 'mv new.txt moved.txt'])(
+    'observes a successful first %s without querying spans',
+    async (command) => {
+      const f = fixture();
+      let queries = 0;
+      try {
+        writeFileSync(join(f.repo.root, 'new.txt'), 'new\n');
+        const store = createDefaultPlannedTouchStore(f.layout);
+        planBashTouches(command, f.repo.root, 'removal', 'write', logger, store);
+        execFileSync('bash', ['-c', command], { cwd: f.repo.root });
+        const { runLayeredBashTouches } = await import('../../src/common/bash-attribution.js');
+        const { createDiskMemoStore } = await import('../../src/common/span-surface.js');
+        const { firstWriteGuidance } = await import('../../src/common/first-write-guidance.js');
+        const memo = createDiskMemoStore(logger, f.layout);
+        const output = await runLayeredBashTouches(
+          command,
+          f.repo.root,
+          'removal',
+          'write',
+          { exit_code: 0 },
+          {
+            context: async () => {
+              queries++;
+              throw new Error('untracked context must not run');
+            }
+          },
+          memo,
+          logger,
+          store,
+          { successful: true, onWrite: () => firstWriteGuidance('removal', memo, true) }
+        );
+        expect(output).toEqual([FIRST_WRITE_GUIDANCE]);
+        expect(queries).toBe(0);
+      } finally {
+        f.cleanup();
+      }
+    }
+  );
 });

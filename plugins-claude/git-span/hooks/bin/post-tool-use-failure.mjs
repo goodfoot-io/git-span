@@ -6850,6 +6850,9 @@ function normalizeEvidence(value) {
         digest: value.digest,
         range: { start: value.range.start, end: value.range.end }
       };
+    case "existence":
+      if (value.existed !== true) throw new Error("invalid existence evidence");
+      return { kind: value.kind, existed: true };
     case "tracked":
       if (value.tracked !== true) throw new Error("invalid tracked evidence");
       return { kind: value.kind, tracked: true };
@@ -6889,6 +6892,8 @@ function normalizePlannedTouchRecord(record2, budgets) {
     if (touch.contextEligible !== void 0 && typeof touch.contextEligible !== "boolean")
       throw new Error("invalid planned-touch context eligibility");
     const evidence = normalizeEvidence(touch.evidence);
+    if (evidence?.kind === "existence" && (touch.contextEligible !== false || touch.operation !== "delete"))
+      throw new Error("existence evidence requires an observation-only delete");
     if (evidence !== void 0) evidenceBytes += Buffer.byteLength(JSON.stringify(evidence));
     return {
       repoRelativePath,
@@ -8530,7 +8535,7 @@ function selectSurvivors(order, evals, skipped, exitCode) {
   }
   return touches;
 }
-function observedBashTouches(matches, sessionId, cwd, toolResponse, scopeAlreadyResolved = false, warn = console.warn) {
+function observedBashTouches(matches, sessionId, cwd, toolResponse, scopeAlreadyResolved = false, warn = console.warn, preExistingDeletes = /* @__PURE__ */ new Map()) {
   const prelude = bashGatePrelude(matches, toolResponse);
   if (prelude.kind === "stop") {
     if (prelude.warn !== void 0) warn(prelude.warn);
@@ -8541,6 +8546,21 @@ function observedBashTouches(matches, sessionId, cwd, toolResponse, scopeAlready
   const probeCache = seedProbeCache(resolved);
   const { groups, guardByIndex, order: commandOrder } = orderCommands(resolved, guards);
   const evals = translateAndGateSpans(groups, commandOrder, sessionId, cwd, scopeAlreadyResolved, probeCache);
+  if (exitCode === void 0 || exitCode === 0) {
+    for (const [index, entries] of evals) {
+      const existed = preExistingDeletes.get(index);
+      if (existed === void 0) continue;
+      for (const entry of entries) {
+        const touch = entry.touch;
+        if (touch?.kind !== "write") continue;
+        if (touch.targetState === "absent" && existed.has(touch.filePath) && !fileExists(touch.filePath)) {
+          entry.outcome = "decisivePass";
+        } else if (touch.renameSourcePath !== void 0 && existed.has(touch.renameSourcePath) && !fileExists(touch.renameSourcePath) && evaluateWriteGate({ ...touch, renameSourcePath: void 0 }, probeCache) !== "decisiveFail") {
+          entry.outcome = "decisivePass";
+        }
+      }
+    }
+  }
   const passByPath = buildPassByPath(evals, commandOrder);
   reconcileAgainstPassMap(evals, commandOrder, passByPath);
   explainLaterRecreates(evals, commandOrder, probeCache, cwd);
@@ -9962,7 +9982,13 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     const { span } = primary;
     const requirements = requested.get(key2) ?? /* @__PURE__ */ new Set();
     const observationOnly2 = observationOnlySet.has(primary);
-    const evidence = observationOnly2 && span.operation === "delete" ? void 0 : planEvidence(matches, requirements);
+    let evidence;
+    if (observationOnly2 && span.operation === "delete") {
+      try {
+        if (fs7.statSync(span.absolutePath).isFile()) evidence = { kind: "existence", existed: true };
+      } catch {
+      }
+    } else evidence = planEvidence(matches, requirements);
     touches.push({
       repoRelativePath: toPosix(relativeToRepo(repoRoot, span.absolutePath)),
       operation: span.operation,
@@ -10188,13 +10214,26 @@ Git span commit context unavailable: ${reason.replace(new RegExp("\\p{Cc}", "gu"
     }),
     ...guards
   ];
+  const preExistingDeletes = /* @__PURE__ */ new Map();
+  for (const touch of record2?.touches ?? []) {
+    if (touch.contextEligible !== false || touch.evidence?.kind !== "existence") continue;
+    const absolutePath = nodePath5.join(record2?.repoRoot ?? "", touch.repoRelativePath);
+    if (!planned.some(
+      (match) => match.status === "resolved" && match.span.absolutePath === absolutePath && match.span.simpleCommandIndex === touch.simpleCommandIndex
+    ))
+      continue;
+    const paths = preExistingDeletes.get(touch.simpleCommandIndex) ?? /* @__PURE__ */ new Set();
+    paths.add(absolutePath);
+    preExistingDeletes.set(touch.simpleCommandIndex, paths);
+  }
   const guidance = inspection?.successful && inspection.onWrite !== void 0 && observedBashTouches(
     combined,
     sessionId,
     cwd,
     toolResponse,
     false,
-    (message, context) => logger2.warn(message, context)
+    (message, context) => logger2.warn(message, context),
+    preExistingDeletes
   ).touches.some((touch) => touch.kind === "write") ? inspection.onWrite() : null;
   try {
     const preTrackedDeletes = /* @__PURE__ */ new Set();

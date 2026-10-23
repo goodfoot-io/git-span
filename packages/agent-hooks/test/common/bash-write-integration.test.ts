@@ -1930,6 +1930,39 @@ describe('bounded planned-touch store contract (bootstrap)', () => {
     }
   });
 
+  it('persists observation-only pre-existence evidence without granting tracked eligibility', () => {
+    const fixture = storeFixture();
+    try {
+      const original = plannedRecord('/repo');
+      const record: PlannedTouchRecord = {
+        ...original,
+        touches: original.touches.map((touch) => ({
+          ...touch,
+          operation: 'delete',
+          contextEligible: false,
+          evidence: { kind: 'existence', existed: true }
+        }))
+      };
+      fixture.store.put(record);
+      expect(fixture.store.consume(record.sessionId, record.toolUseId)).toEqual(record);
+      for (const [index, patch] of [
+        { evidence: { kind: 'existence', existed: false } },
+        { contextEligible: true },
+        { contextEligible: undefined },
+        { operation: 'modify' }
+      ].entries()) {
+        const invalid = {
+          ...record,
+          toolUseId: `invalid-existence-${index}`,
+          touches: record.touches.map((touch) => ({ ...touch, ...patch }))
+        } as unknown as PlannedTouchRecord;
+        expect(() => fixture.store.put(invalid)).toThrow(/existence evidence/);
+      }
+    } finally {
+      rmSync(fixture.parent, { recursive: true, force: true });
+    }
+  });
+
   it('discard is idempotent for failure and interruption cleanup', () => {
     const fixture = storeFixture();
     try {

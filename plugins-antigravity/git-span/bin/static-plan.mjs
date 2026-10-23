@@ -6245,6 +6245,9 @@ function normalizeEvidence(value) {
         digest: value.digest,
         range: { start: value.range.start, end: value.range.end }
       };
+    case "existence":
+      if (value.existed !== true) throw new Error("invalid existence evidence");
+      return { kind: value.kind, existed: true };
     case "tracked":
       if (value.tracked !== true) throw new Error("invalid tracked evidence");
       return { kind: value.kind, tracked: true };
@@ -6284,6 +6287,8 @@ function normalizePlannedTouchRecord(record, budgets) {
     if (touch.contextEligible !== void 0 && typeof touch.contextEligible !== "boolean")
       throw new Error("invalid planned-touch context eligibility");
     const evidence = normalizeEvidence(touch.evidence);
+    if (evidence?.kind === "existence" && (touch.contextEligible !== false || touch.operation !== "delete"))
+      throw new Error("existence evidence requires an observation-only delete");
     if (evidence !== void 0) evidenceBytes += Buffer.byteLength(JSON.stringify(evidence));
     return {
       repoRelativePath,
@@ -6566,7 +6571,13 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     const { span } = primary;
     const requirements = requested.get(key) ?? /* @__PURE__ */ new Set();
     const observationOnly2 = observationOnlySet.has(primary);
-    const evidence = observationOnly2 && span.operation === "delete" ? void 0 : planEvidence(matches, requirements);
+    let evidence;
+    if (observationOnly2 && span.operation === "delete") {
+      try {
+        if (fs6.statSync(span.absolutePath).isFile()) evidence = { kind: "existence", existed: true };
+      } catch {
+      }
+    } else evidence = planEvidence(matches, requirements);
     touches.push({
       repoRelativePath: toPosix(relativeToRepo(repoRoot, span.absolutePath)),
       operation: span.operation,

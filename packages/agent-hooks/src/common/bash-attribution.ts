@@ -158,8 +158,9 @@ function countBy<T extends string>(values: readonly T[]): Partial<Record<T, numb
 
 /**
  * Parse and persist the bounded pieces of Bash attribution that cannot be
- * reconstructed safely after execution. All persisted paths pass pre-side
- * tracked eligibility; ordinary creates and reads deliberately produce no
+ * reconstructed safely after execution. Persisted context paths pass pre-side
+ * tracked eligibility; scoped untracked writes retain observation-only evidence.
+ * Ordinary creates and reads deliberately produce no
  * record and are checked against the post-command index instead.
  */
 export function planBashTouches(
@@ -228,7 +229,14 @@ export function planBashTouches(
     const { span } = primary;
     const requirements = requested.get(key) ?? new Set<string>();
     const observationOnly = observationOnlySet.has(primary);
-    const evidence = observationOnly && span.operation === 'delete' ? undefined : planEvidence(matches, requirements);
+    let evidence: PreStateEvidence | undefined;
+    if (observationOnly && span.operation === 'delete') {
+      try {
+        if (fs.statSync(span.absolutePath).isFile()) evidence = { kind: 'existence', existed: true };
+      } catch {
+        // Absence or an unavailable probe supplies no successful-write proof.
+      }
+    } else evidence = planEvidence(matches, requirements);
     touches.push({
       repoRelativePath: toPosix(relativeToRepo(repoRoot, span.absolutePath)),
       operation: span.operation,
@@ -518,11 +526,34 @@ export async function runLayeredBashTouches(
     }),
     ...guards
   ];
+  const preExistingDeletes = new Map<number, Set<string>>();
+  for (const touch of record?.touches ?? []) {
+    if (touch.contextEligible !== false || touch.evidence?.kind !== 'existence') continue;
+    const absolutePath = nodePath.join(record?.repoRoot ?? '', touch.repoRelativePath);
+    if (
+      !planned.some(
+        (match) =>
+          match.status === 'resolved' &&
+          match.span.absolutePath === absolutePath &&
+          match.span.simpleCommandIndex === touch.simpleCommandIndex
+      )
+    )
+      continue;
+    const paths = preExistingDeletes.get(touch.simpleCommandIndex) ?? new Set<string>();
+    paths.add(absolutePath);
+    preExistingDeletes.set(touch.simpleCommandIndex, paths);
+  }
   const guidance =
     inspection?.successful &&
     inspection.onWrite !== undefined &&
-    observedBashTouches(combined, sessionId, cwd, toolResponse, false, (message, context) =>
-      logger.warn(message, context)
+    observedBashTouches(
+      combined,
+      sessionId,
+      cwd,
+      toolResponse,
+      false,
+      (message, context) => logger.warn(message, context),
+      preExistingDeletes
     ).touches.some((touch) => touch.kind === 'write')
       ? inspection.onWrite()
       : null;
