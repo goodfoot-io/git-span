@@ -1,4 +1,7 @@
 /** Executable pending-inspection contract: literal selection, complete rendering, and shared delivery. */
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, realpathSync, symlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createDefaultPlannedTouchStore, runLayeredBashTouches } from '../../src/common/bash-attribution.js';
 import {
@@ -7,74 +10,13 @@ import {
   renderPendingContext
 } from '../../src/common/pending-context.js';
 import { createDiskMemoStore } from '../../src/common/span-surface.js';
-import { type ContextDocument, decodeContextDocument, type TouchExecutors } from '../../src/common/touch-core.js';
+import type { TouchExecutors } from '../../src/common/touch-core.js';
+import { makeTempRepo } from '../helpers.js';
+import { pendingContextDocument } from '../pending-context-helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
-function document(): ContextDocument {
-  return decodeContextDocument(
-    JSON.stringify({
-      schema_version: 2,
-      scopes: [],
-      mutation: {
-        requested: false,
-        rewritten: false,
-        spans_touched: 0,
-        anchors_updated: 0,
-        anchors_removed: 0,
-        identities_collapsed: 0
-      },
-      spans: [
-        {
-          name: 'input-contract',
-          evidence_revision: 'a'.repeat(64),
-          why: 'Discovery selects intended inputs before strict validation.\n\nKeep the complete explanation.',
-          overlaps: [],
-          anchors: [
-            {
-              ordinal: 0,
-              id: 'a',
-              anchored: { path: 'src/select.ts', extent: { kind: 'lines', start: 10, end: 15 } },
-              current: { path: 'src/select.ts', extent: { kind: 'lines', start: 20, end: 25 } },
-              status: { code: 'CHANGED' },
-              source: 'WORKTREE',
-              sources: ['WORKTREE']
-            },
-            {
-              ordinal: 1,
-              id: 'b',
-              anchored: { path: 'other/validate.ts', extent: { kind: 'whole' } },
-              current: { path: 'other/validate.ts', extent: { kind: 'whole' } },
-              status: { code: 'FRESH' },
-              source: 'WORKTREE',
-              sources: ['WORKTREE']
-            },
-            {
-              ordinal: 2,
-              id: 'c',
-              anchored: { path: 'old.ts', extent: { kind: 'lines', start: 1, end: 2 } },
-              current: null,
-              status: { code: 'DELETED' },
-              source: 'INDEX',
-              sources: ['INDEX']
-            },
-            {
-              ordinal: 3,
-              id: 'd',
-              anchored: { path: 'unavailable.ts', extent: { kind: 'whole' } },
-              current: null,
-              status: { code: 'CONTENT_UNAVAILABLE', reason: 'IO_ERROR', detail: null },
-              source: null,
-              sources: []
-            }
-          ]
-        }
-      ]
-    })
-  );
-}
-
 describe('literal pending inspection recognition', () => {
-  it.skip.each([
+  it.each([
     ['git status', 'status', []],
     ['git status --porcelain=v2 -- "a b.py"', 'status', ['--porcelain=v2', '--', 'a b.py']],
     ['git diff --cached -- foo.py', 'diff', ['--cached', '--', 'foo.py']],
@@ -89,14 +31,45 @@ describe('literal pending inspection recognition', () => {
     });
   });
 
-  it.skip('resolves repeated -C relative to the effective invocation directory', () => {
-    expect(parsePendingInspection('git -C child -C ../sibling diff -- file.py', '/repo')).toEqual({
-      kind: 'inspection',
-      inspection: { cwd: '/repo/sibling', command: 'diff', args: ['--', 'file.py'] }
-    });
+  it('resolves repeated -C through physical directories using the same semantics as Git', () => {
+    const repo = makeTempRepo();
+    try {
+      mkdirSync(join(repo.root, 'physical', 'child'), { recursive: true });
+      symlinkSync(join(repo.root, 'physical', 'child'), join(repo.root, 'alias'), 'dir');
+      const expected = execFileSync('git', ['-C', 'alias', '-C', '..', 'rev-parse', '--show-prefix'], {
+        cwd: repo.root,
+        encoding: 'utf8'
+      }).trim();
+      expect(expected).toBe('physical/');
+      expect(parsePendingInspection('git -C alias -C .. diff -- file.py', repo.root)).toEqual({
+        kind: 'inspection',
+        inspection: { cwd: realpathSync(join(repo.root, 'physical')), command: 'diff', args: ['--', 'file.py'] }
+      });
+    } finally {
+      repo.cleanup();
+    }
   });
 
-  it.skip.each([
+  it('preserves physical traversal inside one Git -C argument containing symlink and parent segments', () => {
+    const repo = makeTempRepo();
+    try {
+      mkdirSync(join(repo.root, 'physical', 'child'), { recursive: true });
+      symlinkSync(join(repo.root, 'physical', 'child'), join(repo.root, 'alias'), 'dir');
+      const prefix = execFileSync('git', ['-C', 'alias/..', 'rev-parse', '--show-prefix'], {
+        cwd: repo.root,
+        encoding: 'utf8'
+      }).trim();
+      expect(prefix).toBe('physical/');
+      expect(parsePendingInspection('git -C alias/.. status', repo.root)).toEqual({
+        kind: 'inspection',
+        inspection: { cwd: realpathSync(join(repo.root, 'physical')), command: 'status', args: [] }
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.each([
     'git diff -- *.py',
     'git diff -- foo"bar"*',
     'git diff -- "$var"',
@@ -107,6 +80,10 @@ describe('literal pending inspection recognition', () => {
     'env git status',
     'git diff > patch',
     'git diff | cat',
+    'git diff &',
+    'git diff -- ""',
+    "git diff -- ''",
+    'git diff -- fo\\\no.py',
     'cd sub && git diff',
     'git status; git diff',
     'git -c core.quotePath=false diff',
@@ -115,7 +92,7 @@ describe('literal pending inspection recognition', () => {
     expect(parsePendingInspection(command, '/repo').kind).toBe('unsupported');
   });
 
-  it.skip.each(['cat foo.py', 'git show HEAD', 'git log -p', 'echo git diff'])(
+  it.each(['cat foo.py', 'git show HEAD', 'git log -p', 'echo git diff', 'git show HEAD -- diff', 'git log -- status'])(
     'leaves unrelated command %s alone',
     (command) => {
       expect(parsePendingInspection(command, '/repo')).toEqual({ kind: 'none' });
@@ -124,21 +101,21 @@ describe('literal pending inspection recognition', () => {
 });
 
 describe('complete pending context presentation', () => {
-  it.skip('prints full current anchors, unchanged whole-file counterparts, deleted locations, statuses, and why', () => {
-    const output = renderPendingContext(document());
+  it('prints full current anchors, unchanged whole-file counterparts, deleted locations, statuses, and why', () => {
+    const output = renderPendingContext(pendingContextDocument());
     expect(output).toContain('<git-span>');
     expect(output).toContain('## input-contract');
-    expect(output).toContain('select.ts#L20-L25 — changed');
+    expect(output).toMatch(/select\.ts\s*#L20-L25 — changed/);
     expect(output).toContain('validate.ts');
-    expect(output).toContain('old.ts#L1-L2 — deleted');
-    expect(output).toContain('unavailable.ts — io error');
+    expect(output).toMatch(/old\.ts\s*#L1-L2 — deleted/);
+    expect(output).toContain('unavailable.ts — content unavailable: io error');
     expect(output).toContain('Keep the complete explanation.');
     expect(output).not.toMatch(/coupl|for more information|unknown read|repair/i);
-    expect(renderPendingContext(document())).toBe(output);
+    expect(renderPendingContext(pendingContextDocument())).toBe(output);
   });
 
-  it.skip('renders each relationship once and refuses a partial oversized result', () => {
-    const value = document();
+  it('renders each relationship once and refuses a partial oversized result', () => {
+    const value = pendingContextDocument();
     const span = value.spans[0];
     if (span === undefined) throw new Error('missing fixture span');
     value.spans.push(span);
@@ -146,15 +123,15 @@ describe('complete pending context presentation', () => {
     expect(() => renderPendingContext(value, 50)).toThrow(/limit|large|bound/i);
   });
 
-  it.skip('emits no wrapper for an empty successful selection', () => {
-    const value = document();
+  it('emits no wrapper for an empty successful selection', () => {
+    const value = pendingContextDocument();
     value.spans = [];
     expect(renderPendingContext(value)).toBeNull();
   });
 });
 
 describe('shared pending inspection delivery', () => {
-  it.skip('reports diff exit 1 without ordinary touch duplicates and does not memo-suppress repeated full reports', async () => {
+  it('reports diff exit 1 without ordinary touch duplicates and does not memo-suppress repeated full reports', async () => {
     const temp = makeTempLayout();
     try {
       const logger = { warn: (_message: string) => {} };
@@ -162,7 +139,7 @@ describe('shared pending inspection delivery', () => {
         context: async () => {
           throw new Error('ordinary touch must not run');
         },
-        pendingContext: async () => ({ ok: true, document: document() })
+        pendingContext: async () => ({ ok: true, document: pendingContextDocument() })
       };
       const memo = createDiskMemoStore(logger, temp.layout);
       const store = createDefaultPlannedTouchStore(temp.layout);
@@ -196,7 +173,7 @@ describe('shared pending inspection delivery', () => {
     }
   });
 
-  it.skip('distinguishes native failure from empty success in visible delivery', async () => {
+  it('distinguishes native failure from empty success in visible delivery', async () => {
     const temp = makeTempLayout();
     try {
       const logger = { warn: (_message: string) => {} };
@@ -219,7 +196,7 @@ describe('shared pending inspection delivery', () => {
           createDefaultPlannedTouchStore(temp.layout)
         );
       expect((await run()).join('')).toContain('snapshot changed');
-      const empty = document();
+      const empty = pendingContextDocument();
       empty.spans = [];
       executors.pendingContext = async () => ({ ok: true, document: empty });
       expect(await run()).toEqual([]);
@@ -230,7 +207,7 @@ describe('shared pending inspection delivery', () => {
 });
 
 describe('native pending executor', () => {
-  it.skip('returns an explicit failure for an unavailable invocation directory', async () => {
+  it('returns an explicit failure for an unavailable invocation directory', async () => {
     const result = await createDefaultPendingContextExecutor()({
       cwd: '/nonexistent-pending-context-directory',
       command: 'diff',
@@ -238,5 +215,85 @@ describe('native pending executor', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).not.toBe('');
+  });
+});
+
+describe('pending inspection failure evidence', () => {
+  it.each([
+    { exit_code: 2, output: 'fatal' },
+    { exit_code: 0, output: '', interrupted: true },
+    { exit_code: 1, output: '', exitStatusInferred: true },
+    { exit_code: 1, output: '', timedOutAfterMs: 1 }
+  ])('does not collect after failed, inferred-failure, or interrupted evidence %j', async (response) => {
+    const temp = makeTempLayout();
+    try {
+      const logger = { warn: (_message: string) => {} };
+      const executors: TouchExecutors = {
+        context: async () => {
+          throw new Error('ordinary touch must not run');
+        },
+        pendingContext: async () => {
+          throw new Error('failed invocation must not collect');
+        }
+      };
+      expect(
+        await runLayeredBashTouches(
+          'git diff',
+          '/repo',
+          'session',
+          undefined,
+          response,
+          executors,
+          createDiskMemoStore(logger, temp.layout),
+          logger,
+          createDefaultPlannedTouchStore(temp.layout)
+        )
+      ).toEqual([]);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('makes renderer size refusal visible without returning a partial span report', async () => {
+    const temp = makeTempLayout();
+    try {
+      const value = pendingContextDocument();
+      const span = value.spans[0];
+      if (span === undefined) throw new Error('fixture span unavailable');
+      span.why = 'x'.repeat(300 * 1024);
+      const logger = { warn: (_message: string) => {} };
+      const executors: TouchExecutors = {
+        context: async () => {
+          throw new Error('ordinary touch must not run');
+        },
+        pendingContext: async () => ({ ok: true, document: value })
+      };
+      const blocks = await runLayeredBashTouches(
+        'git status',
+        '/repo',
+        'session',
+        undefined,
+        { exit_code: 0, output: '' },
+        executors,
+        createDiskMemoStore(logger, temp.layout),
+        logger,
+        createDefaultPlannedTouchStore(temp.layout)
+      );
+      expect(blocks.join('')).toMatch(/unavailable.*byte limit/);
+      expect(blocks.join('')).not.toContain('<git-span>');
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('escapes anchor path controls while retaining the full multiline explanation', () => {
+    const value = pendingContextDocument();
+    const anchor = value.spans[0]?.anchors[0];
+    if (anchor?.current === undefined || anchor.current === null) throw new Error('fixture anchor unavailable');
+    anchor.current.path = 'src/fake\nanchor.ts';
+    const output = renderPendingContext(value);
+    expect(output).toContain('fake\\nanchor.ts');
+    expect(output).not.toContain('fake\nanchor.ts');
+    expect(output).toContain('validation.\n\nKeep the complete explanation.');
   });
 });

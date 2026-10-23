@@ -249,11 +249,11 @@ describe('claude deployed commit adapters', () => {
     ).toBe(null);
     expect(notes(repo)).toHaveLength(1);
   });
-  it('emits fifteen-second post hooks and unchanged cleanup budget', () => {
+  it('emits forty-second post hooks and unchanged cleanup budget', () => {
     const manifest = JSON.parse(readFileSync(join(hooks, '../hooks.json'), 'utf8'));
-    expect(manifest.hooks.PostToolUse[0].hooks[0].timeout).toBe(15);
+    expect(manifest.hooks.PostToolUse[0].hooks[0].timeout).toBe(40);
     expect(manifest.hooks.SessionEnd[0].hooks[0].timeout).toBe(10);
-    expect(manifest.hooks.PostToolUseFailure[0].hooks[0].timeout).toBe(15);
+    expect(manifest.hooks.PostToolUseFailure[0].hooks[0].timeout).toBe(40);
     expect(existsSync(join(hooks, 'static-plan.mjs'))).toBe(true);
   });
 });

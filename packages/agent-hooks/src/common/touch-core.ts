@@ -43,7 +43,7 @@ import {
 import { flushFailOpen, reportFailOpen } from './fail-open.js';
 import { resolveGitSpanCommand } from './git-span-command.js';
 import { caughtProperty, errnoCode, isOneOf, isRecord } from './guards.js';
-import type { PendingContextExecutor } from './pending-context.js';
+import { createDefaultPendingContextExecutor, type PendingContextExecutor } from './pending-context.js';
 import type { CoreLogger, MemoStore } from './span-surface.js';
 
 // ---------------------------------------------------------------------------
@@ -1352,6 +1352,7 @@ const DEFAULT_TIMEOUT_MS = 5_000;
  */
 export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_MS): TouchExecutors {
   const executors: TouchExecutors = {
+    pendingContext: createDefaultPendingContextExecutor(),
     context: async (request) => {
       const started = performance.now();
       const args = ['context', ...request.addresses, '--format', 'json'];

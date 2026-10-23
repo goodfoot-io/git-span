@@ -350,6 +350,7 @@ const SECTION_GROUPS: &[(&str, &[&str])] = &[
             "history",
             "context",
             "commit-context",
+            "pending-context",
         ],
     ),
     (

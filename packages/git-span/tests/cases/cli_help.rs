@@ -30,7 +30,7 @@ fn short_help_groups_cover_public_metadata_with_compact_copy() {
     let expected = [
         (
             "Inspect spans:",
-            vec!["show", "list", "context", "commit-context"],
+            vec!["show", "list", "context", "commit-context", "pending-context"],
         ),
         (
             "Check and maintain spans:",

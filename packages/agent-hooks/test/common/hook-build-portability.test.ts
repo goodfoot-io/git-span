@@ -402,8 +402,8 @@ describe('generated hook bin portability', () => {
       expect(groupFor(out, 'SessionStart', 'session-start.mjs')?.hooks[0]?.timeout).toBe(1);
       for (const [event, bundle, timeout] of [
         ['PreToolUse', 'static-plan.mjs', 10],
-        ['PostToolUse', 'post-tool-use.mjs', 15],
-        ['PostToolUseFailure', 'post-tool-use-failure.mjs', 15],
+        ['PostToolUse', 'post-tool-use.mjs', 40],
+        ['PostToolUseFailure', 'post-tool-use-failure.mjs', 40],
         ['SessionEnd', 'session-end.mjs', 10],
         ['Stop', 'stop.mjs', 10]
       ] as const) {

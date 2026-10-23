@@ -207,6 +207,6 @@ export const STATIC_POST_MATCHER = 'apply_patch|exec_command|exec|shell|local_sh
 disableUpdateCheck();
 
 export default postToolUseHook(
-  { matcher: 'apply_patch|exec_command|exec|shell|local_shell|Bash|write_stdin', timeout: 15_000 },
+  { matcher: 'apply_patch|exec_command|exec|shell|local_shell|Bash|write_stdin', timeout: 40_000 },
   createHandler()
 );

@@ -6427,7 +6427,7 @@ function filterTrackedEligibility(candidates, options) {
 }
 
 // packages/agent-hooks/src/common/touch-core.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import { createHash as createHash2 } from "node:crypto";
 import * as fs5 from "node:fs";
 import { dirname as dirname6, join as join6 } from "node:path";
@@ -6435,23 +6435,28 @@ import { dirname as dirname6, join as join6 } from "node:path";
 // packages/agent-hooks/src/common/delivery-presentation.ts
 var MAX_MEMO_BYTES = 256 * 1024;
 
+// packages/agent-hooks/src/common/pending-context.ts
+import { execFileSync as execFileSync5 } from "node:child_process";
+import { realpathSync as realpathSync3 } from "node:fs";
+import { isAbsolute as isAbsolute4, sep as sep2 } from "node:path";
+
 // packages/agent-hooks/src/common/touch-core.ts
 var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 
 // packages/agent-hooks/src/common/commit-inspection-context.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
+import { execFileSync as execFileSync7 } from "node:child_process";
 var MAX_NATIVE_BYTES = 16 * 1024 * 1024;
 var MAX_REPORT_BYTES = 64 * 1024;
 
 // packages/agent-hooks/src/common/commit-inspection-selection.ts
 import { execFile } from "node:child_process";
-import { existsSync as existsSync5, realpathSync as realpathSync3 } from "node:fs";
+import { existsSync as existsSync5, realpathSync as realpathSync4 } from "node:fs";
 import { resolve as resolve5 } from "node:path";
 var MAX_OUTPUT = 4 * 1024 * 1024;
 
 // packages/agent-hooks/src/common/parse-response.ts
 import { existsSync as existsSync6, statSync as statSync6 } from "node:fs";
-import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep3 } from "node:path";
 
 // packages/agent-hooks/src/common/bash-attribution.ts
 function createDefaultPlannedTouchStore(layout) {

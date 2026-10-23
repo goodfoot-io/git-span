@@ -1,3 +1,4 @@
+packages/git-span/src/cli/mod.rs#L57-L428 rk64:d487136d7dc86794
 packages/git-span/src/cli/mod.rs#L58-L514 rk64:89e95a1743021d80
 
 Covering span for the touchpoints page's Clap-configuration fragment link, holding the Cli struct and Commands enum block that the page names as the primary source of truth for top-level CLI behavior.

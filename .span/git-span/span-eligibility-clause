@@ -1,7 +1,7 @@
 packages/git-span/README.md#L3-L3 rk64:bd40f46ea22bcfaf
 packages/git-span/man/git-span.1#L15-L17 rk64:b66dca8498a98cae
 packages/git-span/src/bin/gen-manpage.rs#L85-L87 rk64:b66dca8498a98cae
-packages/git-span/src/cli/mod.rs#L122-L122 rk64:423ea3c0b5ce3e58
+packages/git-span/src/cli/mod.rs#L123-L123 rk64:423ea3c0b5ce3e58
 packages/website/content/docs/concepts.mdx#L8-L8 rk64:bfb0e7ba75db28a2
 plugins-claude/git-span/skills/git-span/SKILL.md#L3-L3 rk64:8f742b0460baefc1
 plugins-claude/git-span/skills/git-span/SKILL.md#L62-L67 rk64:e780462af69daf6b

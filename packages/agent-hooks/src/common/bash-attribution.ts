@@ -14,13 +14,14 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { relativeToRepo, resolveRepoRoot, type SessionLayout, toPosix } from './agent-hooks-common.js';
-import { type BashTouchMatch, bashResponseInterrupted, runBashTouches } from './bash-touch.js';
+import { type BashTouchMatch, bashResponseExitCode, bashResponseInterrupted, runBashTouches } from './bash-touch.js';
 import { type CommitInspectionContextExecutor, runCommitInspectionContext } from './commit-inspection-context.js';
 import { resolveCommitInspection } from './commit-inspection-selection.js';
 import { flushFailOpen } from './fail-open.js';
 import { isRecord } from './guards.js';
 import { parseCommandDetailed, type ResolvedSpan } from './parse-command.js';
 import { parseResponse, type ResponseParseInput, type ResponseSpan } from './parse-response.js';
+import { parsePendingInspection, renderPendingContext } from './pending-context.js';
 import type { CoreLogger, MemoStore } from './span-surface.js';
 import {
   createPlannedTouchStore,
@@ -407,6 +408,38 @@ export async function runLayeredBashTouches(
   const parserStarted = performance.now();
   const claimed = toolUseId === undefined ? { status: 'missing' as const } : store.take(sessionId, toolUseId);
   if (claimed.status === 'consumed') return [];
+  const pending = parsePendingInspection(command, cwd);
+  if (pending.kind === 'unsupported')
+    logger.warn('git-span pending inspection unsupported', { reason: pending.reason });
+  if (pending.kind === 'inspection') {
+    const exit = bashResponseExitCode(toolResponse);
+    if (
+      (isRecord(toolResponse) && toolResponse.exitStatusInferred === true) ||
+      bashResponseInterrupted(toolResponse) ||
+      (exit !== undefined && exit !== 0 && !(pending.inspection.command === 'diff' && exit === 1))
+    ) {
+      logger.info?.('git-span pending inspection skipped', { reason: 'failed or interrupted invocation' });
+      return [];
+    }
+    const unavailable = (reason: string): string[] => {
+      logger.warn('git-span pending inspection unavailable', { reason });
+      const detail = reason.replace(/\p{Cc}/gu, ' ').slice(0, 1024);
+      return [`\n[git-span] Complete pending context unavailable: ${detail}\n`];
+    };
+    try {
+      if (executors.pendingContext === undefined) return unavailable('pending-context executor is unavailable');
+      const result = await executors.pendingContext(pending.inspection);
+      if (!result.ok) return unavailable(result.reason);
+      const block = renderPendingContext(result.document);
+      logger.info?.('git-span pending inspection complete', {
+        selectedSpanCount: result.document.spans.length,
+        empty: block === null
+      });
+      return block === null ? [] : [block];
+    } catch (error) {
+      return unavailable(error instanceof Error ? error.message : String(error));
+    }
+  }
   const record = claimed.status === 'record' ? claimed.record : null;
   let commitNotice: string | null = null;
   let suppressCommitReads = false;
@@ -482,7 +515,10 @@ export async function runLayeredBashTouches(
     }
   }
   const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
-  const responseSpans = response === null || suppressCommitReads ? [] : parseResponse({ command, cwd, ...response });
+  const responseSpans =
+    response === null || suppressCommitReads || pending.kind === 'unsupported'
+      ? []
+      : parseResponse({ command, cwd, ...response });
   const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
   const parserLatencyMs = performance.now() - parserStarted;
   const touchStarted = performance.now();
@@ -550,7 +586,10 @@ export function postTrackedValue<T>(absolutePath: string, value: T, cwd: string)
 export function failureBashResponse(input: unknown): Record<string, unknown> {
   const record: Record<string, unknown> = isRecord(input) ? input : {};
   const response: Record<string, unknown> = isRecord(record.tool_response) ? { ...record.tool_response } : {};
-  if (integerExitStatus(response) === undefined) response.exitStatus = 1;
+  if (integerExitStatus(response) === undefined) {
+    response.exitStatus = 1;
+    response.exitStatusInferred = true;
+  }
   if (record.is_interrupt === true) response.is_interrupt = true;
   return response;
 }

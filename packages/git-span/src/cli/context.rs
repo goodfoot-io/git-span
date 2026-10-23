@@ -535,13 +535,13 @@ fn context_status(status: &AnchorStatus) -> ContextStatus {
 
 /// Reuse the already captured and revalidated content identities: no render-time
 /// filesystem reads, and no repository-wide identity that changes unrelated spans.
-struct EvidencePaths<'a> {
+pub(super) struct EvidencePaths<'a> {
     staged: BTreeMap<&'a str, &'a crate::resolver::core::token::PathState>,
     worktree: BTreeMap<&'a str, &'a crate::resolver::core::token::PathState>,
 }
 
 impl<'a> EvidencePaths<'a> {
-    fn new(token: &'a crate::resolver::core::token::StateToken) -> Self {
+    pub(super) fn new(token: &'a crate::resolver::core::token::StateToken) -> Self {
         Self {
             staged: token
                 .staged_state
@@ -581,7 +581,7 @@ impl<'a> EvidencePaths<'a> {
     }
 }
 
-fn context_span_from_resolved(
+pub(super) fn context_span_from_resolved(
     span: SpanResolved,
     overlaps: Vec<ContextOverlap>,
     evidence: &EvidencePaths<'_>,

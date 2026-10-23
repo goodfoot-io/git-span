@@ -8,10 +8,12 @@
  * Two accepted parity gaps versus the other platforms, both from the missing
  * `tool_response`: on success the response is `undefined` (no interruption
  * flag, no exit code, no response-derived reads — attribution rests on the
- * planned pre-state alone), and when `error` is present the call routes
+ * command-derived evidence; literal pending inspections collect current native
+ * evidence independently), and when `error` is present the call routes
  * through {@link failureBashResponse}, which defaults the missing response to
  * `exitStatus: 1` — the same conservative failure framing the Claude failure
- * branch uses.
+ * branch uses. Inferred failure codes never qualify a pending inspection as
+ * an observed diff exit 1; dedicated pending reports are success-only here.
  *
  * PostToolUse has no message channel at all (`{}` is the only legal reply),
  * so rendered `<git-span>` blocks — the silent re-anchoring notices included —
@@ -72,4 +74,4 @@ export function createHandler(
 // runs so every `git span` child inherits the env var.
 disableUpdateCheck();
 
-export default postToolUseHook({ matcher: 'run_command', timeout: 10_000 }, createHandler());
+export default postToolUseHook({ matcher: 'run_command', timeout: 40_000 }, createHandler());

@@ -1,8 +1,8 @@
 /** Complete, read-only current context for an immutable inspected commit set. */
 
 import { execFileSync } from 'node:child_process';
-import { collapseByPath, renderAnchorTree } from './anchor-tree.js';
 import { inlineCode, shellArgument } from './delivery-presentation.js';
+import { renderFullSpanContext } from './full-span-context.js';
 import { type GitSpanCommand, resolveGitSpanCommand } from './git-span-command.js';
 import { isRecord } from './guards.js';
 import { type ContextSpan, decodeContextDocument } from './touch-core.js';
@@ -127,31 +127,7 @@ export function createDefaultCommitInspectionExecutor(
 
 /** Render every current anchor and explanation, or reject a report beyond 64 KiB. */
 export function renderCommitInspectionContext(document: CommitInspectionContextDocument): string | null {
-  if (document.spans.length === 0) return null;
-  const sections = document.spans.map((span) => {
-    const anchors = span.anchors.map((anchor) => {
-      const location = anchor.current ?? anchor.anchored;
-      const status = anchor.status;
-      const label =
-        status.code === 'CONTENT_UNAVAILABLE'
-          ? `content unavailable: ${status.reason.toLowerCase().replaceAll('_', ' ')}`
-          : status.code.toLowerCase().replaceAll('_', ' ');
-      return {
-        path: location.path,
-        range:
-          location.extent.kind === 'whole'
-            ? { kind: 'whole-file' as const }
-            : { kind: 'range' as const, start: location.extent.start, end: location.extent.end },
-        suffix: status.code === 'FRESH' ? '' : ` — ${label}`
-      };
-    });
-    const tree = renderAnchorTree(collapseByPath(anchors));
-    return [`## ${span.name}`, ...tree, ...(span.why === null ? [] : ['', span.why])].join('\n');
-  });
-  const report = `\n<git-span>\n\n${sections.join('\n\n---\n\n')}\n\n</git-span>\n`;
-  if (Buffer.byteLength(report) > MAX_REPORT_BYTES)
-    throw new Error('complete report exceeds the 64 KiB delivery limit');
-  return report;
+  return renderFullSpanContext(document.spans, MAX_REPORT_BYTES);
 }
 
 function unavailable(selection: { repoRoot: string; commits: readonly string[] }, reason: string): string {

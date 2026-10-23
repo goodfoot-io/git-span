@@ -6742,7 +6742,7 @@ function filterTrackedEligibility(candidates, options) {
 }
 
 // packages/agent-hooks/src/common/touch-core.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import { createHash as createHash2 } from "node:crypto";
 import * as fs6 from "node:fs";
 import { dirname as dirname6, join as join6 } from "node:path";
@@ -6750,23 +6750,28 @@ import { dirname as dirname6, join as join6 } from "node:path";
 // packages/agent-hooks/src/common/delivery-presentation.ts
 var MAX_MEMO_BYTES = 256 * 1024;
 
+// packages/agent-hooks/src/common/pending-context.ts
+import { execFileSync as execFileSync5 } from "node:child_process";
+import { realpathSync as realpathSync3 } from "node:fs";
+import { isAbsolute as isAbsolute4, sep as sep2 } from "node:path";
+
 // packages/agent-hooks/src/common/touch-core.ts
 var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 
 // packages/agent-hooks/src/common/commit-inspection-context.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
+import { execFileSync as execFileSync7 } from "node:child_process";
 var MAX_NATIVE_BYTES = 16 * 1024 * 1024;
 var MAX_REPORT_BYTES = 64 * 1024;
 
 // packages/agent-hooks/src/common/commit-inspection-selection.ts
 import { execFile } from "node:child_process";
-import { existsSync as existsSync5, realpathSync as realpathSync3 } from "node:fs";
+import { existsSync as existsSync5, realpathSync as realpathSync4 } from "node:fs";
 import { resolve as resolve5 } from "node:path";
 var MAX_OUTPUT = 4 * 1024 * 1024;
 
 // packages/agent-hooks/src/common/parse-response.ts
 import { existsSync as existsSync6, statSync as statSync6 } from "node:fs";
-import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep3 } from "node:path";
 
 // packages/agent-hooks/src/common/bash-attribution.ts
 function createDefaultPlannedTouchStore(layout) {
@@ -6899,7 +6904,7 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync8, lstatSync as lstatSync2, realpathSync as realpathSync4, renameSync as renameSync5, rmSync as rmSync5 } from "node:fs";
+import { existsSync as existsSync8, lstatSync as lstatSync2, realpathSync as realpathSync5, renameSync as renameSync5, rmSync as rmSync5 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join10 } from "node:path";
 
@@ -6908,7 +6913,7 @@ import { createHash as createHash4 } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 // packages/agent-hooks/src/common/commit-contracts.ts
-import { isAbsolute as isAbsolute5 } from "node:path";
+import { isAbsolute as isAbsolute6 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-limits.ts
 var COMMIT_RECEIPT_LIMITS = {
@@ -6935,7 +6940,7 @@ function text(value, max = 4096) {
   return typeof value === "string" && value.length > 0 && value.length <= max && !value.includes("\0");
 }
 function absolute(value) {
-  return text(value) && isAbsolute5(value);
+  return text(value) && isAbsolute6(value);
 }
 function key(value) {
   return text(value, COMMIT_RECEIPT_LIMITS.identityKeyBytes) && /^[a-zA-Z0-9_-]+$/.test(value);
@@ -6992,10 +6997,10 @@ import { createHash as createHash5 } from "node:crypto";
 import { resolve as resolve7 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-git.ts
-import { isAbsolute as isAbsolute6, resolve as resolve6 } from "node:path";
+import { isAbsolute as isAbsolute7, resolve as resolve6 } from "node:path";
 function parseCommitGitInvocation(argv, cwd) {
   const reject2 = (reason) => ({ ok: false, reason });
-  if (!isAbsolute6(cwd) || argv.some((arg) => arg.includes("\0"))) return reject2("invalid Git argv or cwd");
+  if (!isAbsolute7(cwd) || argv.some((arg) => arg.includes("\0"))) return reject2("invalid Git argv or cwd");
   let effectiveCwd = cwd;
   let gitDirectory;
   let workTree;
@@ -7141,7 +7146,7 @@ import {
   unlinkSync,
   writeFileSync as writeFileSync3
 } from "node:fs";
-import { dirname as dirname8, isAbsolute as isAbsolute7, join as join9 } from "node:path";
+import { dirname as dirname8, isAbsolute as isAbsolute8, join as join9 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 // packages/agent-hooks/src/common/receipt-lock.ts
@@ -7221,7 +7226,7 @@ function identityKey(identity) {
   return createHash6("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
 }
 async function privateDirectory(path, deadline) {
-  if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
+  if (!isAbsolute8(path)) throw new Error("receipt state root must be absolute");
   if (performance.now() >= deadline) throw new Error("receipt directory phase deadline exhausted");
   mkdirSync5(path, { recursive: true, mode: 448 });
   const owner = process.getuid?.();
@@ -7371,7 +7376,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
           enrollment: existing.value
         };
       }
-      if (!lstatSync2(realpathSync4(request.cwd)).isDirectory())
+      if (!lstatSync2(realpathSync5(request.cwd)).isDirectory())
         throw new Error("effective shell cwd must be a directory");
       const originalInput = JSON.parse(JSON.stringify(request.toolInput));
       if (!isRecord(originalInput)) throw new Error("shell input is not a JSON object");
@@ -7396,7 +7401,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
       for (const context of commands) {
         const inspectedContext = inspectInput(request.toolInput, context.command);
         if (!inspectedContext.ok) throw new Error(inspectedContext.reason);
-        if (!lstatSync2(realpathSync4(context.cwd)).isDirectory())
+        if (!lstatSync2(realpathSync5(context.cwd)).isDirectory())
           throw new Error("effective shell cwd must be a directory");
         for (const observation of checkpointCommitInvocation(
           { ...valid.value, originalCommand: inspectedContext.value, cwd: context.cwd },

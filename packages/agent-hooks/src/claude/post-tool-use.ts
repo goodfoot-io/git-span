@@ -171,4 +171,4 @@ export function createHandler(
 // runs so every `git span` child inherits the env var.
 disableUpdateCheck();
 
-export default postToolUseHook({ matcher: 'Read|Edit|Write|Bash', timeout: 15_000 }, createHandler());
+export default postToolUseHook({ matcher: 'Read|Edit|Write|Bash', timeout: 40_000 }, createHandler());

@@ -955,10 +955,10 @@ import { delimiter, isAbsolute, join as join2, resolve as resolve2 } from "node:
 import { StringDecoder } from "node:string_decoder";
 function executableOnPath(name, cwd = process.cwd()) {
   const candidates = isAbsolute(name) ? [name] : (process.env.PATH ?? "").split(delimiter).map((directory) => resolve2(cwd, directory, name));
-  for (const candidate of candidates) {
+  for (const candidate2 of candidates) {
     try {
-      accessSync(candidate, constants.X_OK);
-      if (statSync2(candidate).isFile()) return realpathSync2(candidate);
+      accessSync(candidate2, constants.X_OK);
+      if (statSync2(candidate2).isFile()) return realpathSync2(candidate2);
     } catch {
     }
   }
@@ -971,12 +971,12 @@ function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git",
     const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
     for (const directory of (process.env.PATH ?? "").split(";")) {
       for (const extension of extensions) {
-        const candidate = resolve3(cwd, directory, `git-span${extension.toLowerCase()}`);
+        const candidate2 = resolve3(cwd, directory, `git-span${extension.toLowerCase()}`);
         try {
-          const executable = executableOnPath(candidate, cwd);
+          const executable = executableOnPath(candidate2, cwd);
           if (extension.toLowerCase() === ".exe" || extension.toLowerCase() === ".com")
             return { executable, argv: [...argv] };
-          return { executable: gitExecutable, argv: [`--exec-path=${dirname3(candidate)}`, "span", ...argv] };
+          return { executable: gitExecutable, argv: [`--exec-path=${dirname3(candidate2)}`, "span", ...argv] };
         } catch {
         }
       }
@@ -2499,8 +2499,8 @@ function heredocCloser(raw, open) {
   while (linePos < n) {
     const nl = raw.indexOf("\n", linePos);
     const lineEnd = nl === -1 ? n : nl;
-    const candidate = open.tabStrip ? raw.slice(linePos, lineEnd).replace(/^\t+/, "") : raw.slice(linePos, lineEnd);
-    if (candidate === open.delim || candidate.startsWith(open.delim) && /^[ \t]*$/.test(candidate.slice(open.delim.length))) {
+    const candidate2 = open.tabStrip ? raw.slice(linePos, lineEnd).replace(/^\t+/, "") : raw.slice(linePos, lineEnd);
+    if (candidate2 === open.delim || candidate2.startsWith(open.delim) && /^[ \t]*$/.test(candidate2.slice(open.delim.length))) {
       return { lineStart: linePos, lineEnd };
     }
     if (nl === -1) return null;
@@ -6540,7 +6540,7 @@ function filterTrackedEligibility(candidates, options) {
   if (cwdRepoRoot === null) {
     return {
       eligible,
-      dropped: candidates.map((candidate) => ({ candidate, reason: "outside-repository" })),
+      dropped: candidates.map((candidate2) => ({ candidate: candidate2, reason: "outside-repository" })),
       errors,
       ignoreQueryCount: 0,
       trackedQueryCount: 0
@@ -6548,19 +6548,19 @@ function filterTrackedEligibility(candidates, options) {
   }
   const inScope = [];
   const spanRoot = resolveSpanRoot(cwdRepoRoot);
-  for (const candidate of candidates) {
-    const canonicalPath = canonicalizePath(candidate.absolutePath);
+  for (const candidate2 of candidates) {
+    const canonicalPath = canonicalizePath(candidate2.absolutePath);
     const relativePath = nodePath4.relative(cwdRepoRoot, canonicalPath);
     if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${nodePath4.sep}`) || nodePath4.isAbsolute(relativePath)) {
-      dropped.push({ candidate, reason: "outside-repository" });
+      dropped.push({ candidate: candidate2, reason: "outside-repository" });
       continue;
     }
     const repoRelativePath = toPosix(relativePath);
     if (isInsideSpanRoot(repoRelativePath, spanRoot)) {
-      dropped.push({ candidate, reason: "span-metadata-path" });
+      dropped.push({ candidate: candidate2, reason: "span-metadata-path" });
       continue;
     }
-    inScope.push({ candidate, repoRoot: cwdRepoRoot, repoRelativePath });
+    inScope.push({ candidate: candidate2, repoRoot: cwdRepoRoot, repoRelativePath });
   }
   const ignoreQuery = options.queryIgnoredFiles ?? queryIgnoredFiles;
   let ignoreQueryCount = 0;
@@ -6575,17 +6575,17 @@ function filterTrackedEligibility(candidates, options) {
       repoRoot: cwdRepoRoot,
       message: error instanceof Error ? error.message : String(error)
     });
-    dropped.push(...inScope.map(({ candidate }) => ({ candidate, reason: "eligibility-query-failed" })));
-    const candidateOrder2 = new Map(candidates.map((candidate, index) => [candidate, index]));
+    dropped.push(...inScope.map(({ candidate: candidate2 }) => ({ candidate: candidate2, reason: "eligibility-query-failed" })));
+    const candidateOrder2 = new Map(candidates.map((candidate2, index) => [candidate2, index]));
     dropped.sort(
       (left, right) => (candidateOrder2.get(left.candidate) ?? 0) - (candidateOrder2.get(right.candidate) ?? 0)
     );
     return { eligible, dropped, errors, ignoreQueryCount, trackedQueryCount: 0 };
   }
   const normalizedIgnored = new Set([...ignored].map(toPosix));
-  const eligibleForMembership = inScope.filter(({ candidate, repoRelativePath }) => {
+  const eligibleForMembership = inScope.filter(({ candidate: candidate2, repoRelativePath }) => {
     if (!normalizedIgnored.has(repoRelativePath)) return true;
-    dropped.push({ candidate, reason: "ignored-path" });
+    dropped.push({ candidate: candidate2, reason: "ignored-path" });
     return false;
   });
   const byRepo = /* @__PURE__ */ new Map();
@@ -6608,7 +6608,7 @@ function filterTrackedEligibility(candidates, options) {
         repoRoot,
         message: error instanceof Error ? error.message : String(error)
       });
-      dropped.push(...group.map(({ candidate }) => ({ candidate, reason: "eligibility-query-failed" })));
+      dropped.push(...group.map(({ candidate: candidate2 }) => ({ candidate: candidate2, reason: "eligibility-query-failed" })));
       continue;
     }
     const normalizedTracked = new Set([...tracked].map(toPosix));
@@ -6617,14 +6617,14 @@ function filterTrackedEligibility(candidates, options) {
       else dropped.push({ candidate: scoped.candidate, reason: "untracked-path" });
     }
   }
-  const candidateOrder = new Map(candidates.map((candidate, index) => [candidate, index]));
+  const candidateOrder = new Map(candidates.map((candidate2, index) => [candidate2, index]));
   eligible.sort((left, right) => (candidateOrder.get(left) ?? 0) - (candidateOrder.get(right) ?? 0));
   dropped.sort((left, right) => (candidateOrder.get(left.candidate) ?? 0) - (candidateOrder.get(right.candidate) ?? 0));
   return { eligible, dropped, errors, ignoreQueryCount, trackedQueryCount };
 }
 
 // packages/agent-hooks/src/common/touch-core.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import { createHash as createHash2 } from "node:crypto";
 import * as fs5 from "node:fs";
 import { dirname as dirname6, join as join6 } from "node:path";
@@ -6719,6 +6719,355 @@ function recordSnapshots(surfaced, updates) {
   }
 }
 
+// packages/agent-hooks/src/common/pending-context.ts
+import { execFileSync as execFileSync5 } from "node:child_process";
+import { realpathSync as realpathSync3 } from "node:fs";
+import { isAbsolute as isAbsolute4, sep as sep2 } from "node:path";
+
+// packages/agent-hooks/src/common/anchor-tree.ts
+function collapseByPath(rows) {
+  const anchors = [];
+  const byPath = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    let anchor = byPath.get(row.path);
+    if (!anchor) {
+      anchor = { path: row.path, ranges: [] };
+      byPath.set(row.path, anchor);
+      anchors.push(anchor);
+    }
+    anchor.ranges.push({ range: row.range, suffix: row.suffix });
+  }
+  return anchors;
+}
+function splitSegments(path) {
+  const dirs = path.split("/");
+  const leaf = dirs.pop();
+  if (leaf === void 0 || leaf.length === 0 || dirs.some((segment) => segment.length === 0)) return null;
+  return { dirs, leaf };
+}
+function findOrCreateDir(parent, name) {
+  for (const child of parent.children) {
+    if (child.kind === "dir" && child.name === name) return child;
+  }
+  const node = { kind: "dir", name, children: [] };
+  parent.children.push(node);
+  return node;
+}
+function insertAnchor(root, { dirs, leaf }, anchor) {
+  let cur = root;
+  for (const dir of dirs) {
+    cur = findOrCreateDir(cur, dir);
+  }
+  cur.children.push({ kind: "leaf", name: leaf, anchor });
+}
+function buildForest(anchors) {
+  const root = { kind: "dir", name: "", children: [] };
+  for (const anchor of anchors) {
+    const segments = splitSegments(anchor.path);
+    if (segments === null) {
+      root.children.push({ kind: "leaf", name: anchor.path, anchor });
+      continue;
+    }
+    insertAnchor(root, segments, anchor);
+  }
+  return root.children;
+}
+function foldChain(node) {
+  let name = node.name;
+  let cur = node;
+  while (cur.kind === "dir") {
+    const [child, ...siblings] = cur.children;
+    if (child === void 0 || siblings.length > 0) break;
+    name = `${name}/${child.name}`;
+    cur = child;
+  }
+  return { name, node: cur };
+}
+function rangeRank(range) {
+  switch (range.kind) {
+    case "whole-file":
+      return 0;
+    case "range":
+      return 1;
+  }
+}
+function compareRangeEntries(a, b) {
+  const rank = rangeRank(a.range) - rangeRank(b.range);
+  if (rank !== 0) return rank;
+  if (a.range.kind === "range" && b.range.kind === "range") {
+    return a.range.start - b.range.start || a.range.end - b.range.end;
+  }
+  return 0;
+}
+function labelFor(range, sole) {
+  switch (range.kind) {
+    case "range":
+      return `#L${range.start}-L${range.end}`;
+    case "whole-file":
+      return sole ? null : "(whole file)";
+  }
+}
+var cachedSegmenter;
+function graphemeSegmenter() {
+  if (cachedSegmenter === void 0) {
+    try {
+      cachedSegmenter = { value: new Intl.Segmenter("en", { granularity: "grapheme" }) };
+    } catch {
+      cachedSegmenter = { value: null };
+    }
+  }
+  return cachedSegmenter.value;
+}
+var WIDE_RANGES = [
+  [4352, 4447],
+  [9001, 9002],
+  [9728, 10175],
+  [11904, 12350],
+  [12353, 13311],
+  [13312, 19903],
+  [19968, 40959],
+  [40960, 42191],
+  [43360, 43391],
+  [44032, 55203],
+  [63744, 64255],
+  [65040, 65049],
+  [65072, 65135],
+  [65280, 65376],
+  [65504, 65510],
+  [94208, 101119],
+  [127462, 127487],
+  [127744, 128591],
+  [128640, 128767],
+  [129280, 129535],
+  [129648, 129791],
+  [131072, 196605],
+  [196608, 262141]
+];
+function isWideCodePoint(cp) {
+  for (const [lo, hi] of WIDE_RANGES) {
+    if (cp < lo) return false;
+    if (cp <= hi) return true;
+  }
+  return false;
+}
+function displayWidth(name) {
+  const segmenter = graphemeSegmenter();
+  let width = 0;
+  if (segmenter === null) {
+    for (const codePoint of name) {
+      width += isWideCodePoint(codePoint.codePointAt(0) ?? 0) ? 2 : 1;
+    }
+    return width;
+  }
+  for (const { segment } of segmenter.segment(name)) {
+    width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
+  }
+  return width;
+}
+var MAX_ALIGN_COLUMN = 48;
+function computeGroupTarget(items) {
+  let max = 0;
+  for (const item of items) {
+    if (item.node.kind === "leaf" && printsRangeColumn(item.node.anchor)) {
+      max = Math.max(max, displayWidth(item.name));
+    }
+  }
+  return max > MAX_ALIGN_COLUMN ? 0 : max;
+}
+function printsRangeColumn(anchor) {
+  const { ranges } = anchor;
+  if (ranges.length === 0) return false;
+  return ranges.some((entry) => labelFor(entry.range, ranges.length === 1) !== null);
+}
+function computePad(nameWidth, target) {
+  if (nameWidth >= target) return " ";
+  return " ".repeat(target - nameWidth + 1);
+}
+function renderLeafLines(name, anchor, ownPrefix, childPrefix, groupTarget) {
+  const { ranges } = anchor;
+  if (ranges.length === 0) return [`${ownPrefix}${name}`];
+  const sorted = [...ranges].sort(compareRangeEntries);
+  const sole = sorted.length === 1;
+  const nameWidth = displayWidth(name);
+  const pad = computePad(nameWidth, groupTarget);
+  const blank = " ".repeat(nameWidth + pad.length);
+  return sorted.map((entry, i) => {
+    const label = labelFor(entry.range, sole);
+    if (label === null) return `${ownPrefix}${name}${entry.suffix}`;
+    const base = i === 0 ? `${ownPrefix}${name}${pad}` : `${childPrefix}${blank}`;
+    return `${base}${label}${entry.suffix}`;
+  });
+}
+function renderNodes(nodes, prefix) {
+  const lines = [];
+  const items = nodes.map(foldChain);
+  const groupTarget = computeGroupTarget(items);
+  items.forEach((item, i) => {
+    const isLast = i === items.length - 1;
+    const ownPrefix = `${prefix}${isLast ? "\u2514\u2500 " : "\u251C\u2500 "}`;
+    const childPrefix = `${prefix}${isLast ? "   " : "\u2502  "}`;
+    if (item.node.kind === "leaf") {
+      lines.push(...renderLeafLines(item.name, item.node.anchor, ownPrefix, childPrefix, groupTarget));
+    } else {
+      lines.push(`${ownPrefix}${item.name}/`);
+      lines.push(...renderNodes(item.node.children, childPrefix));
+    }
+  });
+  return lines;
+}
+function renderAnchorTree(anchors) {
+  const forest = buildForest(anchors);
+  return renderNodes(forest, "");
+}
+
+// packages/agent-hooks/src/common/full-span-context.ts
+function renderFullSpanContext(spans, maxBytes) {
+  const unique = new Map(spans.map((span) => [span.name, span]));
+  if (unique.size === 0) return null;
+  const sections = [...unique.values()].map((span) => {
+    const anchors = collapseByPath(
+      span.anchors.map((anchor) => {
+        const location = anchor.current ?? anchor.anchored;
+        const status = anchor.status;
+        const label = status.code === "CONTENT_UNAVAILABLE" ? `content unavailable: ${humanStatusLabel(status.reason)}` : humanStatusLabel(status.code);
+        return {
+          path: location.path.replace(new RegExp("\\p{Cc}", "gu"), (character) => JSON.stringify(character).slice(1, -1)),
+          range: location.extent.kind === "whole" ? { kind: "whole-file" } : { kind: "range", start: location.extent.start, end: location.extent.end },
+          suffix: status.code === "FRESH" ? "" : ` \u2014 ${label}`
+        };
+      })
+    );
+    return `## ${span.name}
+${renderAnchorTree(anchors).join("\n")}${span.why === null ? "" : `
+
+${span.why}`}`;
+  });
+  const output = `
+<git-span>
+
+${sections.join("\n\n---\n\n")}
+
+</git-span>
+`;
+  if (Buffer.byteLength(output) > maxBytes) throw new Error("complete span context exceeds the rendered byte limit");
+  return output;
+}
+
+// packages/agent-hooks/src/common/pending-context.ts
+function hasExpansion(text) {
+  let quote = null;
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (quote === "'") {
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (character === "\\") {
+      if (text[index + 1] === "\n" || text[index + 1] === "\r") return true;
+      index++;
+      continue;
+    }
+    if (character === quote) {
+      quote = null;
+      continue;
+    }
+    if (quote === null && (character === "'" || character === '"')) {
+      if (text[index + 1] === character) return true;
+      quote = character;
+      continue;
+    }
+    if (character === "$" || character === "`") return true;
+    if (quote === null && character !== void 0 && "*?[]{}~&;|<>".includes(character)) return true;
+  }
+  return false;
+}
+function candidate(text) {
+  const words = tokenize(text)?.map((token) => token.text) ?? [];
+  let index = 0;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] ?? "")) index++;
+  if (words[index] === "env") index++;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] ?? "")) index++;
+  if (words[index] !== "git") return false;
+  index++;
+  for (; index < words.length; index++) {
+    const word = words[index];
+    if (word === "-C" || word === "-c" || word === "--git-dir" || word === "--work-tree" || word === "--config-env" || word === "--exec-path" || word === "--namespace" || word === "--super-prefix") {
+      index++;
+      continue;
+    }
+    if (word?.startsWith("-") === true) continue;
+    return word === "status" || word === "diff";
+  }
+  return false;
+}
+function parsePendingInspection(command, cwd) {
+  const split = splitTopLevel(command);
+  if (!split.stages.some((stage2) => candidate(stage2.text))) return { kind: "none" };
+  const unsupported = (reason) => ({ kind: "unsupported", reason });
+  if (Buffer.byteLength(command) > 64 * 1024) return unsupported("command exceeds the pending-inspection size limit");
+  const stage = split.stages[0];
+  if (split.malformed !== void 0 || split.stages.length !== 1 || stage === void 0 || stage.precededBy !== "start" || stage.heredoc === true)
+    return unsupported("pending inspections require one literal simple Git command");
+  const tokens = tokenize(stage.text);
+  if (tokens === null || tokens.some((token) => token.isRedirect) || hasExpansion(command))
+    return unsupported("shell expansion and redirection are unsupported for pending inspections");
+  const words = tokens.map((token) => token.text);
+  if (words[0] !== "git" || !isAbsolute4(cwd)) return unsupported("pending inspection execution context is unavailable");
+  let effectiveCwd = cwd;
+  let index = 1;
+  for (; index < words.length; index++) {
+    const word = words[index];
+    if (word === "--no-pager" || word === "-P") continue;
+    if (word === "-C" || word?.startsWith("-C") === true) {
+      const target = word === "-C" ? words[++index] : word.slice(2);
+      if (target === void 0) return unsupported("missing Git -C directory");
+      if (target !== "") {
+        try {
+          effectiveCwd = realpathSync3.native(
+            isAbsolute4(target) ? target : `${realpathSync3.native(effectiveCwd)}${sep2}${target}`
+          );
+        } catch {
+          return unsupported("Git -C directory is unavailable");
+        }
+      }
+      continue;
+    }
+    break;
+  }
+  const builtin = words[index];
+  if (builtin !== "status" && builtin !== "diff") return unsupported("unsupported Git global options or command form");
+  return { kind: "inspection", inspection: { cwd: effectiveCwd, command: builtin, args: words.slice(index + 1) } };
+}
+function renderPendingContext(document, maxBytes = 256 * 1024) {
+  return renderFullSpanContext(document.spans, maxBytes);
+}
+function createDefaultPendingContextExecutor(timeoutMs = 3e4) {
+  return async (inspection) => {
+    try {
+      const command = resolveGitSpanCommand(
+        ["pending-context", inspection.command, "--", ...inspection.args],
+        inspection.cwd
+      );
+      const stdout = execFileSync5(command.executable, command.argv, {
+        cwd: inspection.cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: timeoutMs,
+        maxBuffer: 16 * 1024 * 1024 + 1,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }
+      });
+      const document = decodeContextDocument(stdout);
+      if (document.scopes.length !== 0 || document.spans.some((span) => span.overlaps.length !== 0) || Object.values(document.mutation).some((value) => value !== false && value !== 0))
+        throw new Error("pending context returned non-selection scopes or mutation evidence");
+      return { ok: true, document };
+    } catch (error) {
+      const stderr = error !== null && typeof error === "object" && "stderr" in error ? error.stderr : void 0;
+      const detail = typeof stderr === "string" ? stderr.trim() : Buffer.isBuffer(stderr) ? stderr.toString("utf8").trim() : "";
+      return { ok: false, reason: detail || (error instanceof Error ? error.message : String(error)) };
+    }
+  };
+}
+
 // packages/agent-hooks/src/common/touch-core.ts
 function toNeedleLines(written) {
   if (written.length === 0) return [];
@@ -6798,7 +7147,7 @@ function realPaths(cache, cwd) {
       const capture = (args) => {
         try {
           const command = args[0] === "span" ? resolveGitSpanCommand(args.slice(1), repoRoot) : { executable: "git", argv: args };
-          return execFileSync5(command.executable, command.argv, {
+          return execFileSync6(command.executable, command.argv, {
             cwd: repoRoot,
             encoding: "utf8",
             stdio: ["ignore", "pipe", "pipe"],
@@ -6833,7 +7182,7 @@ function changedOnDisk(cache, cwd) {
     if (repoRoot !== null) {
       const rels = cache.changedCandidates.map((p) => relativeToRepo(repoRoot, p));
       try {
-        const out = execFileSync5("git", ["status", "--porcelain", "-z", "--untracked-files=no", "--", ...rels], {
+        const out = execFileSync6("git", ["status", "--porcelain", "-z", "--untracked-files=no", "--", ...rels], {
           cwd: repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -7398,6 +7747,7 @@ async function runTouchHooks(inputs, executors, memo, invocationId, probeCache, 
 var DEFAULT_TIMEOUT_MS = 5e3;
 function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
   const executors = {
+    pendingContext: createDefaultPendingContextExecutor(),
     context: async (request) => {
       const started = performance.now();
       const args = ["context", ...request.addresses, "--format", "json"];
@@ -7405,7 +7755,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
       let stdout;
       try {
         const command = resolveGitSpanCommand(args, request.repoRoot);
-        stdout = execFileSync5(command.executable, command.argv, {
+        stdout = execFileSync6(command.executable, command.argv, {
           cwd: request.repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -7797,205 +8147,7 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
 }
 
 // packages/agent-hooks/src/common/commit-inspection-context.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
-
-// packages/agent-hooks/src/common/anchor-tree.ts
-function collapseByPath(rows) {
-  const anchors = [];
-  const byPath = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    let anchor = byPath.get(row.path);
-    if (!anchor) {
-      anchor = { path: row.path, ranges: [] };
-      byPath.set(row.path, anchor);
-      anchors.push(anchor);
-    }
-    anchor.ranges.push({ range: row.range, suffix: row.suffix });
-  }
-  return anchors;
-}
-function splitSegments(path) {
-  const dirs = path.split("/");
-  const leaf = dirs.pop();
-  if (leaf === void 0 || leaf.length === 0 || dirs.some((segment) => segment.length === 0)) return null;
-  return { dirs, leaf };
-}
-function findOrCreateDir(parent, name) {
-  for (const child of parent.children) {
-    if (child.kind === "dir" && child.name === name) return child;
-  }
-  const node = { kind: "dir", name, children: [] };
-  parent.children.push(node);
-  return node;
-}
-function insertAnchor(root, { dirs, leaf }, anchor) {
-  let cur = root;
-  for (const dir of dirs) {
-    cur = findOrCreateDir(cur, dir);
-  }
-  cur.children.push({ kind: "leaf", name: leaf, anchor });
-}
-function buildForest(anchors) {
-  const root = { kind: "dir", name: "", children: [] };
-  for (const anchor of anchors) {
-    const segments = splitSegments(anchor.path);
-    if (segments === null) {
-      root.children.push({ kind: "leaf", name: anchor.path, anchor });
-      continue;
-    }
-    insertAnchor(root, segments, anchor);
-  }
-  return root.children;
-}
-function foldChain(node) {
-  let name = node.name;
-  let cur = node;
-  while (cur.kind === "dir") {
-    const [child, ...siblings] = cur.children;
-    if (child === void 0 || siblings.length > 0) break;
-    name = `${name}/${child.name}`;
-    cur = child;
-  }
-  return { name, node: cur };
-}
-function rangeRank(range) {
-  switch (range.kind) {
-    case "whole-file":
-      return 0;
-    case "range":
-      return 1;
-  }
-}
-function compareRangeEntries(a, b) {
-  const rank = rangeRank(a.range) - rangeRank(b.range);
-  if (rank !== 0) return rank;
-  if (a.range.kind === "range" && b.range.kind === "range") {
-    return a.range.start - b.range.start || a.range.end - b.range.end;
-  }
-  return 0;
-}
-function labelFor(range, sole) {
-  switch (range.kind) {
-    case "range":
-      return `#L${range.start}-L${range.end}`;
-    case "whole-file":
-      return sole ? null : "(whole file)";
-  }
-}
-var cachedSegmenter;
-function graphemeSegmenter() {
-  if (cachedSegmenter === void 0) {
-    try {
-      cachedSegmenter = { value: new Intl.Segmenter("en", { granularity: "grapheme" }) };
-    } catch {
-      cachedSegmenter = { value: null };
-    }
-  }
-  return cachedSegmenter.value;
-}
-var WIDE_RANGES = [
-  [4352, 4447],
-  [9001, 9002],
-  [9728, 10175],
-  [11904, 12350],
-  [12353, 13311],
-  [13312, 19903],
-  [19968, 40959],
-  [40960, 42191],
-  [43360, 43391],
-  [44032, 55203],
-  [63744, 64255],
-  [65040, 65049],
-  [65072, 65135],
-  [65280, 65376],
-  [65504, 65510],
-  [94208, 101119],
-  [127462, 127487],
-  [127744, 128591],
-  [128640, 128767],
-  [129280, 129535],
-  [129648, 129791],
-  [131072, 196605],
-  [196608, 262141]
-];
-function isWideCodePoint(cp) {
-  for (const [lo, hi] of WIDE_RANGES) {
-    if (cp < lo) return false;
-    if (cp <= hi) return true;
-  }
-  return false;
-}
-function displayWidth(name) {
-  const segmenter = graphemeSegmenter();
-  let width = 0;
-  if (segmenter === null) {
-    for (const codePoint of name) {
-      width += isWideCodePoint(codePoint.codePointAt(0) ?? 0) ? 2 : 1;
-    }
-    return width;
-  }
-  for (const { segment } of segmenter.segment(name)) {
-    width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
-  }
-  return width;
-}
-var MAX_ALIGN_COLUMN = 48;
-function computeGroupTarget(items) {
-  let max = 0;
-  for (const item of items) {
-    if (item.node.kind === "leaf" && printsRangeColumn(item.node.anchor)) {
-      max = Math.max(max, displayWidth(item.name));
-    }
-  }
-  return max > MAX_ALIGN_COLUMN ? 0 : max;
-}
-function printsRangeColumn(anchor) {
-  const { ranges } = anchor;
-  if (ranges.length === 0) return false;
-  return ranges.some((entry) => labelFor(entry.range, ranges.length === 1) !== null);
-}
-function computePad(nameWidth, target) {
-  if (nameWidth >= target) return " ";
-  return " ".repeat(target - nameWidth + 1);
-}
-function renderLeafLines(name, anchor, ownPrefix, childPrefix, groupTarget) {
-  const { ranges } = anchor;
-  if (ranges.length === 0) return [`${ownPrefix}${name}`];
-  const sorted = [...ranges].sort(compareRangeEntries);
-  const sole = sorted.length === 1;
-  const nameWidth = displayWidth(name);
-  const pad = computePad(nameWidth, groupTarget);
-  const blank = " ".repeat(nameWidth + pad.length);
-  return sorted.map((entry, i) => {
-    const label = labelFor(entry.range, sole);
-    if (label === null) return `${ownPrefix}${name}${entry.suffix}`;
-    const base = i === 0 ? `${ownPrefix}${name}${pad}` : `${childPrefix}${blank}`;
-    return `${base}${label}${entry.suffix}`;
-  });
-}
-function renderNodes(nodes, prefix) {
-  const lines = [];
-  const items = nodes.map(foldChain);
-  const groupTarget = computeGroupTarget(items);
-  items.forEach((item, i) => {
-    const isLast = i === items.length - 1;
-    const ownPrefix = `${prefix}${isLast ? "\u2514\u2500 " : "\u251C\u2500 "}`;
-    const childPrefix = `${prefix}${isLast ? "   " : "\u2502  "}`;
-    if (item.node.kind === "leaf") {
-      lines.push(...renderLeafLines(item.name, item.node.anchor, ownPrefix, childPrefix, groupTarget));
-    } else {
-      lines.push(`${ownPrefix}${item.name}/`);
-      lines.push(...renderNodes(item.node.children, childPrefix));
-    }
-  });
-  return lines;
-}
-function renderAnchorTree(anchors) {
-  const forest = buildForest(anchors);
-  return renderNodes(forest, "");
-}
-
-// packages/agent-hooks/src/common/commit-inspection-context.ts
+import { execFileSync as execFileSync7 } from "node:child_process";
 var MAX_NATIVE_BYTES = 16 * 1024 * 1024;
 var MAX_REPORT_BYTES = 64 * 1024;
 var MAX_COMMITS = 4096;
@@ -8062,7 +8214,7 @@ function createDefaultCommitInspectionExecutor(resolveCommand = resolveGitSpanCo
       if (!Number.isFinite(request.timeoutMs) || request.timeoutMs <= 0)
         throw new Error("inspection deadline exhausted");
       const command = resolveCommand(["commit-context", ...request.commits], request.repoRoot);
-      const stdout = execFileSync6(command.executable, command.argv, {
+      const stdout = execFileSync7(command.executable, command.argv, {
         cwd: request.repoRoot,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -8076,31 +8228,7 @@ function createDefaultCommitInspectionExecutor(resolveCommand = resolveGitSpanCo
   };
 }
 function renderCommitInspectionContext(document) {
-  if (document.spans.length === 0) return null;
-  const sections = document.spans.map((span) => {
-    const anchors = span.anchors.map((anchor) => {
-      const location = anchor.current ?? anchor.anchored;
-      const status = anchor.status;
-      const label = status.code === "CONTENT_UNAVAILABLE" ? `content unavailable: ${status.reason.toLowerCase().replaceAll("_", " ")}` : status.code.toLowerCase().replaceAll("_", " ");
-      return {
-        path: location.path,
-        range: location.extent.kind === "whole" ? { kind: "whole-file" } : { kind: "range", start: location.extent.start, end: location.extent.end },
-        suffix: status.code === "FRESH" ? "" : ` \u2014 ${label}`
-      };
-    });
-    const tree = renderAnchorTree(collapseByPath(anchors));
-    return [`## ${span.name}`, ...tree, ...span.why === null ? [] : ["", span.why]].join("\n");
-  });
-  const report = `
-<git-span>
-
-${sections.join("\n\n---\n\n")}
-
-</git-span>
-`;
-  if (Buffer.byteLength(report) > MAX_REPORT_BYTES)
-    throw new Error("complete report exceeds the 64 KiB delivery limit");
-  return report;
+  return renderFullSpanContext(document.spans, MAX_REPORT_BYTES);
 }
 function unavailable(selection, reason) {
   const command = [
@@ -8139,7 +8267,7 @@ async function runCommitInspectionContext(selection, deadlineMs, executor = crea
 
 // packages/agent-hooks/src/common/commit-inspection-selection.ts
 import { execFile } from "node:child_process";
-import { existsSync as existsSync5, realpathSync as realpathSync3 } from "node:fs";
+import { existsSync as existsSync5, realpathSync as realpathSync4 } from "node:fs";
 import { resolve as resolve5 } from "node:path";
 var MAX_COMMITS2 = 4096;
 var MAX_OUTPUT = 4 * 1024 * 1024;
@@ -8480,7 +8608,7 @@ async function resolveCommitInspection(command, cwd) {
     if (discovery.length !== 2 || discovery[0] === void 0 || discovery[1] === void 0) {
       return { kind: "failed", reason: "Repository discovery returned ambiguous paths" };
     }
-    const repoRoot = realpathSync3(discovery[0]);
+    const repoRoot = realpathSync4(discovery[0]);
     if (existsSync5(resolve5(invocation.cwd, discovery[1]))) return { kind: "unsupported", recognized: true };
     const replacements = await runGit(repoRoot, ["for-each-ref", "--format=%(refname)", "refs/replace/"], deadline);
     if (replacements.trim() !== "") return { kind: "unsupported", recognized: true };
@@ -8533,7 +8661,7 @@ async function resolveCommitInspection(command, cwd) {
 
 // packages/agent-hooks/src/common/parse-response.ts
 import { existsSync as existsSync6, statSync as statSync6 } from "node:fs";
-import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep3 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
 var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
 var VALUE_SHORT_FLAGS = /* @__PURE__ */ new Set(["A", "B", "C", "e", "f", "m", "g", "t", "T"]);
@@ -8851,10 +8979,10 @@ function detectLayout(stdout, info, oneFileEligible) {
   if (info.numbered && /^[^:]+$/.test(first)) return "heading";
   return null;
 }
-function parseRecord(line, sep4) {
-  const first = line.indexOf(sep4);
+function parseRecord(line, sep5) {
+  const first = line.indexOf(sep5);
   if (first === -1) return null;
-  const second = line.indexOf(sep4, first + 1);
+  const second = line.indexOf(sep5, first + 1);
   if (second === -1) return null;
   const path = line.slice(0, first);
   const lineToken = line.slice(first + 1, second);
@@ -8953,7 +9081,7 @@ function decodeSearchLayout(layout, stdout, singleFileArg) {
 }
 function insideRoot(abs, roots) {
   for (const root of roots) {
-    if (abs === root || abs.startsWith(root + sep2)) return true;
+    if (abs === root || abs.startsWith(root + sep3)) return true;
   }
   return false;
 }
@@ -9439,6 +9567,36 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
   const parserStarted = performance.now();
   const claimed = toolUseId === void 0 ? { status: "missing" } : store.take(sessionId, toolUseId);
   if (claimed.status === "consumed") return [];
+  const pending2 = parsePendingInspection(command, cwd);
+  if (pending2.kind === "unsupported")
+    logger2.warn("git-span pending inspection unsupported", { reason: pending2.reason });
+  if (pending2.kind === "inspection") {
+    const exit = bashResponseExitCode(toolResponse);
+    if (isRecord(toolResponse) && toolResponse.exitStatusInferred === true || bashResponseInterrupted(toolResponse) || exit !== void 0 && exit !== 0 && !(pending2.inspection.command === "diff" && exit === 1)) {
+      logger2.info?.("git-span pending inspection skipped", { reason: "failed or interrupted invocation" });
+      return [];
+    }
+    const unavailable2 = (reason) => {
+      logger2.warn("git-span pending inspection unavailable", { reason });
+      const detail = reason.replace(new RegExp("\\p{Cc}", "gu"), " ").slice(0, 1024);
+      return [`
+[git-span] Complete pending context unavailable: ${detail}
+`];
+    };
+    try {
+      if (executors.pendingContext === void 0) return unavailable2("pending-context executor is unavailable");
+      const result = await executors.pendingContext(pending2.inspection);
+      if (!result.ok) return unavailable2(result.reason);
+      const block = renderPendingContext(result.document);
+      logger2.info?.("git-span pending inspection complete", {
+        selectedSpanCount: result.document.spans.length,
+        empty: block === null
+      });
+      return block === null ? [] : [block];
+    } catch (error) {
+      return unavailable2(error instanceof Error ? error.message : String(error));
+    }
+  }
   const record2 = claimed.status === "record" ? claimed.record : null;
   let commitNotice = null;
   let suppressCommitReads = false;
@@ -9501,7 +9659,7 @@ Git span commit context unavailable: ${reason.replace(new RegExp("\\p{Cc}", "gu"
     }
   }
   const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
-  const responseSpans = response === null || suppressCommitReads ? [] : parseResponse({ command, cwd, ...response });
+  const responseSpans = response === null || suppressCommitReads || pending2.kind === "unsupported" ? [] : parseResponse({ command, cwd, ...response });
   const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
   const parserLatencyMs = performance.now() - parserStarted;
   const touchStarted = performance.now();
@@ -9559,7 +9717,10 @@ Git span commit context unavailable: ${reason.replace(new RegExp("\\p{Cc}", "gu"
 function failureBashResponse(input) {
   const record2 = isRecord(input) ? input : {};
   const response = isRecord(record2.tool_response) ? { ...record2.tool_response } : {};
-  if (integerExitStatus(response) === void 0) response.exitStatus = 1;
+  if (integerExitStatus(response) === void 0) {
+    response.exitStatus = 1;
+    response.exitStatusInferred = true;
+  }
   if (record2.is_interrupt === true) response.is_interrupt = true;
   return response;
 }
@@ -9660,7 +9821,7 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
   };
 }
 disableUpdateCheck();
-var post_tool_use_default = postToolUseHook({ matcher: "run_command", timeout: 1e4 }, createHandler());
+var post_tool_use_default = postToolUseHook({ matcher: "run_command", timeout: 4e4 }, createHandler());
 
 // packages/agent-hooks/src/antigravity/post-tool-use-entry.ts
 execute(post_tool_use_default);

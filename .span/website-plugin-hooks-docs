@@ -3,7 +3,7 @@ packages/website/content/docs/agent-integration.mdx#L63-L71 rk64:bd3cb24b3d0807d
 packages/website/content/docs/concepts.mdx#L47-L56 rk64:3d7671389139746c
 packages/website/content/docs/overview.mdx#L30-L35 rk64:3dbf3a7db573782e
 packages/website/content/docs/reference.mdx#L43-L48 rk64:67785d03f89843be
-plugins-claude/git-span/hooks/hooks.json rk64:303fe13cfaba3930
-plugins-codex/git-span/hooks/hooks.json rk64:b003052559c242b6
+plugins-claude/git-span/hooks/hooks.json rk64:4299beaf582fa6c0
+plugins-codex/git-span/hooks/hooks.json rk64:71e6fd42f6ffc752
 
 The Claude and Codex hook manifests are authoritative for runtime event coverage, and the website preserves their shared user-facing behavior while naming intentional harness differences.

@@ -1,5 +1,5 @@
 packages/git-span/src/cli/drift_output.rs#L110-L117 rk64:cad4ab94d8a3157c
-packages/git-span/src/cli/mod.rs#L635-L641 rk64:1de67706c452371b
+packages/git-span/src/cli/mod.rs#L657-L663 rk64:1de67706c452371b
 packages/git-span/src/perf.rs#L58-L78 rk64:4869199ff56b4552
 packages/git-span/src/perf.rs#L95-L167 rk64:5d14232b5861c0bf
 packages/git-span/src/perf.rs#L443-L452 rk64:338b99dcb9b1af57
@@ -13,7 +13,7 @@ packages/git-span/src/resolver/exact/mod.rs#L852-L985 rk64:7a416c813a2ee65e
 packages/git-span/src/resolver/store/maintenance.rs#L7-L8 rk64:8f13f3a6fc9629bf
 packages/git-span/src/resolver/store/maintenance.rs#L55-L96 rk64:8a1a078b5be3b74e
 packages/git-span/src/resolver/store/mod.rs#L1-L21 rk64:5d336aa16cf49b87
-wiki/guides/profiling-git-span-drift.md#L43-L65 rk64:184ecf98d91c160b
+wiki/guides/profiling-git-span-drift.md#L43-L65 rk64:eebdb033124e0dab
 wiki/guides/profiling-git-span-drift.md#L94-L195 rk64:bc1f7ff6c4475c85
 
 The guide's trace schema, result-store diagnostics, and immutable counters describe the CLI emitters and storage behavior, including the shared sixteen-admission maintenance schedule, success-only reset, entry-triggered reconciliation, and immediate publication overlay narrowing; immutable counters reset and emit once per external resolver invocation across store hits, fallback, and errors, with separate pre-fix and post-fix resolve totals.

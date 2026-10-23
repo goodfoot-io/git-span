@@ -44,7 +44,7 @@
           {
             "type": "command",
             "command": "node \"./bin/post-tool-use.mjs\"",
-            "timeout": 10
+            "timeout": 40
           }
         ]
       }

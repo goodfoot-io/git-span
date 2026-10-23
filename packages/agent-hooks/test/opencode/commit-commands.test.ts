@@ -1,8 +1,8 @@
-/** Commit, push and status calls traverse the real plugin without commit-time span work. */
+/** Commit and push remain advisory while status delivers full pending span context. */
 import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { delimiter, join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { assemblePlugin } from '../../src/opencode/index.js';
 import { present } from '../helpers.js';
 import { addLineSpan, buildWorkspaceGitSpan, commitRepo, makeRealBundleRepo } from '../real-bundle-helpers.js';
@@ -10,11 +10,17 @@ import { makeTempLayout } from '../session-layout-helpers.js';
 
 describe('opencode commit commands', () => {
   let pathDir: string;
+  const previousPath = process.env.PATH;
   beforeAll(() => {
     pathDir = buildWorkspaceGitSpan().pathDir;
+    process.env.PATH = `${pathDir}${delimiter}${previousPath ?? ''}`;
   }, 600_000);
+  afterAll(() => {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  });
   it.each(['git commit -m change', 'git push', 'git status'])(
-    'allows %s without span context or report state',
+    'preserves %s execution and supplies pending context only for status',
     async (command) => {
       const repo = makeRealBundleRepo(pathDir);
       const temp = makeTempLayout();
@@ -49,7 +55,11 @@ describe('opencode commit commands', () => {
           { ...input, args: before.args },
           after
         );
-        expect(after.output).toBe('original result');
+        if (command === 'git status') {
+          expect(after.output).toContain('original result');
+          expect(after.output).toContain('## test/changed-anchor');
+          expect(after.output).toMatch(/tracked\.ts\s*#L1-L1 — changed/);
+        } else expect(after.output).toBe('original result');
         expect(warnings).toEqual([]);
         await present(hooks.dispose, 'the dispose hook')();
       } finally {

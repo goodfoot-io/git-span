@@ -1,5 +1,9 @@
+packages/git-span/src/cli/mod.rs#L89-L91 rk64:ed1c8e643bdc219c
 packages/git-span/src/cli/mod.rs#L153-L155 rk64:ed1c8e643bdc219c
+packages/git-span/src/cli/mod.rs#L171-L178 rk64:d67bf9a2a42f53db
 packages/git-span/src/cli/mod.rs#L246-L253 rk64:d67bf9a2a42f53db
+packages/git-span/src/cli/mod.rs#L446-L458 rk64:a90b98969eb919da
+packages/git-span/src/cli/mod.rs#L461-L473 rk64:c2db2ae33c75af7e
 packages/git-span/src/cli/mod.rs#L532-L544 rk64:a90b98969eb919da
 packages/git-span/src/cli/mod.rs#L547-L559 rk64:c2db2ae33c75af7e
 packages/git-span/src/update_check/suppress.rs#L1-L20 rk64:9b6c3cda56dc252d
