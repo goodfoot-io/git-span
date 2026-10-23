@@ -37,6 +37,7 @@ import {
 } from '../common/agent-hooks-common.js';
 import { runApplyPatchTouches } from '../common/apply-patch-touch.js';
 import { createDefaultPlannedTouchStore, runLayeredBashTouches } from '../common/bash-attribution.js';
+import type { CommitInspectionContextExecutor } from '../common/commit-inspection-context.js';
 import { isRecord } from '../common/guards.js';
 import { createDiskMemoStore, type MemoFactory, type MemoLogger } from '../common/span-surface.js';
 import { filterTrackedEligibility } from '../common/static-attribution.js';
@@ -63,6 +64,7 @@ export interface AfterHandlerDeps {
   layout?: SessionLayout;
   executors?: TouchExecutors;
   memoFactory?: MemoFactory;
+  inspectionExecutor?: CommitInspectionContextExecutor;
   logger?: MemoLogger;
 }
 
@@ -106,7 +108,8 @@ export function createAfterHandler(
             executors,
             memoFactory(logger, layout),
             logger,
-            createDefaultPlannedTouchStore(layout)
+            createDefaultPlannedTouchStore(layout),
+            { successful: mapped.exitStatus === 0 && !mapped.interrupted, executor: deps.inspectionExecutor }
           );
         }
         deps.forgetCall(sessionId, callId);

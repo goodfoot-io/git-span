@@ -615,6 +615,20 @@ fn context_span_from_resolved(
     }
 }
 
+/// Convert complete selected relationships without asserting address overlaps.
+pub(super) fn complete_context_spans(
+    resolved: Vec<SpanResolved>,
+    token: &crate::resolver::core::token::StateToken,
+) -> Vec<ContextSpan> {
+    let evidence = EvidencePaths::new(token);
+    let mut spans = resolved
+        .into_iter()
+        .map(|span| context_span_from_resolved(span, Vec::new(), &evidence))
+        .collect::<Vec<_>>();
+    spans.sort_by(|left, right| left.name.cmp(&right.name));
+    spans
+}
+
 pub(super) fn select_context(
     scopes: Vec<ContextScope>,
     resolved: Vec<SpanResolved>,
@@ -874,7 +888,7 @@ pub(super) fn render_document(document: &ContextDocument) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn context_test_checkpoint(_repo: &gix::Repository, checkpoint: &str) -> Result<()> {
+pub(super) fn context_test_checkpoint(_repo: &gix::Repository, checkpoint: &str) -> Result<()> {
     let Ok(directory) = std::env::var("GIT_SPAN_CONTEXT_TEST_HOOK_DIR") else {
         return Ok(());
     };

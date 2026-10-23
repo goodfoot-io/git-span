@@ -7600,8 +7600,743 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
   return blocks;
 }
 
+// src/common/commit-inspection-context.ts
+import { execFileSync as execFileSync6 } from "node:child_process";
+
+// src/common/anchor-tree.ts
+function collapseByPath(rows) {
+  const anchors = [];
+  const byPath = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    let anchor = byPath.get(row.path);
+    if (!anchor) {
+      anchor = { path: row.path, ranges: [] };
+      byPath.set(row.path, anchor);
+      anchors.push(anchor);
+    }
+    anchor.ranges.push({ range: row.range, suffix: row.suffix });
+  }
+  return anchors;
+}
+function splitSegments(path) {
+  const dirs = path.split("/");
+  const leaf = dirs.pop();
+  if (leaf === void 0 || leaf.length === 0 || dirs.some((segment) => segment.length === 0)) return null;
+  return { dirs, leaf };
+}
+function findOrCreateDir(parent, name) {
+  for (const child of parent.children) {
+    if (child.kind === "dir" && child.name === name) return child;
+  }
+  const node = { kind: "dir", name, children: [] };
+  parent.children.push(node);
+  return node;
+}
+function insertAnchor(root, { dirs, leaf }, anchor) {
+  let cur = root;
+  for (const dir of dirs) {
+    cur = findOrCreateDir(cur, dir);
+  }
+  cur.children.push({ kind: "leaf", name: leaf, anchor });
+}
+function buildForest(anchors) {
+  const root = { kind: "dir", name: "", children: [] };
+  for (const anchor of anchors) {
+    const segments = splitSegments(anchor.path);
+    if (segments === null) {
+      root.children.push({ kind: "leaf", name: anchor.path, anchor });
+      continue;
+    }
+    insertAnchor(root, segments, anchor);
+  }
+  return root.children;
+}
+function foldChain(node) {
+  let name = node.name;
+  let cur = node;
+  while (cur.kind === "dir") {
+    const [child, ...siblings] = cur.children;
+    if (child === void 0 || siblings.length > 0) break;
+    name = `${name}/${child.name}`;
+    cur = child;
+  }
+  return { name, node: cur };
+}
+function rangeRank(range) {
+  switch (range.kind) {
+    case "whole-file":
+      return 0;
+    case "range":
+      return 1;
+  }
+}
+function compareRangeEntries(a, b) {
+  const rank = rangeRank(a.range) - rangeRank(b.range);
+  if (rank !== 0) return rank;
+  if (a.range.kind === "range" && b.range.kind === "range") {
+    return a.range.start - b.range.start || a.range.end - b.range.end;
+  }
+  return 0;
+}
+function labelFor(range, sole) {
+  switch (range.kind) {
+    case "range":
+      return `#L${range.start}-L${range.end}`;
+    case "whole-file":
+      return sole ? null : "(whole file)";
+  }
+}
+var cachedSegmenter;
+function graphemeSegmenter() {
+  if (cachedSegmenter === void 0) {
+    try {
+      cachedSegmenter = { value: new Intl.Segmenter("en", { granularity: "grapheme" }) };
+    } catch {
+      cachedSegmenter = { value: null };
+    }
+  }
+  return cachedSegmenter.value;
+}
+var WIDE_RANGES = [
+  [4352, 4447],
+  [9001, 9002],
+  [9728, 10175],
+  [11904, 12350],
+  [12353, 13311],
+  [13312, 19903],
+  [19968, 40959],
+  [40960, 42191],
+  [43360, 43391],
+  [44032, 55203],
+  [63744, 64255],
+  [65040, 65049],
+  [65072, 65135],
+  [65280, 65376],
+  [65504, 65510],
+  [94208, 101119],
+  [127462, 127487],
+  [127744, 128591],
+  [128640, 128767],
+  [129280, 129535],
+  [129648, 129791],
+  [131072, 196605],
+  [196608, 262141]
+];
+function isWideCodePoint(cp) {
+  for (const [lo, hi] of WIDE_RANGES) {
+    if (cp < lo) return false;
+    if (cp <= hi) return true;
+  }
+  return false;
+}
+function displayWidth(name) {
+  const segmenter = graphemeSegmenter();
+  let width = 0;
+  if (segmenter === null) {
+    for (const codePoint of name) {
+      width += isWideCodePoint(codePoint.codePointAt(0) ?? 0) ? 2 : 1;
+    }
+    return width;
+  }
+  for (const { segment } of segmenter.segment(name)) {
+    width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
+  }
+  return width;
+}
+var MAX_ALIGN_COLUMN = 48;
+function computeGroupTarget(items) {
+  let max = 0;
+  for (const item of items) {
+    if (item.node.kind === "leaf" && printsRangeColumn(item.node.anchor)) {
+      max = Math.max(max, displayWidth(item.name));
+    }
+  }
+  return max > MAX_ALIGN_COLUMN ? 0 : max;
+}
+function printsRangeColumn(anchor) {
+  const { ranges } = anchor;
+  if (ranges.length === 0) return false;
+  return ranges.some((entry) => labelFor(entry.range, ranges.length === 1) !== null);
+}
+function computePad(nameWidth, target) {
+  if (nameWidth >= target) return " ";
+  return " ".repeat(target - nameWidth + 1);
+}
+function renderLeafLines(name, anchor, ownPrefix, childPrefix, groupTarget) {
+  const { ranges } = anchor;
+  if (ranges.length === 0) return [`${ownPrefix}${name}`];
+  const sorted = [...ranges].sort(compareRangeEntries);
+  const sole = sorted.length === 1;
+  const nameWidth = displayWidth(name);
+  const pad = computePad(nameWidth, groupTarget);
+  const blank = " ".repeat(nameWidth + pad.length);
+  return sorted.map((entry, i) => {
+    const label = labelFor(entry.range, sole);
+    if (label === null) return `${ownPrefix}${name}${entry.suffix}`;
+    const base = i === 0 ? `${ownPrefix}${name}${pad}` : `${childPrefix}${blank}`;
+    return `${base}${label}${entry.suffix}`;
+  });
+}
+function renderNodes(nodes, prefix) {
+  const lines = [];
+  const items = nodes.map(foldChain);
+  const groupTarget = computeGroupTarget(items);
+  items.forEach((item, i) => {
+    const isLast = i === items.length - 1;
+    const ownPrefix = `${prefix}${isLast ? "\u2514\u2500 " : "\u251C\u2500 "}`;
+    const childPrefix = `${prefix}${isLast ? "   " : "\u2502  "}`;
+    if (item.node.kind === "leaf") {
+      lines.push(...renderLeafLines(item.name, item.node.anchor, ownPrefix, childPrefix, groupTarget));
+    } else {
+      lines.push(`${ownPrefix}${item.name}/`);
+      lines.push(...renderNodes(item.node.children, childPrefix));
+    }
+  });
+  return lines;
+}
+function renderAnchorTree(anchors) {
+  const forest = buildForest(anchors);
+  return renderNodes(forest, "");
+}
+
+// src/common/commit-inspection-context.ts
+var MAX_NATIVE_BYTES = 16 * 1024 * 1024;
+var MAX_REPORT_BYTES = 64 * 1024;
+var MAX_COMMITS = 4096;
+function commitSet(commits) {
+  if (commits.length > MAX_COMMITS) throw new Error("commit count exceeds the supported limit");
+  const lengths = new Set(commits.map((commit) => commit.length));
+  if (lengths.size > 1 || commits.some((commit) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit))) {
+    throw new Error("commit identities must be full object IDs of one repository format");
+  }
+  return new Set(commits);
+}
+function decodeCommitInspectionContext(stdout, requestedCommits) {
+  if (Buffer.byteLength(stdout) > MAX_NATIVE_BYTES) throw new Error("native context exceeds the size limit");
+  const root = JSON.parse(stdout);
+  if (!isRecord(root) || Object.keys(root).sort().join(",") !== "commits,schema_version,spans") {
+    throw new Error("commit context has unsupported fields");
+  }
+  if (root.schema_version !== 1) throw new Error("unsupported commit context schema version");
+  if (!Array.isArray(root.commits) || root.commits.some((commit) => typeof commit !== "string")) {
+    throw new Error("commit context identities must be an array of strings");
+  }
+  const commits = root.commits;
+  const actual = commitSet(commits);
+  const expected = commitSet(requestedCommits);
+  if (actual.size !== commits.length || actual.size !== expected.size || [...actual].some((id) => !expected.has(id))) {
+    throw new Error("commit context does not contain the exact selected commit set");
+  }
+  const decoded = decodeContextDocument(
+    JSON.stringify({
+      schema_version: 2,
+      scopes: [],
+      mutation: {
+        requested: false,
+        rewritten: false,
+        spans_touched: 0,
+        anchors_updated: 0,
+        anchors_removed: 0,
+        identities_collapsed: 0
+      },
+      spans: root.spans
+    })
+  );
+  const names = /* @__PURE__ */ new Set();
+  for (const span of decoded.spans) {
+    if (span.name.length === 0 || names.has(span.name) || span.anchors.length === 0 || span.overlaps.length !== 0) {
+      throw new Error("commit context requires distinct nonempty complete spans without address overlaps");
+    }
+    names.add(span.name);
+    const anchorIds = /* @__PURE__ */ new Set();
+    for (const [ordinal, anchor] of span.anchors.entries()) {
+      if (anchor.ordinal !== ordinal || anchor.id.length === 0 || anchorIds.has(anchor.id)) {
+        throw new Error("commit context contains inconsistent anchor identities");
+      }
+      anchorIds.add(anchor.id);
+    }
+  }
+  return { schema_version: 1, commits, spans: decoded.spans };
+}
+function createDefaultCommitInspectionExecutor(resolveCommand = resolveGitSpanCommand) {
+  return async (request) => {
+    try {
+      commitSet(request.commits);
+      if (request.commits.length === 0) return { ok: true, document: { schema_version: 1, commits: [], spans: [] } };
+      if (!Number.isFinite(request.timeoutMs) || request.timeoutMs <= 0)
+        throw new Error("inspection deadline exhausted");
+      const command = resolveCommand(["commit-context", ...request.commits], request.repoRoot);
+      const stdout = execFileSync6(command.executable, command.argv, {
+        cwd: request.repoRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: Math.max(1, Math.min(5e3, Math.floor(request.timeoutMs))),
+        maxBuffer: MAX_NATIVE_BYTES + 1
+      });
+      return { ok: true, document: decodeCommitInspectionContext(stdout, request.commits) };
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : "native query failed" };
+    }
+  };
+}
+function renderCommitInspectionContext(document) {
+  if (document.spans.length === 0) return null;
+  const sections = document.spans.map((span) => {
+    const anchors = span.anchors.map((anchor) => {
+      const location = anchor.current ?? anchor.anchored;
+      const status = anchor.status;
+      const label = status.code === "CONTENT_UNAVAILABLE" ? `content unavailable: ${status.reason.toLowerCase().replaceAll("_", " ")}` : status.code.toLowerCase().replaceAll("_", " ");
+      return {
+        path: location.path,
+        range: location.extent.kind === "whole" ? { kind: "whole-file" } : { kind: "range", start: location.extent.start, end: location.extent.end },
+        suffix: status.code === "FRESH" ? "" : ` \u2014 ${label}`
+      };
+    });
+    const tree = renderAnchorTree(collapseByPath(anchors));
+    return [`## ${span.name}`, ...tree, ...span.why === null ? [] : ["", span.why]].join("\n");
+  });
+  const report = `
+<git-span>
+
+${sections.join("\n\n---\n\n")}
+
+</git-span>
+`;
+  if (Buffer.byteLength(report) > MAX_REPORT_BYTES)
+    throw new Error("complete report exceeds the 64 KiB delivery limit");
+  return report;
+}
+function unavailable(selection, reason) {
+  const command = [
+    "git",
+    "-C",
+    shellArgument(selection.repoRoot),
+    "span",
+    "commit-context",
+    ...selection.commits.map(shellArgument)
+  ].join(" ");
+  const detail = reason.replace(new RegExp("\\p{Cc}", "gu"), " ").slice(0, 200);
+  const exact = `
+Git span commit context unavailable: ${detail}. Retrieve complete native context with ${inlineCode(command)}.
+`;
+  if (Buffer.byteLength(exact) <= 4096) return exact;
+  const root = Buffer.byteLength(selection.repoRoot) <= 1024 ? shellArgument(selection.repoRoot) : "<repository>";
+  return `
+Git span commit context unavailable: ${detail}. The complete selection contains ${selection.commits.length} commits; its IDs cannot fit in this notice. Native retrieval syntax: ${inlineCode(`git -C ${root} span commit-context <full-commit-id>...`)}. Supply the complete selected commit set; no partial report was delivered.
+`;
+}
+async function runCommitInspectionContext(selection, deadlineMs, executor = createDefaultCommitInspectionExecutor()) {
+  if (selection.commits.length === 0) return null;
+  try {
+    const timeoutMs = Math.min(5e3, Math.floor(deadlineMs - performance.now()));
+    if (timeoutMs <= 0) throw new Error("inspection deadline exhausted");
+    const result = await executor({ ...selection, timeoutMs });
+    if (!result.ok) return unavailable(selection, result.reason);
+    const complete = decodeCommitInspectionContext(JSON.stringify(result.document), selection.commits);
+    const report = renderCommitInspectionContext(complete);
+    if (performance.now() >= deadlineMs) throw new Error("inspection deadline exhausted");
+    return report;
+  } catch (error) {
+    return unavailable(selection, error instanceof Error ? error.message : "native query failed");
+  }
+}
+
+// src/common/commit-inspection-selection.ts
+import { execFile } from "node:child_process";
+import { existsSync as existsSync4, realpathSync as realpathSync3 } from "node:fs";
+import { resolve as resolve5 } from "node:path";
+var MAX_COMMITS2 = 4096;
+var MAX_OUTPUT = 4 * 1024 * 1024;
+var DEADLINE_MS = 3e3;
+var FLAGS = /* @__PURE__ */ new Set([
+  "--all",
+  "--first-parent",
+  "--exclude-first-parent-only",
+  "--ancestry-path",
+  "--no-merges",
+  "--merges",
+  "--reverse",
+  "--date-order",
+  "--author-date-order",
+  "--topo-order",
+  "--do-walk",
+  "--no-walk",
+  "--follow",
+  "--full-history",
+  "--simplify-merges",
+  "--simplify-by-decoration",
+  "--dense",
+  "--sparse",
+  "--remove-empty",
+  "--all-match",
+  "--invert-grep",
+  "--regexp-ignore-case",
+  "--basic-regexp",
+  "--extended-regexp",
+  "--fixed-strings",
+  "--perl-regexp",
+  "--pickaxe-all",
+  "--pickaxe-regex",
+  "--boundary",
+  "--left-right",
+  "--cherry-mark",
+  "--cherry-pick",
+  "--left-only",
+  "--right-only",
+  "--cherry",
+  "--single-worktree",
+  "--ignore-missing",
+  "--full-diff",
+  "--root",
+  "--no-root",
+  "-i",
+  "-E",
+  "-F",
+  "-P",
+  "-m",
+  "-c",
+  "--cc",
+  "--first-parent",
+  "--no-renames",
+  "--find-copies-harder",
+  "--ignore-all-space",
+  "--ignore-space-change",
+  "--ignore-space-at-eol",
+  "--ignore-cr-at-eol",
+  "--ignore-blank-lines"
+]);
+var VALUES = /* @__PURE__ */ new Set([
+  "--max-count",
+  "--skip",
+  "--since",
+  "--after",
+  "--until",
+  "--before",
+  "--since-as-filter",
+  "--author",
+  "--committer",
+  "--grep",
+  "--min-parents",
+  "--max-parents",
+  "--exclude",
+  "--diff-filter",
+  "--find-object"
+]);
+var OPTIONAL_VALUES = /* @__PURE__ */ new Set(["--branches", "--tags", "--remotes", "--glob", "--ancestry-path", "--no-walk"]);
+var PRESENTATION = /* @__PURE__ */ new Set([
+  "--oneline",
+  "--graph",
+  "--patch",
+  "--no-patch",
+  "--raw",
+  "--stat",
+  "--numstat",
+  "--shortstat",
+  "--summary",
+  "--name-only",
+  "--name-status",
+  "--check",
+  "--patch-with-stat",
+  "--patch-with-raw",
+  "--compact-summary",
+  "--no-decorate",
+  "--decorate",
+  "--no-color",
+  "--color",
+  "--abbrev-commit",
+  "--no-abbrev-commit",
+  "--no-abbrev",
+  "--show-signature",
+  "--no-show-signature",
+  "--log-size",
+  "--fuller",
+  "-p",
+  "-u",
+  "-s",
+  "-z"
+]);
+var PRESENTATION_VALUES = /* @__PURE__ */ new Set(["--date", "--encoding"]);
+function literalWords(text) {
+  if (/[$`\n\r\0]/.test(text)) return null;
+  const tokens = tokenize(text);
+  if (tokens === null || tokens.some((token) => token.isRedirect)) return null;
+  if (tokens.some((token) => !token.quoted && /[*?[\]~{}]/.test(token.text))) {
+    if (tokens.some((token) => !token.quoted && /[*?[\]]|^~|\{[^}]*,/.test(token.text))) return null;
+  }
+  return tokens.map((token) => token.text);
+}
+function literalStages(command) {
+  let quote = null;
+  let start = 0;
+  const stages = [];
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (char === "\\") {
+      index++;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "#" && (index === 0 || /[\s;&|()]/.test(command[index - 1] ?? ""))) {
+      if (command.includes("\n", index)) return null;
+      return [...stages, command.slice(start, index).trim()];
+    }
+    if (char === "&" && command[index + 1] === "&") {
+      stages.push(command.slice(start, index).trim());
+      index++;
+      start = index + 1;
+    } else if (char !== void 0 && /[;&|()\n\r]/.test(char)) return null;
+  }
+  if (quote !== null) return null;
+  return [...stages, command.slice(start).trim()];
+}
+function inspect(command, cwd) {
+  const stages = literalStages(command);
+  if (stages === null) return null;
+  let stage = stages[0];
+  if (stages.length === 2) {
+    const prefix = stage === void 0 ? null : literalWords(stage);
+    stage = stages[1];
+    if (prefix?.length !== 2 || prefix[0] !== "cd" || prefix[1] === "-") return null;
+    cwd = resolve5(cwd, prefix[1] ?? "");
+  } else if (stages.length !== 1) return null;
+  const argv = stage === void 0 ? null : literalWords(stage);
+  if (argv === null || argv[0] !== "git") return null;
+  let index = 1;
+  while (argv[index] === "-C") {
+    const directory = argv[index + 1];
+    if (directory === void 0) return null;
+    cwd = resolve5(cwd, directory);
+    index += 2;
+  }
+  const subcommand = argv[index];
+  if (subcommand !== "show" && subcommand !== "log") return null;
+  return { cwd, subcommand, args: argv.slice(index + 1) };
+}
+function userFormatWantsNotes(format) {
+  if (!format.includes("%") && !/^(?:t?format):/.test(format)) return null;
+  if (format.includes("(")) return null;
+  for (let index = 0; index < format.length; index++) {
+    if (format[index] !== "%") continue;
+    let code = format[++index];
+    if (code === "%") continue;
+    if (code === "+" || code === "-" || code === " ") code = format[++index];
+    if (code === "N") return true;
+    if (code === "x" && /^[0-9a-f]{2}$/i.test(format.slice(index + 1, index + 3))) index += 2;
+  }
+  return false;
+}
+function normalize(args) {
+  const retained = [];
+  const revisions = [];
+  let explicitNotes = false;
+  let format;
+  let formatCount = 0;
+  let grep = false;
+  const finish = (paths) => {
+    let notes = [];
+    if (!explicitNotes) {
+      if (format === void 0) notes = ["--notes"];
+      else if (!grep) notes = ["--no-notes"];
+      else {
+        if (formatCount > 1) return null;
+        const builtin = /^(?:oneline|short|medium|full|fuller|reference|email|mboxrd|raw)$/.test(format);
+        const wants = builtin ? false : userFormatWantsNotes(format);
+        if (wants === null) return null;
+        notes = [wants ? "--notes" : "--no-notes"];
+      }
+    }
+    return {
+      args: [...retained, "--format=%H", "--no-patch", "--no-decorate", ...notes, ...revisions, ...paths],
+      revisions
+    };
+  };
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === void 0) break;
+    if (arg === "--") return finish(args.slice(index));
+    if (!arg.startsWith("-") || arg === "-") {
+      if (arg === "-" || arg.includes("\n")) return null;
+      revisions.push(arg);
+      continue;
+    }
+    const name = arg.split("=")[0] ?? arg;
+    if (arg === "--notes" || arg === "--show-notes" || arg === "--no-notes" || /^--(?:notes|show-notes)=/.test(arg)) {
+      explicitNotes = true;
+      retained.push(arg);
+      continue;
+    }
+    if (arg === "--oneline" || name === "--pretty" || name === "--format" && arg.includes("=")) {
+      format = arg === "--oneline" ? "oneline" : arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : "medium";
+      formatCount++;
+      continue;
+    }
+    if (PRESENTATION.has(arg) || /^--(?:color|decorate|stat|abbrev)=/.test(arg) || /^-U\d*$/.test(arg)) continue;
+    if (name === "--abbrev") continue;
+    if (name === "--grep") grep = true;
+    if (PRESENTATION_VALUES.has(name)) {
+      if (!arg.includes("=") && args[++index] === void 0) return null;
+      continue;
+    }
+    if (FLAGS.has(arg) || /^-\d+$/.test(arg) || OPTIONAL_VALUES.has(name)) {
+      retained.push(arg);
+      continue;
+    }
+    if (VALUES.has(name) || arg === "-n" || arg === "-S" || arg === "-G") {
+      retained.push(arg);
+      if (!arg.includes("=")) {
+        const value = args[++index];
+        if (value === void 0 || value === "--") return null;
+        retained.push(value);
+      }
+      continue;
+    }
+    if (/^-(?:n\d+|[SG].+|[MC](?:\d+%?)?)$/.test(arg) || /^--(?:find-renames|find-copies)(?:=\d+%?)?$/.test(arg)) {
+      retained.push(arg);
+      continue;
+    }
+    if (/^--diff-merges=(?:off|none|on|first-parent|1|separate|m|combined|c|dense-combined|cc|remerge|r)$/.test(arg)) {
+      retained.push(arg);
+      continue;
+    }
+    return null;
+  }
+  return finish([]);
+}
+function recognizesInspection(command) {
+  return [command, ...splitTopLevel(command).stages.map((stage) => stage.text)].some((stage) => {
+    const words = argvOf(stage);
+    if (words === null) return false;
+    let index = 0;
+    while (/^[A-Za-z_][A-Za-z_0-9]*=/.test(words[index] ?? "")) index++;
+    if (words[index++] !== "git") return false;
+    while (words[index]?.startsWith("-")) {
+      const option = words[index++];
+      if (option === "-C" || option === "-c" || option === "--git-dir" || option === "--work-tree") index++;
+    }
+    const subcommand = words[index++];
+    if (subcommand !== "show" && subcommand !== "log") return false;
+    const args = words.slice(index);
+    if (subcommand === "show") {
+      const normalized = normalize(args);
+      const revisions = normalized?.revisions ?? args.slice(0, args.indexOf("--") < 0 ? args.length : args.indexOf("--"));
+      if (revisions.some((arg) => !arg.startsWith("-") && arg.includes(":"))) return false;
+    }
+    return true;
+  });
+}
+async function runGit(cwd, args, deadline, input) {
+  const remaining = Math.floor(deadline - performance.now());
+  if (remaining <= 0) throw new Error("Commit selection exceeded its 3-second deadline");
+  return new Promise((resolveOutput, reject) => {
+    const child = execFile(
+      "git",
+      ["--no-pager", "-c", "log.showSignature=false", ...args],
+      {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: MAX_OUTPUT,
+        timeout: remaining,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" }
+      },
+      (error, stdout) => {
+        if (error !== null) reject(new Error(`Commit selection failed: ${error.message}`));
+        else resolveOutput(stdout);
+      }
+    );
+    child.stdin?.on("error", () => void 0);
+    child.stdin?.end(input);
+  });
+}
+async function resolveCommitInspection(command, cwd) {
+  const invocation = inspect(command, cwd);
+  if (invocation === null) return { kind: "unsupported", recognized: recognizesInspection(command) };
+  const normalized = normalize(invocation.args);
+  if (invocation.subcommand === "show" && normalized?.revisions.some((rev) => rev.includes(":"))) {
+    return { kind: "unsupported", recognized: false };
+  }
+  if (normalized === null) return { kind: "unsupported", recognized: true };
+  const deadline = performance.now() + DEADLINE_MS;
+  try {
+    if ([
+      "GIT_DIR",
+      "GIT_WORK_TREE",
+      "GIT_COMMON_DIR",
+      "GIT_INDEX_FILE",
+      "GIT_OBJECT_DIRECTORY",
+      "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+      "GIT_REPLACE_REF_BASE",
+      "GIT_GRAFT_FILE"
+    ].some((key2) => process.env[key2] !== void 0)) {
+      return { kind: "unsupported", recognized: true };
+    }
+    const discovery = (await runGit(invocation.cwd, ["rev-parse", "--show-toplevel", "--git-path", "info/grafts"], deadline)).trimEnd().split("\n");
+    if (discovery.length !== 2 || discovery[0] === void 0 || discovery[1] === void 0) {
+      return { kind: "failed", reason: "Repository discovery returned ambiguous paths" };
+    }
+    const repoRoot = realpathSync3(discovery[0]);
+    if (existsSync4(resolve5(invocation.cwd, discovery[1]))) return { kind: "unsupported", recognized: true };
+    const replacements = await runGit(repoRoot, ["for-each-ref", "--format=%(refname)", "refs/replace/"], deadline);
+    if (replacements.trim() !== "") return { kind: "unsupported", recognized: true };
+    const configuration = await runGit(repoRoot, ["config", "--list", "--null"], deadline);
+    if (configuration.split("\0").some((entry) => /^(?:diff\..*\.(?:textconv|command)|diff\.external)\n/i.test(entry))) {
+      return { kind: "unsupported", recognized: true };
+    }
+    const simpleRevisions = normalized.revisions.filter((rev) => !rev.includes("..") && !rev.startsWith("^"));
+    if (invocation.subcommand === "show" && simpleRevisions.length > 0) {
+      const types = await runGit(
+        invocation.cwd,
+        ["cat-file", "--batch-check=%(objecttype)"],
+        deadline,
+        `${simpleRevisions.join("\n")}
+`
+      );
+      if (types.trim().split("\n").some((type) => ["blob", "tree", "tag"].includes(type))) {
+        return { kind: "unsupported", recognized: true };
+      }
+    }
+    const output = await runGit(
+      invocation.cwd,
+      [invocation.subcommand, "--no-ext-diff", "--no-textconv", ...normalized.args],
+      deadline
+    );
+    const lines = output.trim() === "" ? [] : output.trimEnd().split("\n");
+    if (lines.length > MAX_COMMITS2) return { kind: "failed", reason: "Commit selection exceeds 4096 commits" };
+    if (lines.some((line) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(line))) {
+      return { kind: "failed", reason: "Commit selection returned malformed object identities" };
+    }
+    const commits = [...new Set(lines)];
+    if (commits.length > 0) {
+      const verified = await runGit(
+        repoRoot,
+        ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        deadline,
+        `${commits.join("\n")}
+`
+      );
+      const records = verified.trimEnd().split("\n");
+      if (records.length !== commits.length || records.some((line, index) => line !== `${commits[index]} commit`)) {
+        return { kind: "failed", reason: "Commit selection contains unavailable or non-commit objects" };
+      }
+    }
+    return { kind: "selected", repoRoot, commits };
+  } catch (error) {
+    return { kind: "failed", reason: (error instanceof Error ? error.message : String(error)).slice(0, 1024) };
+  }
+}
+
 // src/common/parse-response.ts
-import { existsSync as existsSync4, statSync as statSync6 } from "node:fs";
+import { existsSync as existsSync5, statSync as statSync6 } from "node:fs";
 import { dirname as dirname6, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
 var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
@@ -7766,7 +8501,7 @@ function hasDiffRevPathArg(argv, start, cwd) {
       if (!a.includes("=") && valueFlags.has(a)) i += 1;
       continue;
     }
-    if (a.includes(":") && !existsSync4(resolvePath2(cwd, a))) return true;
+    if (a.includes(":") && !existsSync5(resolvePath2(cwd, a))) return true;
   }
   return false;
 }
@@ -8036,7 +8771,7 @@ function isFile(abs) {
 function findGitRoot(startDir) {
   let dir = startDir;
   for (; ; ) {
-    if (existsSync4(join7(dir, ".git"))) return dir;
+    if (existsSync5(join7(dir, ".git"))) return dir;
     const parent = dirname6(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -8613,15 +9348,36 @@ async function runResponseReadTouches(spans, cwd, sessionId, executors, memo, in
     diagnostics: batch.diagnostics
   };
 }
-async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolResponse, executors, memo, logger, store) {
+async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolResponse, executors, memo, logger, store, inspection) {
   const parserStarted = performance.now();
   const claimed = toolUseId === void 0 ? { status: "missing" } : store.take(sessionId, toolUseId);
   if (claimed.status === "consumed") return [];
   const record2 = claimed.status === "record" ? claimed.record : null;
+  let commitNotice = null;
+  let suppressCommitReads = false;
+  if (inspection?.successful && !bashResponseInterrupted(toolResponse)) {
+    const deadlineMs = performance.now() + 8e3;
+    const selection = await resolveCommitInspection(command, cwd);
+    if (selection.kind === "selected") {
+      const report = await runCommitInspectionContext(selection, deadlineMs, inspection.executor);
+      return report === null ? [] : [report];
+    }
+    if (selection.kind === "failed" || selection.recognized) {
+      const reason = selection.kind === "failed" ? selection.reason : "unsupported commit inspection command form";
+      logger.warn("git-span complete commit context unavailable", { reason });
+      commitNotice = `
+Git span commit context unavailable: ${reason.replace(new RegExp("\\p{Cc}", "gu"), " ").slice(0, 200)}. No partial commit report was delivered.
+`;
+      if (selection.kind === "failed") return [commitNotice];
+      suppressCommitReads = true;
+    }
+  }
   const planned = plannedSpans(record2, cwd, logger);
   const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
   const preStateKeys = new Set(parsed.preStateRequests.map((request) => planGroupKey(request)));
-  const ordinary = parsed.resolved.filter(({ span }) => !preStateKeys.has(planGroupKey(span))).map(({ idiom, span }) => ({ status: "resolved", idiom, span }));
+  const ordinary = parsed.resolved.filter(
+    ({ span, idiom }) => !preStateKeys.has(planGroupKey(span)) && !(suppressCommitReads && idiom === "git-log-L")
+  ).map(({ idiom, span }) => ({ status: "resolved", idiom, span }));
   const detailed = /&&|\|\|/.test(command) ? parseCommandDetailed(command, { cwd }) : [];
   const joinByIndex = new Map([
     ...parsed.resolved.flatMap(
@@ -8658,7 +9414,7 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
     }
   }
   const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
-  const responseSpans = response === null ? [] : parseResponse({ command, cwd, ...response });
+  const responseSpans = response === null || suppressCommitReads ? [] : parseResponse({ command, cwd, ...response });
   const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
   const parserLatencyMs = performance.now() - parserStarted;
   const touchStarted = performance.now();
@@ -8689,7 +9445,7 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
     `${sessionId}:${toolUseId ?? createHash3("sha256").update(command).digest("hex")}:response`,
     logger
   );
-  const blocks = [...commandBlocks, ...responseBatch.blocks];
+  const blocks = [...commandBlocks, ...responseBatch.blocks, ...commitNotice === null ? [] : [commitNotice]];
   logger.info?.("git-span static attribution post", {
     resolvedReads: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation === "read").length,
     resolvedWrites: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation !== "read").length,
@@ -8801,7 +9557,8 @@ function createAfterHandler(deps) {
             executors,
             memoFactory(logger, layout),
             logger,
-            createDefaultPlannedTouchStore(layout)
+            createDefaultPlannedTouchStore(layout),
+            { successful: mapped.exitStatus === 0 && !mapped.interrupted, executor: deps.inspectionExecutor }
           );
         }
         deps.forgetCall(sessionId, callId);

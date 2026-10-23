@@ -20,6 +20,8 @@ import {
   normalizeBashResponse,
   runLayeredBashTouches
 } from '../common/bash-attribution.js';
+import { bashResponseExitCode } from '../common/bash-touch.js';
+import type { CommitInspectionContextExecutor } from '../common/commit-inspection-context.js';
 import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
 import { isRecord } from '../common/guards.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
@@ -74,7 +76,8 @@ export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
   memoFactory: MemoFactory = createDiskMemoStore,
   layout: SessionLayout = DEFAULT_SESSION_LAYOUT,
-  runtimeOptions: CommitRuntimeOptions = {}
+  runtimeOptions: CommitRuntimeOptions = {},
+  inspectionExecutor?: CommitInspectionContextExecutor
 ) {
   const options = { stateRoot: join(dirname(layout.base), 'commit-receipts'), ...runtimeOptions };
   return async (input: PostToolUseInput, ctx: HookContext) => {
@@ -152,7 +155,14 @@ export function createHandler(
             executors,
             memo,
             ctx.logger,
-            createDefaultPlannedTouchStore(layout)
+            createDefaultPlannedTouchStore(layout),
+            {
+              successful:
+                recovered.executions.length === 1 &&
+                recovered.executions[0]?.background === false &&
+                bashResponseExitCode(input.tool_response) === 0,
+              executor: inspectionExecutor
+            }
           ))
         );
       }

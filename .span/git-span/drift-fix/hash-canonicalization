@@ -1,4 +1,4 @@
-packages/git-span/src/cli/commit.rs#L90-L229 rk64:b9d9e2cb0eeb28f3
+packages/git-span/src/cli/commit.rs#L93-L230 rk64:3d8d314f8cb31fb3
 packages/git-span/src/cli/drift_fix.rs#L1159-L1334 rk64:1476a4d810886ecd
 packages/git-span/src/cli/drift_fix.rs#L1363-L1410 rk64:91aa3b2a4421aeab
 packages/git-span/src/cli/repair_content.rs#L47-L192 rk64:7868d11a9e55e1b2

@@ -1,0 +1,382 @@
+{
+  "$id": "https://git-span.com/schemas/cli/v1/commit-context.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CommitContextDocument",
+  "description": "A complete report: immutable selection identities plus full current spans.\n\n`overlaps` on each span is empty: membership derives from commit changes,\nnot address scopes. Any incomplete selection or mapping is an error before\nthis envelope is rendered, and inspection never refreshes span definitions.",
+  "type": "object",
+  "properties": {
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "spans": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ContextSpan"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "commits",
+    "spans"
+  ],
+  "$defs": {
+    "ContextAnchor": {
+      "type": "object",
+      "properties": {
+        "anchored": {
+          "$ref": "#/$defs/ContextLocation"
+        },
+        "current": {
+          "description": "Always emitted; `null` when the anchor cannot be located in the\ncurrent worktree or index.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextLocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "source": {
+          "description": "Always emitted; `null` when the anchor has no recorded source layer.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextSource"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/ContextStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "id",
+        "anchored",
+        "current",
+        "status",
+        "source",
+        "sources"
+      ]
+    },
+    "ContextAnchorIdentity": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "id"
+      ]
+    },
+    "ContextExtent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "whole"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "end": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "lines"
+            },
+            "start": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "start",
+            "end"
+          ]
+        }
+      ]
+    },
+    "ContextLocation": {
+      "type": "object",
+      "properties": {
+        "extent": {
+          "$ref": "#/$defs/ContextExtent"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "extent"
+      ]
+    },
+    "ContextOverlap": {
+      "type": "object",
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/ContextAnchorIdentity"
+        },
+        "basis": {
+          "$ref": "#/$defs/ContextOverlapBasis"
+        },
+        "intersection": {
+          "$ref": "#/$defs/ContextExtent"
+        },
+        "location": {
+          "$ref": "#/$defs/ContextLocation"
+        },
+        "scope": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "anchor",
+        "basis",
+        "location",
+        "intersection"
+      ]
+    },
+    "ContextOverlapBasis": {
+      "type": "string",
+      "enum": [
+        "anchored",
+        "current"
+      ]
+    },
+    "ContextSource": {
+      "type": "string",
+      "enum": [
+        "WORKTREE",
+        "INDEX",
+        "HEAD"
+      ]
+    },
+    "ContextSpan": {
+      "type": "object",
+      "properties": {
+        "anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextAnchor"
+          }
+        },
+        "evidence_revision": {
+          "description": "Content identity of this definition and its resolved source-layer evidence.\nIndependent of query scope, filesystem timestamps, and repository location.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "overlaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextOverlap"
+          }
+        },
+        "why": {
+          "description": "Always emitted; `null` when the span has no why prose.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "evidence_revision",
+        "why",
+        "overlaps",
+        "anchors"
+      ]
+    },
+    "ContextStatus": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "FRESH"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "RESOLVED_PENDING_COMMIT"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "MOVED"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CHANGED"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "DELETED"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CONFLICT"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "SUBMODULE"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CONTENT_UNAVAILABLE"
+            },
+            "detail": {
+              "description": "Opaque per-reason payload: the family pins `reason` but not the\ndetail blob's internal shape, so the schema leaves it unconstrained."
+            },
+            "reason": {
+              "$ref": "#/$defs/ContextUnavailableReason"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "reason",
+            "detail"
+          ]
+        }
+      ]
+    },
+    "ContextUnavailableReason": {
+      "type": "string",
+      "enum": [
+        "LFS_NOT_FETCHED",
+        "LFS_NOT_INSTALLED",
+        "PROMISOR_MISSING",
+        "SPARSE_EXCLUDED",
+        "FILTER_FAILED",
+        "IO_ERROR"
+      ]
+    }
+  }
+}

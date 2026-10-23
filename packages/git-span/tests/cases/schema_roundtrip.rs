@@ -135,3 +135,23 @@ fn staged_preflight_validates_against_its_published_schema() -> Result<()> {
     assert!(validator.validate(&invalid).is_err());
     Ok(())
 }
+
+#[test]
+fn commit_context_roundtrip() -> Result<()> {
+    validate_against(
+        || {
+            let repo = TestRepo::seeded()?;
+            repo.span_stdout(["add", "context-schema", "file1.txt#L2-L3"])?;
+            repo.commit_all("current definition")?;
+            let selected = repo.head_sha()?;
+            let output = repo.run_span(["commit-context", &selected])?;
+            anyhow::ensure!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(output.stdout)
+        },
+        "commit-context",
+    )
+}

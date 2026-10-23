@@ -16,7 +16,8 @@ use std::path::Path;
 /// The committed v1 schema directory, relative to the git-span package.
 const SCHEMA_DIR: &str = "../website/public/schemas/cli/v1";
 
-const FAMILIES: [&str; 7] = [
+const FAMILIES: [&str; 8] = [
+    "commit-context",
     "context",
     "drift",
     "history",

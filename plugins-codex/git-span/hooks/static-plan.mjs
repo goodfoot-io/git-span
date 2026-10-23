@@ -453,14 +453,14 @@ function preToolUseHook(config, handler) {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve9, reject2) => {
+  return new Promise((resolve10, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve9(chunks.join(""));
+      resolve10(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -522,12 +522,12 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve9, reject2) => {
+  return new Promise((resolve10, reject2) => {
     stream.write(content, (error) => {
       if (error)
         reject2(error);
       else
-        resolve9();
+        resolve10();
     });
   });
 }
@@ -6719,8 +6719,19 @@ var MAX_MEMO_BYTES = 256 * 1024;
 // packages/agent-hooks/src/common/touch-core.ts
 var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 
+// packages/agent-hooks/src/common/commit-inspection-context.ts
+import { execFileSync as execFileSync6 } from "node:child_process";
+var MAX_NATIVE_BYTES = 16 * 1024 * 1024;
+var MAX_REPORT_BYTES = 64 * 1024;
+
+// packages/agent-hooks/src/common/commit-inspection-selection.ts
+import { execFile } from "node:child_process";
+import { existsSync as existsSync5, realpathSync as realpathSync3 } from "node:fs";
+import { resolve as resolve5 } from "node:path";
+var MAX_OUTPUT = 4 * 1024 * 1024;
+
 // packages/agent-hooks/src/common/parse-response.ts
-import { existsSync as existsSync5, statSync as statSync6 } from "node:fs";
+import { existsSync as existsSync6, statSync as statSync6 } from "node:fs";
 import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
 
 // packages/agent-hooks/src/common/bash-attribution.ts
@@ -6854,7 +6865,7 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync7, lstatSync as lstatSync2, realpathSync as realpathSync3, renameSync as renameSync5, rmSync as rmSync5 } from "node:fs";
+import { existsSync as existsSync8, lstatSync as lstatSync2, realpathSync as realpathSync4, renameSync as renameSync5, rmSync as rmSync5 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join10 } from "node:path";
 
@@ -6944,10 +6955,10 @@ function decideCommitClaim(owner, liveness, remainingMs) {
 
 // packages/agent-hooks/src/common/commit-observation.ts
 import { createHash as createHash5 } from "node:crypto";
-import { resolve as resolve6 } from "node:path";
+import { resolve as resolve7 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-git.ts
-import { isAbsolute as isAbsolute6, resolve as resolve5 } from "node:path";
+import { isAbsolute as isAbsolute6, resolve as resolve6 } from "node:path";
 function parseCommitGitInvocation(argv, cwd) {
   const reject2 = (reason) => ({ ok: false, reason });
   if (!isAbsolute6(cwd) || argv.some((arg) => arg.includes("\0"))) return reject2("invalid Git argv or cwd");
@@ -6989,7 +7000,7 @@ function parseCommitGitInvocation(argv, cwd) {
         return reject2("unsupported Git global option");
     }
     if (value === void 0 || value === "" && option !== "-C") return reject2("incomplete Git global option");
-    if (option === "-C" && value !== "") effectiveCwd = resolve5(effectiveCwd, value);
+    if (option === "-C" && value !== "") effectiveCwd = resolve6(effectiveCwd, value);
     if (option === "--git-dir") gitDirectory = value;
     if (option === "--work-tree") workTree = value;
     index++;
@@ -7063,7 +7074,7 @@ function checkpointCommitInvocation(enrollment, deadline) {
     const args = stripWrappers(argvOf(stage.text) ?? []);
     const executable = args[0]?.split("/").at(-1);
     if (executable === "cd" && args.length === 2 && args[1] && !/[`$~*?]/.test(args[1])) {
-      cwd = resolve6(cwd, args[1]);
+      cwd = resolve7(cwd, args[1]);
       add(cwd, []);
     } else if (executable === "git") {
       const parsed = parseCommitGitInvocation(args.slice(1), cwd);
@@ -7076,14 +7087,14 @@ function checkpointCommitInvocation(enrollment, deadline) {
 }
 
 // packages/agent-hooks/src/common/commit-span-metadata.ts
-import { relative as relative3, resolve as resolve7 } from "node:path";
+import { relative as relative3, resolve as resolve8 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-storage.ts
 import { createHash as createHash6, randomBytes } from "node:crypto";
 import {
   closeSync as closeSync4,
   constants as constants2,
-  existsSync as existsSync6,
+  existsSync as existsSync7,
   fstatSync as fstatSync2,
   linkSync,
   lstatSync,
@@ -7121,12 +7132,12 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
   child.on("error", (error) => {
     spawnError = error;
   });
-  const closed = new Promise((resolve9) => {
-    child.once("close", (code, signal) => resolve9({ code, signal }));
+  const closed = new Promise((resolve10) => {
+    child.once("close", (code, signal) => resolve10({ code, signal }));
   });
   let released = false;
   try {
-    await new Promise((resolve9, reject2) => {
+    await new Promise((resolve10, reject2) => {
       let output = "";
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
@@ -7136,7 +7147,7 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
         output += chunk.toString("utf8");
         if (output === "locked\n") {
           clearTimeout(timer);
-          resolve9();
+          resolve10();
         } else if (output.length >= 7) {
           clearTimeout(timer);
           child.kill("SIGKILL");
@@ -7213,7 +7224,7 @@ function atomicJson(path, value, immutable = false) {
   }
 }
 function boundedEntries(directory, cap, deadline = Infinity) {
-  if (!existsSync6(directory)) return [];
+  if (!existsSync7(directory)) return [];
   const stream = opendirSync(directory);
   const names = [];
   try {
@@ -7253,7 +7264,7 @@ async function acquireReceiptClaim(root, key2, deadline, executable) {
     let retained = false;
     try {
       let prior = null;
-      if (existsSync6(path)) {
+      if (existsSync7(path)) {
         prior = ownerRecord(readJson(path, 4096));
         if (prior === null) return null;
       }
@@ -7315,7 +7326,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
     if (!claim) throw new Error("invocation enrollment ownership unavailable");
     try {
       const enrollmentPath = join10(directory, "enrollment.json");
-      if (existsSync7(enrollmentPath)) {
+      if (existsSync8(enrollmentPath)) {
         const existing = validateCommitEnrollment(readJson(enrollmentPath));
         if (!existing.ok) throw new Error(existing.reason);
         const state2 = readState(directory, existing.value);
@@ -7326,7 +7337,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
           enrollment: existing.value
         };
       }
-      if (!lstatSync2(realpathSync3(request.cwd)).isDirectory())
+      if (!lstatSync2(realpathSync4(request.cwd)).isDirectory())
         throw new Error("effective shell cwd must be a directory");
       const originalInput = JSON.parse(JSON.stringify(request.toolInput));
       if (!isRecord(originalInput)) throw new Error("shell input is not a JSON object");
@@ -7351,7 +7362,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
       for (const context of commands) {
         const inspectedContext = inspectInput(request.toolInput, context.command);
         if (!inspectedContext.ok) throw new Error(inspectedContext.reason);
-        if (!lstatSync2(realpathSync3(context.cwd)).isDirectory())
+        if (!lstatSync2(realpathSync4(context.cwd)).isDirectory())
           throw new Error("effective shell cwd must be a directory");
         for (const observation of checkpointCommitInvocation(
           { ...valid.value, originalCommand: inspectedContext.value, cwd: context.cwd },
@@ -7500,7 +7511,7 @@ function disableUpdateCheck() {
 
 // packages/agent-hooks/src/codex/execution-directory.ts
 import { closeSync as closeSync5, constants as constants3, fstatSync as fstatSync3, openSync as openSync5, readSync as readSync2 } from "node:fs";
-import { isAbsolute as isAbsolute8, resolve as resolve8 } from "node:path";
+import { isAbsolute as isAbsolute8, resolve as resolve9 } from "node:path";
 
 // node_modules/acorn/dist/acorn.mjs
 var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
@@ -13313,7 +13324,7 @@ function directDirectory(call, request) {
     return null;
   if (args.workdir === void 0 || args.workdir === null || args.workdir === "") return request.cwd;
   if (typeof args.workdir !== "string" || args.workdir.includes("\0")) return null;
-  return resolve8(request.cwd, args.workdir);
+  return resolve9(request.cwd, args.workdir);
 }
 function completedScript(output) {
   const first = Array.isArray(output) ? output[0] : output;
@@ -13334,7 +13345,7 @@ function codeModeDirectory(pending2, command) {
     for (const execution2 of parsed.executions) {
       if (execution2.command !== command) continue;
       if (execution2.background) return null;
-      const cwd = resolve8(script.cwd, execution2.workdir ?? "");
+      const cwd = resolve9(script.cwd, execution2.workdir ?? "");
       if (directory !== null && directory !== cwd) return null;
       directory = cwd;
     }

@@ -485,12 +485,11 @@ describe('claude post-tool-use touch signal', () => {
       }
     });
 
-    it('merges command-derived and response-derived spans, deduping the surface via the memo', async () => {
+    it('suppresses partial line-history reads when the complete commit inspection form is unsupported', async () => {
       const filePath = writeModRs();
-      // `git log -p -L 39,60:mod.rs` is at once a command-derived read idiom
-      // (parseCommandDetailed resolves the literal -L range) and a diff-form
-      // git log (parseResponse decodes the patch response) — the two
-      // evidence sources merge into overlapping read touches on one file.
+      // Line-history inspection can produce command-derived and patch-derived
+      // read evidence. Both must stay suppressed when complete commit context
+      // cannot resolve this unsupported inspection form.
       const command = `git log -p -L 39,60:${filePath}`;
       const diffResponse = [
         `diff --git a/${filePath} b/${filePath}`,
@@ -520,13 +519,11 @@ describe('claude post-tool-use touch signal', () => {
       });
 
       const result = toResult(await handler(input as never, { logger }));
-      expect(calls.fix).toBe(0); // both sources are reads
-      expect(calls.list).toBe(2); // one touch per merged source
+      expect(calls.fix).toBe(0);
+      expect(calls.list).toBe(0);
       const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
-      expect(ctx).toContain(SPAN);
-      // The response-derived hunk overlaps the command-derived range on the
-      // same span; the per-session memo dedupes the duplicate surface.
-      expect(ctx.match(/is anchored in: billing\/checkout-request-flow/g) ?? []).toHaveLength(1);
+      expect(ctx).toMatch(/commit context unavailable/i);
+      expect(ctx).not.toContain('<git-span>');
     });
   });
 });

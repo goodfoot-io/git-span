@@ -1,4 +1,4 @@
-packages/git-span/src/cli/doctor.rs#L29-L64 rk64:8c05054d506c1e67
+packages/git-span/src/cli/doctor.rs#L29-L66 rk64:fa221995769bd57d
 packages/git-span/src/cli/drift_fix.rs#L45-L82 rk64:db9e32146e2088ae
 packages/git-span/src/cli/drift_output.rs#L872-L905 rk64:1fcbba788288ab6c
 packages/git-span/src/cli/interior_anchor.rs rk64:15cdc4a34ede7bdf

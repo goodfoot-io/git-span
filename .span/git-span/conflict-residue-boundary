@@ -1,6 +1,6 @@
 packages/git-span/src/cli/drift_fix.rs#L225-L432 rk64:df4052e34e267bf9
 packages/git-span/src/cli/drift_fix.rs#L572-L666 rk64:cf1fe6c7254a8305
 packages/git-span/src/cli/drift_fix.rs#L699-L909 rk64:8803d4094843c48f
-packages/git-span/tests/cases/conflict_split_boundary.rs rk64:9e7ac8e17dd74de6
+packages/git-span/tests/cases/conflict_split_boundary.rs rk64:c68f46ecaecfd07c
 
 The residue writer and the conflict-marker reader are two halves of one format: format_residue_markers puts divergent anchors in a conflict block before the blank separator and divergent why in a second block after it, and SideBuilder recovers each side's anchor/why boundary from that separator alone. Move the boundary into a conflict block, or infer it from what a line looks like, and ordinary why prose parses as a fabricated anchor while the operator's sentence disappears.

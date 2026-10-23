@@ -432,14 +432,14 @@ var logger = new Logger({
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve5(chunks.join(""));
+      resolve6(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject(error);
@@ -501,12 +501,12 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     stream.write(content, (error) => {
       if (error)
         reject(error);
       else
-        resolve5();
+        resolve6();
     });
   });
 }
@@ -6438,8 +6438,19 @@ var MAX_MEMO_BYTES = 256 * 1024;
 // packages/agent-hooks/src/common/touch-core.ts
 var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 
+// packages/agent-hooks/src/common/commit-inspection-context.ts
+import { execFileSync as execFileSync6 } from "node:child_process";
+var MAX_NATIVE_BYTES = 16 * 1024 * 1024;
+var MAX_REPORT_BYTES = 64 * 1024;
+
+// packages/agent-hooks/src/common/commit-inspection-selection.ts
+import { execFile } from "node:child_process";
+import { existsSync as existsSync5, realpathSync as realpathSync3 } from "node:fs";
+import { resolve as resolve5 } from "node:path";
+var MAX_OUTPUT = 4 * 1024 * 1024;
+
 // packages/agent-hooks/src/common/parse-response.ts
-import { existsSync as existsSync5, statSync as statSync6 } from "node:fs";
+import { existsSync as existsSync6, statSync as statSync6 } from "node:fs";
 import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
 
 // packages/agent-hooks/src/common/bash-attribution.ts

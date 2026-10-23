@@ -62,7 +62,7 @@ function protocolChild(script: string): CommitInspectionContextExecutor {
 }
 
 describe('commit inspection envelope', () => {
-  it.skip('accepts the exact complete set independent of order and deduplicates requested identities', () => {
+  it('accepts the exact complete set independent of order and deduplicates requested identities', () => {
     const input = document({ commits: [SECOND, FIRST] });
     expect(decodeCommitInspectionContext(JSON.stringify(input), [FIRST, SECOND, FIRST])).toEqual(input);
     const sha256 = 'd'.repeat(64);
@@ -71,7 +71,7 @@ describe('commit inspection envelope', () => {
     ]);
   });
 
-  it.skip('rejects missing, extra, duplicate, malformed, abbreviated, and mixed-format identities', () => {
+  it('rejects missing, extra, duplicate, malformed, abbreviated, and mixed-format identities', () => {
     for (const commits of [[], [FIRST, SECOND], [FIRST, FIRST], ['HEAD'], [FIRST.slice(0, 12)], ['a'.repeat(64)]]) {
       expect(() => decodeCommitInspectionContext(JSON.stringify(document({ commits })), [FIRST])).toThrow();
     }
@@ -83,7 +83,7 @@ describe('commit inspection envelope', () => {
     ).toThrow();
   });
 
-  it.skip('rejects unknown envelope fields, schema versions, malformed spans, overlaps, and duplicate names', () => {
+  it('rejects unknown envelope fields, schema versions, malformed spans, overlaps, and duplicate names', () => {
     for (const invalid of [
       { ...document(), scopes: [] },
       { ...document(), mutation: {} },
@@ -97,7 +97,7 @@ describe('commit inspection envelope', () => {
     }
   });
 
-  it.skip('rejects malformed JSON and native data beyond the 16 MiB envelope limit', () => {
+  it('rejects malformed JSON and native data beyond the 16 MiB envelope limit', () => {
     expect(() => decodeCommitInspectionContext('{', [FIRST])).toThrow();
     expect(() =>
       decodeCommitInspectionContext(
@@ -109,7 +109,7 @@ describe('commit inspection envelope', () => {
 });
 
 describe('complete commit context rendering', () => {
-  it.skip('uses current coordinates, complete counterparts and full explanation without generic touch framing', () => {
+  it('uses current coordinates, complete counterparts and full explanation without generic touch framing', () => {
     const counterpart = anchor({
       ordinal: 1,
       id: 'counterpart',
@@ -132,13 +132,13 @@ describe('complete commit context rendering', () => {
     expect(output).not.toMatch(/Coupling|repair|once per session|read extent|discovery index/i);
   });
 
-  it.skip('preserves every nonfresh status and unavailable reason, with declared locations for absent anchors', () => {
+  it('preserves every nonfresh status and unavailable reason, with declared locations for absent anchors', () => {
     for (const code of ['MOVED', 'CHANGED', 'DELETED', 'CONFLICT', 'SUBMODULE', 'RESOLVED_PENDING_COMMIT'] as const) {
       const output = renderCommitInspectionContext(
         document({ spans: [span({ anchors: [anchor({ status: { code }, current: null })] })] })
       );
       expect(output).toContain('old.ts');
-      expect(output).toContain(' — ');
+      expect(output).toContain(` — ${code.toLowerCase().replaceAll('_', ' ')}`);
     }
     const output = renderCommitInspectionContext(
       document({
@@ -158,19 +158,19 @@ describe('complete commit context rendering', () => {
     expect(output).toMatch(/lfs.*not.*fetched/i);
   });
 
-  it.skip('returns no empty wrapper and rejects oversized UTF-8 reports rather than truncating them', () => {
+  it('returns no empty wrapper and rejects oversized UTF-8 reports rather than truncating them', () => {
     expect(renderCommitInspectionContext(document({ spans: [] }))).toBeNull();
     expect(() => renderCommitInspectionContext(document({ spans: [span({ why: '界'.repeat(23_000) })] }))).toThrow();
   });
 
-  it.skip('delivers identical complete content on repeated inspections without session snapshot state', () => {
+  it('delivers identical complete content on repeated inspections without session snapshot state', () => {
     const input = document();
     expect(renderCommitInspectionContext(input)).toEqual(renderCommitInspectionContext(input));
   });
 });
 
 describe('native process and atomic delivery', () => {
-  it.skip('invokes the native command with immutable argv in the effective repository without metadata mutation', async () => {
+  it('invokes the native command with immutable argv in the effective repository without metadata mutation', async () => {
     const repo = makeTempRepo();
     try {
       const before = readdirSync(repo.root);
@@ -190,7 +190,7 @@ describe('native process and atomic delivery', () => {
     }
   });
 
-  it.skip('turns native process errors, malformed output, mismatch, and timeout into explicit failures', async () => {
+  it('turns native process errors, malformed output, mismatch, and timeout into explicit failures', async () => {
     const repo = makeTempRepo();
     try {
       for (const script of [
@@ -207,7 +207,7 @@ describe('native process and atomic delivery', () => {
     }
   });
 
-  it.skip('returns complete reports and empty selections without a partial or empty wrapper', async () => {
+  it('returns complete reports and empty selections without a partial or empty wrapper', async () => {
     const executor: CommitInspectionContextExecutor = async () => ({ ok: true, document: document() });
     expect(
       await runCommitInspectionContext({ repoRoot: '/repo', commits: [FIRST] }, performance.now() + 1000, executor)
@@ -221,7 +221,7 @@ describe('native process and atomic delivery', () => {
     ).toBeNull();
   });
 
-  it.skip('bounds native time by five seconds and the remaining shared driver deadline', async () => {
+  it('bounds native time by five seconds and the remaining shared driver deadline', async () => {
     const budgets: number[] = [];
     const executor: CommitInspectionContextExecutor = async (request) => {
       budgets.push(request.timeoutMs);
@@ -234,7 +234,7 @@ describe('native process and atomic delivery', () => {
     expect(budgets[1]).toBeGreaterThan(0);
   });
 
-  it.skip('emits an unavailable notice and safely quoted retrieval command on failure or expired deadline', async () => {
+  it('emits an unavailable notice and safely quoted retrieval command on failure or expired deadline', async () => {
     const selection = { repoRoot: "/tmp/repo 'quoted' $(unsafe)", commits: [FIRST] };
     const executor: CommitInspectionContextExecutor = async () => ({ ok: false, reason: 'native unavailable' });
     const output = await runCommitInspectionContext(selection, performance.now() + 1000, executor);
@@ -248,7 +248,18 @@ describe('native process and atomic delivery', () => {
     expect(expired).not.toContain('<git-span>');
   });
 
-  it.skip('rejects an injected incomplete envelope, oversized rendering, and completion after the deadline atomically', async () => {
+  it('bounds unavailable notices for 4096 SHA256 identities without printing a partial commit set', async () => {
+    const commits = Array.from({ length: 4096 }, (_, index) => index.toString(16).padStart(64, '0'));
+    const executor: CommitInspectionContextExecutor = async () => ({ ok: false, reason: 'bounded failure' });
+    const output = await runCommitInspectionContext({ repoRoot: '/repo', commits }, performance.now() + 1000, executor);
+    expect(Buffer.byteLength(output ?? '')).toBeLessThanOrEqual(4096);
+    expect(output).toContain('4096 commits');
+    expect(output).toContain('cannot fit');
+    expect(output).not.toContain(commits[0]);
+    expect(output).not.toContain('<git-span>');
+  });
+
+  it('rejects an injected incomplete envelope, oversized rendering, and completion after the deadline atomically', async () => {
     const selection = { repoRoot: '/repo', commits: [FIRST] };
     for (const input of [document({ commits: [SECOND] }), document({ spans: [span({ why: 'x'.repeat(70_000) })] })]) {
       const executor: CommitInspectionContextExecutor = async () => ({ ok: true, document: input });
@@ -265,7 +276,7 @@ describe('native process and atomic delivery', () => {
 });
 
 describe('workspace native commit context integration', () => {
-  it.skip('decodes and renders real historical overlap with full current counterparts without rewriting definitions', async () => {
+  it('decodes and renders real historical overlap with full current counterparts without rewriting definitions', async () => {
     const native = buildWorkspaceGitSpan();
     const repo = makeRealBundleRepo(native.pathDir);
     try {

@@ -1,7 +1,9 @@
 packages/git-span/src/cli/context_repair.rs#L479-L512 rk64:0a06b674a53e166c
 packages/git-span/src/cli/context_repair.rs#L576-L593 rk64:0a31bff9641e4d89
 packages/git-span/src/cli/mod.rs#L159-L164 rk64:b1ce60a90ace97aa
+packages/git-span/src/cli/mod.rs#L160-L165 rk64:b1ce60a90ace97aa
 skills-src/git-span/git-span/references/command-reference.md#L162-L164 rk64:63c526c68754b7dd
 skills-src/git-span/git-span/references/understanding-hook-output.md.eta#L72-L76 rk64:af97d0c7a7e19d47
+skills-src/git-span/git-span/references/understanding-hook-output.md.eta#L80-L84 rk64:af97d0c7a7e19d47
 
 The repair planner and identity gate are authoritative for the CLI help and skill guidance: "selected spans and elsewhere in the addressed files" describes the mutation scope, while "Response selection still follows the requested ranges." Neither the generated command page nor skill rendering verifies these prose claims against repair behavior; whitespace edits and fuzzy matches remain review obligations.

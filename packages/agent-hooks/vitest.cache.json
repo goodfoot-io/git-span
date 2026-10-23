@@ -173,6 +173,211 @@
       "packages/git-span/scripts/**",
       "packages/git-span/.cargo/**"
     ],
-    "packages/agent-hooks/test/common/commit-inspection-selection.test.ts": []
+    "packages/agent-hooks/test/common/commit-inspection-selection.test.ts": [],
+    "packages/agent-hooks/test/common/commit-inspection-delivery.test.ts": [],
+    "packages/agent-hooks/test/claude/post-tool-use.test.ts": [],
+    "packages/agent-hooks/test/common/bash-attribution.test.ts": [],
+    "packages/agent-hooks/test/opencode/post-tool-use.test.ts": [],
+    "packages/agent-hooks/test/antigravity/stash.test.ts": [],
+    "packages/agent-hooks/test/antigravity/attribution-split.test.ts": [],
+    "packages/agent-hooks/test/antigravity/skill-tree-vocabulary.test.ts": [
+      "plugins-antigravity/git-span/skills/**"
+    ],
+    "packages/agent-hooks/test/claude/read-exposure.test.ts": [],
+    "packages/agent-hooks/test/claude/commit-hooks.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**",
+      "packages/agent-hooks/src/**",
+      "packages/agent-hooks/scripts/**",
+      "packages/agent-hooks/package.json",
+      "plugins-claude/git-span/**",
+      "plugins-codex/git-span/**",
+      "plugins-opencode/git-span/**",
+      "plugins-antigravity/git-span/**",
+      "yarn.lock"
+    ],
+    "packages/agent-hooks/test/common/formatter-table-coverage.test.ts": [],
+    "packages/agent-hooks/test/common/hook-build-portability.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**",
+      "packages/agent-hooks/src/**",
+      "packages/agent-hooks/scripts/**",
+      "packages/agent-hooks/package.json",
+      "plugins-claude/git-span/**",
+      "plugins-codex/git-span/**",
+      "plugins-opencode/git-span/**",
+      "plugins-antigravity/git-span/**",
+      "yarn.lock"
+    ],
+    "packages/agent-hooks/test/common/commit-git.test.ts": [],
+    "packages/agent-hooks/test/common/commit-transport.test.ts": [],
+    "packages/agent-hooks/test/common/touch-core.test.ts": [],
+    "packages/agent-hooks/test/common/touch-batch-prefetch.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/common/fail-open.test.ts": [],
+    "packages/agent-hooks/test/common/delivery-presentation.test.ts": [],
+    "packages/agent-hooks/test/common/span-ignore.test.ts": [],
+    "packages/agent-hooks/test/common/parse-command.test.ts": [],
+    "packages/agent-hooks/test/common/bash-touch-phases.test.ts": [],
+    "packages/agent-hooks/test/common/xtrace-oracle.test.ts": [],
+    "packages/agent-hooks/test/common/bash-touch.test.ts": [],
+    "packages/agent-hooks/test/common/hook-anchor-attribution.test.ts": [],
+    "packages/agent-hooks/test/common/bash-write-integration.test.ts": [],
+    "packages/agent-hooks/test/common/update-check-suppression.test.ts": [],
+    "packages/agent-hooks/test/common/exposure-reset.test.ts": [],
+    "packages/agent-hooks/test/common/static-attribution-units.test.ts": [],
+    "packages/agent-hooks/test/common/cross-adapter-contract.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/common/context-lock-wait.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/common/fail-open-anchor-tree.test.ts": [],
+    "packages/agent-hooks/test/common/context-batch.test.ts": [],
+    "packages/agent-hooks/test/common/core-fault-injection.test.ts": [],
+    "packages/agent-hooks/test/common/porcelain-contract.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/common/anchor-tree-height.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**",
+      ".span/**"
+    ],
+    "packages/agent-hooks/test/common/workspace-git-span-build-budget.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/common/memo-store.test.ts": [],
+    "packages/agent-hooks/test/common/anchor-tree-no-intl.test.ts": [],
+    "packages/agent-hooks/test/common/parse-response.test.ts": [],
+    "packages/agent-hooks/test/opencode/commit-commands.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**"
+    ],
+    "packages/agent-hooks/test/opencode/logger.test.ts": [],
+    "packages/agent-hooks/test/opencode/narrows.test.ts": [],
+    "packages/agent-hooks/test/opencode/installer.test.ts": [
+      "plugins-opencode/git-span/**"
+    ],
+    "packages/agent-hooks/test/opencode/module-shape.test.ts": [
+      "plugins-opencode/git-span/package.json",
+      "plugins-opencode/git-span/dist/**"
+    ],
+    "packages/agent-hooks/test/opencode/skill-tree-vocabulary.test.ts": [
+      "plugins-opencode/git-span/skills/**"
+    ],
+    "packages/agent-hooks/test/opencode/session.test.ts": [],
+    "packages/agent-hooks/test/common/guidance-lifecycle-bundle.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**",
+      "packages/agent-hooks/package.json",
+      "plugins-claude/git-span/**",
+      "plugins-codex/git-span/**",
+      "plugins-antigravity/git-span/**",
+      "plugins-opencode/git-span/**",
+      "scripts/**"
+    ],
+    "packages/agent-hooks/test/common/short-touch-notices.test.ts": [
+      "packages/git-span/src/**",
+      "packages/git-span-core/src/**",
+      "packages/git-span/Cargo.toml",
+      "packages/git-span/Cargo.lock",
+      "packages/git-span-core/Cargo.toml",
+      "packages/git-span/build.rs",
+      "packages/git-span/package.json",
+      "packages/git-span/scripts/**",
+      "packages/git-span/.cargo/**",
+      "packages/agent-hooks/package.json",
+      "plugins-claude/git-span/**",
+      "plugins-codex/git-span/**",
+      "plugins-antigravity/git-span/**",
+      "plugins-opencode/git-span/**",
+      "scripts/**"
+    ]
+  },
+  "dynamicImports": {
+    "packages/agent-hooks/test/common/update-check-suppression.test.ts": [
+      "packages/agent-hooks/src/claude/**",
+      "packages/agent-hooks/src/codex/**",
+      "packages/agent-hooks/src/antigravity/**"
+    ],
+    "packages/agent-hooks/test/opencode/module-shape.test.ts": [
+      "plugins-opencode/git-span/dist/**"
+    ]
   }
 }

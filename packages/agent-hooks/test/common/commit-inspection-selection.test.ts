@@ -35,7 +35,7 @@ afterEach(() => {
 });
 
 describe('commit inspection selection contract', () => {
-  it.skip.each(['git show', 'git show HEAD', 'git show --stat HEAD', 'git show --name-only HEAD'])(
+  it.each(['git show', 'git show HEAD', 'git show --stat HEAD', 'git show --name-only HEAD'])(
     'selects one complete immutable commit with %s',
     async (command) => {
       const { repo, remove } = fixture();
@@ -47,7 +47,7 @@ describe('commit inspection selection contract', () => {
     }
   );
 
-  it.skip.each(['git log', 'git log --oneline', 'git log -p', 'git log --format="message only" --graph --stat'])(
+  it.each(['git log', 'git log --oneline', 'git log -p', 'git log --format="message only" --graph --stat'])(
     'preserves complete log membership independently of presentation: %s',
     async (command) => {
       const { repo, root, introduce, other, remove } = fixture();
@@ -59,7 +59,7 @@ describe('commit inspection selection contract', () => {
     }
   );
 
-  it.skip('preserves count and skip rather than expanding a truncated log to all history', async () => {
+  it('preserves count and skip rather than expanding a truncated log to all history', async () => {
     const { repo, other, introduce } = fixture();
     expect(await resolveCommitInspection('git log -n 2 --skip=1', repo)).toEqual({
       kind: 'selected',
@@ -68,7 +68,7 @@ describe('commit inspection selection contract', () => {
     });
   });
 
-  it.skip('handles show ranges and multiple explicit objects through native show semantics', async () => {
+  it('handles show ranges and multiple explicit objects through native show semantics', async () => {
     const { repo, root, introduce, other, remove } = fixture();
     expect(await resolveCommitInspection(`git show ${root}..${remove}`, repo)).toEqual({
       kind: 'selected',
@@ -82,7 +82,7 @@ describe('commit inspection selection contract', () => {
     });
   });
 
-  it.skip.each(['-S TOKEN', '-G TOKEN', '--grep=token', '--author="Selection Fixture" --grep=token'])(
+  it.each(['-S TOKEN', '-G TOKEN', '--grep=token', '--author="Selection Fixture" --grep=token'])(
     'preserves native filtered selection: %s',
     async (filter) => {
       const { repo, introduce, remove } = fixture();
@@ -94,7 +94,7 @@ describe('commit inspection selection contract', () => {
     }
   );
 
-  it.skip('keeps pathspec selection separate from presentation', async () => {
+  it('keeps pathspec selection separate from presentation', async () => {
     const { repo, other } = fixture();
     expect(await resolveCommitInspection('git log --name-status -- y', repo)).toEqual({
       kind: 'selected',
@@ -103,7 +103,7 @@ describe('commit inspection selection contract', () => {
     });
   });
 
-  it.skip('preserves first-parent and merge-diff-dependent pickaxe membership', async () => {
+  it('preserves first-parent and merge-diff-dependent pickaxe membership', async () => {
     const { repo, introduce, remove, commit } = fixture();
     git(repo, 'checkout', '-qb', 'side', introduce);
     commit('side branch', 'z', 'side\n');
@@ -127,7 +127,7 @@ describe('commit inspection selection contract', () => {
     });
   });
 
-  it.skip('resolves repeated relative -C and a literal cd prefix in the effective repository', async () => {
+  it('resolves repeated relative -C and a literal cd prefix in the effective repository', async () => {
     const { repo, remove } = fixture();
     mkdirSync(join(repo, 'sub'));
     for (const command of ['git -C sub -C .. show HEAD', 'cd sub && git -C .. show HEAD']) {
@@ -139,7 +139,7 @@ describe('commit inspection selection contract', () => {
     }
   });
 
-  it.skip('selects an alternate repository rather than the invoking workspace HEAD', async () => {
+  it('selects an alternate repository rather than the invoking workspace HEAD', async () => {
     const source = fixture();
     const target = fixture();
     const targetHead = target.commit('target only', 'z', 'target\n');
@@ -150,7 +150,7 @@ describe('commit inspection selection contract', () => {
     });
   });
 
-  it.skip('accepts a successful empty selection', async () => {
+  it('accepts a successful empty selection', async () => {
     const { repo } = fixture();
     expect(await resolveCommitInspection('git log --grep=never-matches', repo)).toEqual({
       kind: 'selected',
@@ -159,7 +159,7 @@ describe('commit inspection selection contract', () => {
     });
   });
 
-  it.skip('reports failed revision resolution without returning a partial selection', async () => {
+  it('reports failed revision resolution without returning a partial selection', async () => {
     const { repo } = fixture();
     expect(await resolveCommitInspection('git show HEAD missing-revision', repo)).toEqual({
       kind: 'failed',
@@ -167,7 +167,7 @@ describe('commit inspection selection contract', () => {
     });
   });
 
-  it.skip('supports full identities in SHA-256 repositories', async () => {
+  it('supports full identities in SHA-256 repositories', async () => {
     const { repo, remove } = fixture('sha256');
     expect(remove).toHaveLength(64);
     expect(await resolveCommitInspection('git show', repo)).toEqual({
@@ -177,8 +177,7 @@ describe('commit inspection selection contract', () => {
     });
   });
 
-  it.skip.each([
-    'git show HEAD:x',
+  it.each([
     'git show HEAD^{tree}',
     'git log --output=stolen',
     'git log --ext-diff',
@@ -191,22 +190,265 @@ describe('commit inspection selection contract', () => {
     expect(await resolveCommitInspection(command, repo)).toEqual({ kind: 'unsupported', recognized: true });
   });
 
-  it.skip.each([
-    'cat x',
-    'git status',
+  it.each(['git show HEAD:x', 'git show HEAD:x | cat', 'cat x', 'git status'])(
+    'leaves blob reads and unrelated shell operations unclaimed: %s',
+    async (command) => {
+      const { repo } = fixture();
+      expect(await resolveCommitInspection(command, repo)).toEqual({ kind: 'unsupported', recognized: false });
+    }
+  );
+
+  it.each([
     'git show | head',
+    'git log --oneline -n1 | cat',
     'git log; git status',
     'git show "$REV"',
     'GIT_DIR=elsewhere git show',
     'git -c alias.show=status show',
     'git show > output',
     'false && git show'
-  ])('rejects an unrelated or ambiguous shell operation: %s', async (command) => {
+  ])('recognizes ambiguous commit intent without inferring selected commits: %s', async (command) => {
     const { repo } = fixture();
-    expect(await resolveCommitInspection(command, repo)).toEqual({ kind: 'unsupported', recognized: false });
+    expect(await resolveCommitInspection(command, repo)).toEqual({ kind: 'unsupported', recognized: true });
   });
 
-  it.skip('fails closed when the selected history exceeds 4096 commits', async () => {
+  it.each(['--pretty', '--abbrev', '--pretty=oneline', '--abbrev=8', '--date iso', '--encoding UTF-8'])(
+    'normalizes presentation option arity without consuming a revision: %s',
+    async (option) => {
+      const { repo, introduce } = fixture();
+      expect(await resolveCommitInspection(`git show ${option} HEAD~2`, repo)).toEqual({
+        kind: 'selected',
+        repoRoot: repo,
+        commits: [introduce]
+      });
+    }
+  );
+
+  it('preserves subdirectory and implicit path disambiguation', async () => {
+    const { repo, commit } = fixture();
+    mkdirSync(join(repo, 'sub'));
+    const local = commit('local path', 'sub/local', 'local\n');
+    expect(await resolveCommitInspection('git log local', join(repo, 'sub'))).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: [local]
+    });
+    expect(await resolveCommitInspection('git log -- y', join(repo, 'sub'))).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: []
+    });
+  });
+
+  it('rejects annotated tags and explicit non-commit object identities', async () => {
+    const { repo } = fixture();
+    git(repo, 'tag', '-am', 'annotation', 'annotated');
+    for (const revision of ['annotated', git(repo, 'rev-parse', 'HEAD^{tree}'), git(repo, 'rev-parse', 'HEAD:x')]) {
+      expect(await resolveCommitInspection(`git show ${revision}`, repo)).toEqual({
+        kind: 'unsupported',
+        recognized: true
+      });
+    }
+  });
+
+  it('rejects replacement refs rather than changing the inspected history', async () => {
+    const { repo, introduce, remove } = fixture();
+    git(repo, 'replace', remove, introduce);
+    expect(await resolveCommitInspection('git log', repo)).toEqual({ kind: 'unsupported', recognized: true });
+  });
+
+  it('rejects configured external diff and text conversion helpers', async () => {
+    const { repo } = fixture();
+    git(repo, 'config', 'diff.custom.textconv', 'a-helper-that-must-never-run');
+    expect(await resolveCommitInspection('git log -S TOKEN', repo)).toEqual({ kind: 'unsupported', recognized: true });
+  });
+
+  it.each(['git log -n1 &', 'git show&', 'cd . && git log -n1&'])(
+    'recognizes background inspection without treating it as completed: %s',
+    async (command) => {
+      const { repo } = fixture();
+      expect(await resolveCommitInspection(command, repo)).toEqual({ kind: 'unsupported', recognized: true });
+    }
+  );
+
+  it.each(["git log --grep='root&literal'", 'git log --grep="root&literal"', 'git log --grep=root\\&literal'])(
+    'allows literal quoted or escaped ampersands in arguments: %s',
+    async (command) => {
+      const { repo } = fixture();
+      expect(await resolveCommitInspection(command, repo)).toEqual({ kind: 'selected', repoRoot: repo, commits: [] });
+    }
+  );
+
+  it.each([
+    { options: '', selected: true },
+    { options: '--oneline', selected: false },
+    { options: '--pretty', selected: false },
+    { options: '--pretty=medium', selected: false },
+    { options: '--format=%H', selected: false },
+    { options: '--notes', selected: true },
+    { options: '--show-notes', selected: true },
+    { options: '--oneline --notes', selected: true },
+    { options: '--notes --oneline', selected: true },
+    { options: '--no-notes', selected: false },
+    { options: '--notes --no-notes', selected: false },
+    { options: '--no-notes --notes', selected: true }
+  ])('preserves note-sensitive grep selection with $options', async ({ options, selected }) => {
+    const { repo, root } = fixture();
+    git(repo, 'notes', 'add', '-m', 'NOTETOKEN', root);
+    const args = options === '' ? [] : options.split(' ');
+    expect(git(repo, 'log', ...args, '--grep=NOTETOKEN').includes(root.slice(0, 7))).toBe(selected);
+    expect(await resolveCommitInspection(`git log ${options} --grep=NOTETOKEN`, repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: selected ? [root] : []
+    });
+  });
+
+  it('preserves notes with all-match and inverted grep filters', async () => {
+    const { repo, root, introduce, other, remove } = fixture();
+    git(repo, 'notes', 'add', '-m', 'NOTETOKEN', root);
+    expect(await resolveCommitInspection('git log --grep=root --grep=NOTETOKEN --all-match', repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: [root]
+    });
+    expect(await resolveCommitInspection('git log --grep=NOTETOKEN --invert-grep', repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: [remove, other, introduce]
+    });
+  });
+
+  it('retains explicit custom notes refs and configured default display refs', async () => {
+    const { repo, root } = fixture();
+    git(repo, 'notes', '--ref=custom', 'add', '-m', 'CUSTOMTOKEN', root);
+    expect(await resolveCommitInspection('git log --oneline --notes=custom --grep=CUSTOMTOKEN', repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: [root]
+    });
+    git(repo, 'config', 'notes.displayRef', 'refs/notes/custom');
+    expect(await resolveCommitInspection('git log --grep=CUSTOMTOKEN', repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: [root]
+    });
+    expect(await resolveCommitInspection('git log --oneline --grep=CUSTOMTOKEN', repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: []
+    });
+  });
+
+  it('uses inherited native notes ref selection without affecting repository discovery', async () => {
+    const { repo, root } = fixture();
+    git(repo, 'notes', '--ref=custom', 'add', '-m', 'CUSTOMTOKEN', root);
+    const original = process.env.GIT_NOTES_REF;
+    process.env.GIT_NOTES_REF = 'refs/notes/custom';
+    try {
+      expect(await resolveCommitInspection('git log --grep=CUSTOMTOKEN', repo)).toEqual({
+        kind: 'selected',
+        repoRoot: repo,
+        commits: [root]
+      });
+    } finally {
+      if (original === undefined) delete process.env.GIT_NOTES_REF;
+      else process.env.GIT_NOTES_REF = original;
+    }
+  });
+
+  it('keeps implicit notes selection when formatting comes from repository configuration', async () => {
+    const { repo, root } = fixture();
+    git(repo, 'notes', 'add', '-m', 'NOTETOKEN', root);
+    git(repo, 'config', 'format.pretty', 'oneline');
+    expect(await resolveCommitInspection('git log --grep=NOTETOKEN', repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: [root]
+    });
+  });
+
+  it.each([
+    { format: '%N', selected: true },
+    { format: '%+N', selected: true },
+    { format: '%-N', selected: true },
+    { format: '% N', selected: true },
+    { format: '%%N', selected: false },
+    { format: '%%%N', selected: true },
+    { format: '%x25N', selected: false },
+    { format: '%x%N', selected: true }
+  ])('uses native note-placeholder semantics for $format', async ({ format, selected }) => {
+    const { repo, root } = fixture();
+    git(repo, 'notes', 'add', '-m', 'NOTETOKEN', root);
+    expect(Boolean(git(repo, 'log', `--format=${format}`, '--grep=NOTETOKEN'))).toBe(selected);
+    expect(await resolveCommitInspection(`git log --format='${format}' --grep=NOTETOKEN`, repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: selected ? [root] : []
+    });
+  });
+
+  it.each(['format:%N', 'format:%%N', 'format:%+N'])(
+    'keeps implicit note filtering with configured format.pretty=$format',
+    async (format) => {
+      const { repo, root } = fixture();
+      git(repo, 'notes', 'add', '-m', 'NOTETOKEN', root);
+      git(repo, 'config', 'format.pretty', format);
+      expect(Boolean(git(repo, 'log', '--grep=NOTETOKEN'))).toBe(true);
+      expect(await resolveCommitInspection('git log --grep=NOTETOKEN', repo)).toEqual({
+        kind: 'selected',
+        repoRoot: repo,
+        commits: [root]
+      });
+    }
+  );
+
+  it.each(["--format='%(trailers:key=%N)'", '--format=%N --pretty=medium', '--pretty=custom'])(
+    'fails closed on unresolved note-sensitive formatting interactions: %s',
+    async (options) => {
+      const { repo } = fixture();
+      git(repo, 'config', 'pretty.custom', '%N');
+      expect(await resolveCommitInspection(`git log ${options} --grep=NOTETOKEN`, repo)).toEqual({
+        kind: 'unsupported',
+        recognized: true
+      });
+    }
+  );
+
+  it('preserves explicit no-notes and custom refs even when a userformat requests notes', async () => {
+    const { repo, root } = fixture();
+    git(repo, 'notes', 'add', '-m', 'NOTETOKEN', root);
+    git(repo, 'notes', '--ref=custom', 'add', '-m', 'CUSTOMTOKEN', root);
+    expect(await resolveCommitInspection('git log --no-notes --format=%N --grep=NOTETOKEN', repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: []
+    });
+    expect(await resolveCommitInspection('git log --format=%N --notes=custom --grep=CUSTOMTOKEN', repo)).toEqual({
+      kind: 'selected',
+      repoRoot: repo,
+      commits: [root]
+    });
+  });
+
+  it('inherits native GIT_NOTES_DISPLAY_REF for implicit note filtering', async () => {
+    const { repo, root } = fixture();
+    git(repo, 'notes', '--ref=custom', 'add', '-m', 'CUSTOMTOKEN', root);
+    const original = process.env.GIT_NOTES_DISPLAY_REF;
+    process.env.GIT_NOTES_DISPLAY_REF = 'refs/notes/custom';
+    try {
+      expect(await resolveCommitInspection('git log --grep=CUSTOMTOKEN', repo)).toEqual({
+        kind: 'selected',
+        repoRoot: repo,
+        commits: [root]
+      });
+    } finally {
+      if (original === undefined) delete process.env.GIT_NOTES_DISPLAY_REF;
+      else process.env.GIT_NOTES_DISPLAY_REF = original;
+    }
+  });
+
+  it('fails closed when the selected history exceeds 4096 commits', async () => {
     const { repo } = fixture();
     const records = ['blob\nmark :1\ndata 1\nx\n'];
     for (let index = 0; index < 4097; index++) {

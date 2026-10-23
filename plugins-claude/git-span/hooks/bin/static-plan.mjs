@@ -523,14 +523,14 @@ var EXIT_CODES = {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve8, reject2) => {
+  return new Promise((resolve9, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve8(chunks.join(""));
+      resolve9(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject2(error);
@@ -592,12 +592,12 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve8, reject2) => {
+  return new Promise((resolve9, reject2) => {
     stream.write(content, (error) => {
       if (error)
         reject2(error);
       else
-        resolve8();
+        resolve9();
     });
   });
 }
@@ -6753,8 +6753,19 @@ var MAX_MEMO_BYTES = 256 * 1024;
 // packages/agent-hooks/src/common/touch-core.ts
 var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 
+// packages/agent-hooks/src/common/commit-inspection-context.ts
+import { execFileSync as execFileSync6 } from "node:child_process";
+var MAX_NATIVE_BYTES = 16 * 1024 * 1024;
+var MAX_REPORT_BYTES = 64 * 1024;
+
+// packages/agent-hooks/src/common/commit-inspection-selection.ts
+import { execFile } from "node:child_process";
+import { existsSync as existsSync5, realpathSync as realpathSync3 } from "node:fs";
+import { resolve as resolve5 } from "node:path";
+var MAX_OUTPUT = 4 * 1024 * 1024;
+
 // packages/agent-hooks/src/common/parse-response.ts
-import { existsSync as existsSync5, statSync as statSync6 } from "node:fs";
+import { existsSync as existsSync6, statSync as statSync6 } from "node:fs";
 import { dirname as dirname7, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
 
 // packages/agent-hooks/src/common/bash-attribution.ts
@@ -6888,7 +6899,7 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync7, lstatSync as lstatSync2, realpathSync as realpathSync3, renameSync as renameSync5, rmSync as rmSync5 } from "node:fs";
+import { existsSync as existsSync8, lstatSync as lstatSync2, realpathSync as realpathSync4, renameSync as renameSync5, rmSync as rmSync5 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join10 } from "node:path";
 
@@ -6978,10 +6989,10 @@ function decideCommitClaim(owner, liveness, remainingMs) {
 
 // packages/agent-hooks/src/common/commit-observation.ts
 import { createHash as createHash5 } from "node:crypto";
-import { resolve as resolve6 } from "node:path";
+import { resolve as resolve7 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-git.ts
-import { isAbsolute as isAbsolute6, resolve as resolve5 } from "node:path";
+import { isAbsolute as isAbsolute6, resolve as resolve6 } from "node:path";
 function parseCommitGitInvocation(argv, cwd) {
   const reject2 = (reason) => ({ ok: false, reason });
   if (!isAbsolute6(cwd) || argv.some((arg) => arg.includes("\0"))) return reject2("invalid Git argv or cwd");
@@ -7023,7 +7034,7 @@ function parseCommitGitInvocation(argv, cwd) {
         return reject2("unsupported Git global option");
     }
     if (value === void 0 || value === "" && option !== "-C") return reject2("incomplete Git global option");
-    if (option === "-C" && value !== "") effectiveCwd = resolve5(effectiveCwd, value);
+    if (option === "-C" && value !== "") effectiveCwd = resolve6(effectiveCwd, value);
     if (option === "--git-dir") gitDirectory = value;
     if (option === "--work-tree") workTree = value;
     index++;
@@ -7097,7 +7108,7 @@ function checkpointCommitInvocation(enrollment, deadline) {
     const args = stripWrappers(argvOf(stage.text) ?? []);
     const executable = args[0]?.split("/").at(-1);
     if (executable === "cd" && args.length === 2 && args[1] && !/[`$~*?]/.test(args[1])) {
-      cwd = resolve6(cwd, args[1]);
+      cwd = resolve7(cwd, args[1]);
       add(cwd, []);
     } else if (executable === "git") {
       const parsed = parseCommitGitInvocation(args.slice(1), cwd);
@@ -7110,14 +7121,14 @@ function checkpointCommitInvocation(enrollment, deadline) {
 }
 
 // packages/agent-hooks/src/common/commit-span-metadata.ts
-import { relative as relative3, resolve as resolve7 } from "node:path";
+import { relative as relative3, resolve as resolve8 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-storage.ts
 import { createHash as createHash6, randomBytes } from "node:crypto";
 import {
   closeSync as closeSync4,
   constants as constants2,
-  existsSync as existsSync6,
+  existsSync as existsSync7,
   fstatSync as fstatSync2,
   linkSync,
   lstatSync,
@@ -7155,12 +7166,12 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
   child.on("error", (error) => {
     spawnError = error;
   });
-  const closed = new Promise((resolve8) => {
-    child.once("close", (code, signal) => resolve8({ code, signal }));
+  const closed = new Promise((resolve9) => {
+    child.once("close", (code, signal) => resolve9({ code, signal }));
   });
   let released = false;
   try {
-    await new Promise((resolve8, reject2) => {
+    await new Promise((resolve9, reject2) => {
       let output = "";
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
@@ -7170,7 +7181,7 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
         output += chunk.toString("utf8");
         if (output === "locked\n") {
           clearTimeout(timer);
-          resolve8();
+          resolve9();
         } else if (output.length >= 7) {
           clearTimeout(timer);
           child.kill("SIGKILL");
@@ -7247,7 +7258,7 @@ function atomicJson(path, value, immutable = false) {
   }
 }
 function boundedEntries(directory, cap, deadline = Infinity) {
-  if (!existsSync6(directory)) return [];
+  if (!existsSync7(directory)) return [];
   const stream = opendirSync(directory);
   const names = [];
   try {
@@ -7287,7 +7298,7 @@ async function acquireReceiptClaim(root, key2, deadline, executable) {
     let retained = false;
     try {
       let prior = null;
-      if (existsSync6(path)) {
+      if (existsSync7(path)) {
         prior = ownerRecord(readJson(path, 4096));
         if (prior === null) return null;
       }
@@ -7349,7 +7360,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
     if (!claim) throw new Error("invocation enrollment ownership unavailable");
     try {
       const enrollmentPath = join10(directory, "enrollment.json");
-      if (existsSync7(enrollmentPath)) {
+      if (existsSync8(enrollmentPath)) {
         const existing = validateCommitEnrollment(readJson(enrollmentPath));
         if (!existing.ok) throw new Error(existing.reason);
         const state2 = readState(directory, existing.value);
@@ -7360,7 +7371,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
           enrollment: existing.value
         };
       }
-      if (!lstatSync2(realpathSync3(request.cwd)).isDirectory())
+      if (!lstatSync2(realpathSync4(request.cwd)).isDirectory())
         throw new Error("effective shell cwd must be a directory");
       const originalInput = JSON.parse(JSON.stringify(request.toolInput));
       if (!isRecord(originalInput)) throw new Error("shell input is not a JSON object");
@@ -7385,7 +7396,7 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
       for (const context of commands) {
         const inspectedContext = inspectInput(request.toolInput, context.command);
         if (!inspectedContext.ok) throw new Error(inspectedContext.reason);
-        if (!lstatSync2(realpathSync3(context.cwd)).isDirectory())
+        if (!lstatSync2(realpathSync4(context.cwd)).isDirectory())
           throw new Error("effective shell cwd must be a directory");
         for (const observation of checkpointCommitInvocation(
           { ...valid.value, originalCommand: inspectedContext.value, cwd: context.cwd },

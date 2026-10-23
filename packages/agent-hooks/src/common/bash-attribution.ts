@@ -15,6 +15,8 @@ import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { relativeToRepo, resolveRepoRoot, type SessionLayout, toPosix } from './agent-hooks-common.js';
 import { type BashTouchMatch, bashResponseInterrupted, runBashTouches } from './bash-touch.js';
+import { type CommitInspectionContextExecutor, runCommitInspectionContext } from './commit-inspection-context.js';
+import { resolveCommitInspection } from './commit-inspection-selection.js';
 import { flushFailOpen } from './fail-open.js';
 import { isRecord } from './guards.js';
 import { parseCommandDetailed, type ResolvedSpan } from './parse-command.js';
@@ -399,12 +401,33 @@ export async function runLayeredBashTouches(
   executors: TouchExecutors,
   memo: MemoStore,
   logger: CoreLogger,
-  store: PlannedTouchStore
+  store: PlannedTouchStore,
+  inspection?: { successful: boolean; executor?: CommitInspectionContextExecutor }
 ): Promise<string[]> {
   const parserStarted = performance.now();
   const claimed = toolUseId === undefined ? { status: 'missing' as const } : store.take(sessionId, toolUseId);
   if (claimed.status === 'consumed') return [];
   const record = claimed.status === 'record' ? claimed.record : null;
+  let commitNotice: string | null = null;
+  let suppressCommitReads = false;
+  if (inspection?.successful && !bashResponseInterrupted(toolResponse)) {
+    const deadlineMs = performance.now() + 8000;
+    const selection = await resolveCommitInspection(command, cwd);
+    if (selection.kind === 'selected') {
+      const report = await runCommitInspectionContext(selection, deadlineMs, inspection.executor);
+      return report === null ? [] : [report];
+    }
+    if (selection.kind === 'failed' || selection.recognized) {
+      const reason = selection.kind === 'failed' ? selection.reason : 'unsupported commit inspection command form';
+      logger.warn('git-span complete commit context unavailable', { reason });
+      commitNotice = `\nGit span commit context unavailable: ${reason.replace(/\p{Cc}/gu, ' ').slice(0, 200)}. No partial commit report was delivered.\n`;
+      if (selection.kind === 'failed') return [commitNotice];
+      // Unsupported compounds can contain independent reads or real writes.
+      // Retain those command-derived touches, but never reinterpret a partial
+      // commit patch or line-history read as the complete commit report.
+      suppressCommitReads = true;
+    }
+  }
   const planned = plannedSpans(record, cwd, logger);
   const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
   const preStateKeys = new Set(parsed.preStateRequests.map((request) => planGroupKey(request)));
@@ -413,7 +436,9 @@ export async function runLayeredBashTouches(
     // Re-emitting the post-state parse alongside that plan made one logical
     // write run the full git-span surface twice whenever its recovered range
     // differed from the planned union range.
-    .filter(({ span }) => !preStateKeys.has(planGroupKey(span)))
+    .filter(
+      ({ span, idiom }) => !preStateKeys.has(planGroupKey(span)) && !(suppressCommitReads && idiom === 'git-log-L')
+    )
     .map(({ idiom, span }) => ({ status: 'resolved', idiom, span }));
   // A second deterministic parse is needed only for conditional compounds:
   // the layered result already carries every resolved span's join metadata,
@@ -457,7 +482,7 @@ export async function runLayeredBashTouches(
     }
   }
   const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
-  const responseSpans = response === null ? [] : parseResponse({ command, cwd, ...response });
+  const responseSpans = response === null || suppressCommitReads ? [] : parseResponse({ command, cwd, ...response });
   const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
   const parserLatencyMs = performance.now() - parserStarted;
   const touchStarted = performance.now();
@@ -488,7 +513,7 @@ export async function runLayeredBashTouches(
     `${sessionId}:${toolUseId ?? createHash('sha256').update(command).digest('hex')}:response`,
     logger
   );
-  const blocks = [...commandBlocks, ...responseBatch.blocks];
+  const blocks = [...commandBlocks, ...responseBatch.blocks, ...(commitNotice === null ? [] : [commitNotice])];
   logger.info?.('git-span static attribution post', {
     resolvedReads: filtered.matches.filter((match) => match.status === 'resolved' && match.span.operation === 'read')
       .length,

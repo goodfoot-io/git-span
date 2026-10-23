@@ -1,5 +1,5 @@
 packages/git-span/src/cli/drift_output.rs#L110-L117 rk64:cad4ab94d8a3157c
-packages/git-span/src/cli/mod.rs#L538-L544 rk64:1de67706c452371b
+packages/git-span/src/cli/mod.rs#L549-L555 rk64:1de67706c452371b
 packages/git-span/src/perf.rs#L58-L78 rk64:4869199ff56b4552
 packages/git-span/src/perf.rs#L95-L167 rk64:5d14232b5861c0bf
 packages/git-span/src/perf.rs#L443-L452 rk64:338b99dcb9b1af57
@@ -8,12 +8,12 @@ packages/git-span/src/resolver/core/immutable_observation.rs#L229-L320 rk64:1c83
 packages/git-span/src/resolver/core/immutable_observation.rs#L491-L547 rk64:054764b1db0fcc6e
 packages/git-span/src/resolver/engine/mod.rs#L514-L541 rk64:1afc5ab98d7dff78
 packages/git-span/src/resolver/engine/mod.rs#L582-L593 rk64:c03bd5a31b24068f
-packages/git-span/src/resolver/exact/mod.rs#L349-L358 rk64:c6f84db776aca3fc
-packages/git-span/src/resolver/exact/mod.rs#L851-L984 rk64:7a416c813a2ee65e
+packages/git-span/src/resolver/exact/mod.rs#L348-L357 rk64:c6f84db776aca3fc
+packages/git-span/src/resolver/exact/mod.rs#L852-L985 rk64:7a416c813a2ee65e
 packages/git-span/src/resolver/store/maintenance.rs#L7-L8 rk64:8f13f3a6fc9629bf
 packages/git-span/src/resolver/store/maintenance.rs#L55-L96 rk64:8a1a078b5be3b74e
 packages/git-span/src/resolver/store/mod.rs#L1-L21 rk64:5d336aa16cf49b87
-wiki/guides/profiling-git-span-drift.md#L43-L65 rk64:26692b29e03c03f3
+wiki/guides/profiling-git-span-drift.md#L43-L65 rk64:bc4a2dd38c69b586
 wiki/guides/profiling-git-span-drift.md#L94-L195 rk64:bc1f7ff6c4475c85
 
 The guide's trace schema, result-store diagnostics, and immutable counters describe the CLI emitters and storage behavior, including the shared sixteen-admission maintenance schedule, success-only reset, entry-triggered reconciliation, and immediate publication overlay narrowing; immutable counters reset and emit once per external resolver invocation across store hits, fallback, and errors, with separate pre-fix and post-fix resolve totals.

@@ -69,13 +69,14 @@ The interior-anchor integrity case is never maskable by `drift --no-exit-code` â
 
 ## Published schemas
 
-Every subcommand that accepts `--format json` publishes its output family as a JSON Schema at a stable URL, derived from the same Rust types that serialize the CLI output:
+Versioned JSON output families are published as JSON Schemas at stable URLs, derived from the same Rust types that serialize the CLI output. Most commands select JSON with `--format json`; `commit-context` always emits JSON:
 
 | Family | URL | Subcommands |
 |---|---|---|
 | mutation | `https://git-span.com/schemas/cli/v1/mutation.json` | `add`, `why` |
 | resolve | `https://git-span.com/schemas/cli/v1/resolve.json` | `resolve` |
 | context | `https://git-span.com/schemas/cli/v2/context.json` | `context` |
+| commit-context | `https://git-span.com/schemas/cli/v1/commit-context.json` | `commit-context` |
 | history | `https://git-span.com/schemas/cli/v1/history.json` | `history` |
 | drift | `https://git-span.com/schemas/cli/v1/drift.json` | `drift` |
 | notes | `https://git-span.com/schemas/cli/v1/notes.json` | `notes add`, `notes list`, `notes show`, `notes remove` |

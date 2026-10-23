@@ -16,6 +16,8 @@ import {
 } from '@goodfoot/agent-hooks/claude-code';
 import { DEFAULT_SESSION_LAYOUT, derivePath, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, postTrackedValue, runLayeredBashTouches } from '../common/bash-attribution.js';
+import { bashResponseExitCode, bashResponseInterrupted } from '../common/bash-touch.js';
+import type { CommitInspectionContextExecutor } from '../common/commit-inspection-context.js';
 import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
 import { isRecord } from '../common/guards.js';
 import { claudeReadExposure } from '../common/read-exposure.js';
@@ -85,7 +87,8 @@ export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
   memoFactory: MemoFactory = createDiskMemoStore,
   layout: SessionLayout = DEFAULT_SESSION_LAYOUT,
-  runtimeOptions: CommitRuntimeOptions = {}
+  runtimeOptions: CommitRuntimeOptions = {},
+  inspectionExecutor?: CommitInspectionContextExecutor
 ) {
   const options = { stateRoot: join(dirname(layout.base), 'commit-receipts'), ...runtimeOptions };
   return async (input: PostToolUseInput, ctx: HookContext) => {
@@ -122,7 +125,12 @@ export function createHandler(
         executors,
         memo,
         ctx.logger,
-        createDefaultPlannedTouchStore(layout)
+        createDefaultPlannedTouchStore(layout),
+        {
+          successful:
+            !bashResponseInterrupted(input.tool_response) && (bashResponseExitCode(input.tool_response) ?? 0) === 0,
+          executor: inspectionExecutor
+        }
       );
       if (blocks.length === 0) return null;
       const combined = blocks.join('');

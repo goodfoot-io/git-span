@@ -45,6 +45,7 @@ pub enum Family {
     Mutation,
     Resolve,
     Context,
+    CommitContext,
     History,
     Drift,
     Notes,
@@ -58,6 +59,7 @@ impl Family {
             Family::Mutation => "mutation",
             Family::Resolve => "resolve",
             Family::Context => "context",
+            Family::CommitContext => "commit-context",
             Family::History => "history",
             Family::Drift => "drift",
             Family::Notes => "notes",
@@ -78,7 +80,8 @@ pub fn family_url_version(family: &Family) -> u32 {
         | Family::History
         | Family::Drift
         | Family::Notes
-        | Family::Preflight => 1,
+        | Family::Preflight
+        | Family::CommitContext => 1,
         Family::Context => 2,
     }
 }
@@ -145,6 +148,10 @@ pub fn json_command_mappings() -> &'static [JsonCommandMapping] {
             family: Some(Family::Resolve),
         },
         JsonCommandMapping {
+            subcommand: "commit-context",
+            family: Some(Family::CommitContext),
+        },
+        JsonCommandMapping {
             subcommand: "context",
             family: Some(Family::Context),
         },
@@ -205,6 +212,9 @@ fn family_schema(family: &Family) -> Schema {
             generator.into_root_schema_for::<crate::cli::resolve::ResolveFamilyDoc>()
         }
         Family::Context => generator.into_root_schema_for::<crate::cli::context::ContextDocument>(),
+        Family::CommitContext => {
+            generator.into_root_schema_for::<crate::cli::commit_context::CommitContextDocument>()
+        }
         Family::History => generator.into_root_schema_for::<crate::cli::history::HistoryDocument>(),
         Family::Drift => {
             generator.into_root_schema_for::<crate::cli::drift_output::DriftDocument>()
@@ -224,6 +234,7 @@ pub fn artifacts() -> Vec<Artifact> {
         Family::Mutation,
         Family::Resolve,
         Family::Context,
+        Family::CommitContext,
         Family::History,
         Family::Drift,
         Family::Notes,
@@ -722,7 +733,7 @@ mod tests {
 
     #[test]
     fn mapping_table_covers_all_json_emitters() {
-        assert_eq!(json_command_mappings().len(), 13);
+        assert_eq!(json_command_mappings().len(), 14);
     }
 
     #[test]
@@ -782,6 +793,7 @@ mod tests {
             .collect();
         paths.sort_unstable();
         let mut expected: Vec<String> = [
+            "commit-context",
             "drift",
             "history",
             "mutation",
@@ -825,14 +837,15 @@ mod tests {
         let cmd = crate::cli::Cli::command();
         let mut json_subcommands: Vec<String> = visible_subcommands(&cmd)
             .into_iter()
-            .filter(|(_, sub)| {
-                sub.get_arguments().any(|arg| {
-                    arg.get_id() == "format"
-                        && arg
-                            .get_possible_values()
-                            .iter()
-                            .any(|possible| possible.get_name() == "json")
-                })
+            .filter(|(path, sub)| {
+                path == "commit-context"
+                    || sub.get_arguments().any(|arg| {
+                        arg.get_id() == "format"
+                            && arg
+                                .get_possible_values()
+                                .iter()
+                                .any(|possible| possible.get_name() == "json")
+                    })
             })
             .map(|(path, _)| path)
             .collect();
@@ -860,7 +873,7 @@ mod tests {
         families.dedup();
         assert_eq!(
             families.len(),
-            7,
+            8,
             "each published family must have a versioned mapping"
         );
     }
