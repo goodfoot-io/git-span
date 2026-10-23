@@ -105,7 +105,7 @@ export function createDefaultDriftExecutor(timeoutMs = 10_000): DriftExecutor {
 
 export interface MemoStore {
   /** Atomically claim retrieval guidance once per family for the entire session. */
-  claimGuidance(sessionId: string, family: 'list' | 'drift'): boolean;
+  claimGuidance(sessionId: string, family: 'list' | 'drift' | 'first-write'): boolean;
   getSurfaced(sessionId: string): Set<string>;
   /**
    * Record `names` as surfaced, merging into `known` — the set the caller
