@@ -43,8 +43,8 @@
 //! This is the on-disk contract `.span`/`.wiki` consumers share: a pure
 //! text↔struct transform with no repository access.
 
-use crate::{cheap_fingerprint_with_extent, rk64_to_hex, AnchorExtent, RK64_ALGORITHM};
 use crate::error::{Error, Result};
+use crate::{AnchorExtent, RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -341,8 +341,9 @@ fn parse_resolved_record_line(line: &str) -> std::result::Result<ResolvedRecord,
             "malformed [resolved] record line: unknown command `{command}` (expected `add` or `replace`)"
         )
     })?;
-    let (path, extent) = parse_anchor_address(address)
-        .map_err(|e| format!("malformed [resolved] record line: invalid anchor address `{address}`: {e}"))?;
+    let (path, extent) = parse_anchor_address(address).map_err(|e| {
+        format!("malformed [resolved] record line: invalid anchor address `{address}`: {e}")
+    })?;
     let (start_line, end_line) = match extent {
         AnchorExtent::WholeFile => (0, 0),
         AnchorExtent::LineRange { start, end } => (start, end),
@@ -477,9 +478,8 @@ impl SpanFile {
                 let mut identities = HashMap::new();
                 for (offset, line) in prose_lines[idx + 1..].iter().enumerate() {
                     let lineno = why_first_line + idx + 1 + offset;
-                    let record = parse_resolved_record_line(line).map_err(|e| {
-                        Error::InvalidSpanFile(format!("line {lineno}: {e}"))
-                    })?;
+                    let record = parse_resolved_record_line(line)
+                        .map_err(|e| Error::InvalidSpanFile(format!("line {lineno}: {e}")))?;
                     let identity = (record.path.clone(), record.start_line, record.end_line);
                     if let Some(first_line) = identities.insert(identity, lineno) {
                         return Err(Error::InvalidSpanFile(format!(
@@ -757,9 +757,7 @@ fn parse_config_block(lines: &[(usize, &str)]) -> Result<SpanConfig> {
         seen[slot] = Some(lineno);
         match slot {
             0 => {
-                let Some(unquoted) = value
-                    .strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
+                let Some(unquoted) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"'))
                 else {
                     return Err(Error::InvalidSpanFile(format!(
                         "line {lineno}: invalid copy_detection value `{value}`: \
@@ -1003,7 +1001,10 @@ impl fmt::Display for AddressError {
         match self {
             AddressError::EmptyPath => write!(f, "empty file path"),
             AddressError::BareHash => {
-                write!(f, "`#` without `L` is invalid anchor syntax (e.g. `file.ts#88`)")
+                write!(
+                    f,
+                    "`#` without `L` is invalid anchor syntax (e.g. `file.ts#88`)"
+                )
             }
             AddressError::MissingRangeSeparator => {
                 write!(f, "expected `<path>#L<start>-L<end>`")
@@ -1148,7 +1149,10 @@ pub fn merge_span_files(
         let extent = if anchor.start_line == 0 && anchor.end_line == 0 {
             AnchorExtent::WholeFile
         } else {
-            AnchorExtent::LineRange { start: anchor.start_line, end: anchor.end_line }
+            AnchorExtent::LineRange {
+                start: anchor.start_line,
+                end: anchor.end_line,
+            }
         };
         let fp = cheap_fingerprint_with_extent(source, &extent);
         AnchorRecord {
@@ -1168,7 +1172,11 @@ pub fn merge_span_files(
     let mut theirs_anchors = theirs.anchors.clone();
     let mut same_side_collapsed: Vec<(MergeSide, CollapsedIdentity)> = Vec::new();
     collapse_side(MergeSide::Ours, &mut ours_anchors, &mut same_side_collapsed);
-    collapse_side(MergeSide::Theirs, &mut theirs_anchors, &mut same_side_collapsed);
+    collapse_side(
+        MergeSide::Theirs,
+        &mut theirs_anchors,
+        &mut same_side_collapsed,
+    );
 
     // Build index maps keyed by (path, start_line, end_line).
     let mut ours_map: HashMap<(&str, u32, u32), &AnchorRecord> = HashMap::new();
@@ -1213,8 +1221,7 @@ pub fn merge_span_files(
                     merged_anchors.push((*o_anchor).clone());
                 } else {
                     // Same path + extent, divergent hash.
-                    let sentinel_here =
-                        carried_sentinel(o_anchor) || carried_sentinel(t_anchor);
+                    let sentinel_here = carried_sentinel(o_anchor) || carried_sentinel(t_anchor);
                     if sentinel_here {
                         sentinel_preserved.push((path.to_string(), start_line, end_line));
                     }
@@ -1791,7 +1798,8 @@ mod tests {
 
     #[test]
     fn parse_rejects_invalid_copy_detection_value() {
-        let input = "a.txt sha256:111\n\nwhy\n\n[config]\ncopy_detection = \"totally-bogus-value\"\n";
+        let input =
+            "a.txt sha256:111\n\nwhy\n\n[config]\ncopy_detection = \"totally-bogus-value\"\n";
         let err = SpanFile::parse(input).unwrap_err().to_string();
         assert!(err.contains("copy_detection"), "err: {err}");
         assert!(err.contains("totally-bogus-value"), "err: {err}");
@@ -1964,7 +1972,10 @@ mod tests {
     fn resolved_section_failures_name_the_source_line() {
         let bad = [
             ("2026-08-13 12:34:56Z add a.rs#L1-L5 rk64:abcd", "timestamp"),
-            ("2026-08-13T12:34:56Z move a.rs#L1-L5 rk64:abcd", "unknown command"),
+            (
+                "2026-08-13T12:34:56Z move a.rs#L1-L5 rk64:abcd",
+                "unknown command",
+            ),
             ("2026-08-13T12:34:56Z add a.rs#L1-L5 abcd", "hash"),
             ("2026-08-13T12:34:56Z add a.rs#L0-L5 rk64:abcd", "address"),
         ];
@@ -1980,11 +1991,17 @@ mod tests {
     fn resolved_section_rejects_blank_lines_and_misordering() {
         let blank = "a.rs rk64:abcd\n\n[resolved]\n2026-08-13T12:34:56Z add a.rs rk64:abcd\n\n2026-08-13T12:35:56Z add b.rs rk64:ef01\n";
         let err = SpanFile::parse(blank).unwrap_err().to_string();
-        assert!(err.contains("line 5") && err.contains("blank line"), "{err}");
+        assert!(
+            err.contains("line 5") && err.contains("blank line"),
+            "{err}"
+        );
 
         let after_config = "a.rs rk64:abcd\n\n[config]\nfollow_moves = true\n[resolved]\n2026-08-13T12:34:56Z add a.rs rk64:abcd\n";
         let err = SpanFile::parse(after_config).unwrap_err().to_string();
-        assert!(err.contains("line 5") && err.contains("[resolved]"), "{err}");
+        assert!(
+            err.contains("line 5") && err.contains("[resolved]"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2008,11 +2025,17 @@ mod tests {
     fn resolved_record_before_marker_and_marker_collision_fail_closed() {
         let misplaced = "a.rs rk64:abcd\n\nwhy\n2026-08-13T12:34:56Z add a.rs rk64:abcd\n";
         let err = SpanFile::parse(misplaced).unwrap_err().to_string();
-        assert!(err.contains("line 4") && err.contains("before `[resolved]`"), "{err}");
+        assert!(
+            err.contains("line 4") && err.contains("before `[resolved]`"),
+            "{err}"
+        );
 
         let collision = "a.rs rk64:abcd\n\nordinary prose\n[resolved]\nstill ordinary prose\n";
         let err = SpanFile::parse(collision).unwrap_err().to_string();
-        assert!(err.contains("line 5") && err.contains("[resolved]"), "{err}");
+        assert!(
+            err.contains("line 5") && err.contains("[resolved]"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2037,7 +2060,11 @@ mod tests {
             (vec![ours_record.clone()], false)
         );
         assert_eq!(
-            resolve_resolved_section(Some(&base), &unchanged, &resolved_span(vec![theirs_record.clone()])),
+            resolve_resolved_section(
+                Some(&base),
+                &unchanged,
+                &resolved_span(vec![theirs_record.clone()])
+            ),
             (vec![theirs_record.clone()], false)
         );
         assert_eq!(
@@ -2143,15 +2170,31 @@ mod tests {
     #[test]
     fn merge_union_distinct_anchors() {
         let a = AnchorRecord {
-            path: "a.rs".into(), start_line: 1, end_line: 3,
-            algorithm: "rk64".into(), content_hash: "1111".into(),
+            path: "a.rs".into(),
+            start_line: 1,
+            end_line: 3,
+            algorithm: "rk64".into(),
+            content_hash: "1111".into(),
         };
         let b = AnchorRecord {
-            path: "b.rs".into(), start_line: 5, end_line: 10,
-            algorithm: "rk64".into(), content_hash: "2222".into(),
+            path: "b.rs".into(),
+            start_line: 5,
+            end_line: 10,
+            algorithm: "rk64".into(),
+            content_hash: "2222".into(),
         };
-        let ours = SpanFile { anchors: vec![a.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![b.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile {
+            anchors: vec![a.clone()],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![b.clone()],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // Both unique anchors appear in the merged output.
         assert_eq!(result.merged.anchors.len(), 2);
@@ -2163,11 +2206,24 @@ mod tests {
     #[test]
     fn merge_identical_anchor_kept() {
         let anchor = AnchorRecord {
-            path: "same.rs".into(), start_line: 1, end_line: 5,
-            algorithm: "rk64".into(), content_hash: "deadbeef".into(),
+            path: "same.rs".into(),
+            start_line: 1,
+            end_line: 5,
+            algorithm: "rk64".into(),
+            content_hash: "deadbeef".into(),
         };
-        let ours = SpanFile { anchors: vec![anchor.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![anchor.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile {
+            anchors: vec![anchor.clone()],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![anchor.clone()],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // Identical anchor on both sides produces a single copy.
         assert_eq!(result.merged.anchors.len(), 1);
@@ -2178,15 +2234,31 @@ mod tests {
     #[test]
     fn merge_divergent_with_source() {
         let ours_anchor = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 2,
-            algorithm: "rk64".into(), content_hash: "abc123".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 2,
+            algorithm: "rk64".into(),
+            content_hash: "abc123".into(),
         };
         let theirs_anchor = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 2,
-            algorithm: "rk64".into(), content_hash: "def456".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 2,
+            algorithm: "rk64".into(),
+            content_hash: "def456".into(),
         };
-        let ours = SpanFile { anchors: vec![ours_anchor], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![theirs_anchor], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile {
+            anchors: vec![ours_anchor],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![theirs_anchor],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         // Source file available for re-hashing — should resolve to one anchor.
         let source = vec![("a.txt".into(), b"hello\nworld\n".to_vec())];
         let result = merge_span_files(None, &ours, &theirs, &source);
@@ -2197,12 +2269,18 @@ mod tests {
     #[test]
     fn merge_duplicate_source_paths_use_first_entry() {
         let ours_anchor = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 2,
-            algorithm: "rk64".into(), content_hash: "abc123".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 2,
+            algorithm: "rk64".into(),
+            content_hash: "abc123".into(),
         };
         let theirs_anchor = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 2,
-            algorithm: "rk64".into(), content_hash: "def456".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 2,
+            algorithm: "rk64".into(),
+            content_hash: "def456".into(),
         };
         let ours = span_of(vec![ours_anchor]);
         let theirs = span_of(vec![theirs_anchor]);
@@ -2223,15 +2301,31 @@ mod tests {
     #[test]
     fn merge_divergent_without_source() {
         let ours_anchor = AnchorRecord {
-            path: "x.txt".into(), start_line: 2, end_line: 4,
-            algorithm: "rk64".into(), content_hash: "abc123".into(),
+            path: "x.txt".into(),
+            start_line: 2,
+            end_line: 4,
+            algorithm: "rk64".into(),
+            content_hash: "abc123".into(),
         };
         let theirs_anchor = AnchorRecord {
-            path: "x.txt".into(), start_line: 2, end_line: 4,
-            algorithm: "rk64".into(), content_hash: "def456".into(),
+            path: "x.txt".into(),
+            start_line: 2,
+            end_line: 4,
+            algorithm: "rk64".into(),
+            content_hash: "def456".into(),
         };
-        let ours = SpanFile { anchors: vec![ours_anchor.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![theirs_anchor.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile {
+            anchors: vec![ours_anchor.clone()],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![theirs_anchor.clone()],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // No source to re-hash — anchor listed as unresolved.
         assert_eq!(result.unresolved.len(), 1);
@@ -2247,11 +2341,22 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn span_of(anchors: Vec<AnchorRecord>) -> SpanFile {
-        SpanFile { anchors, why: String::new(), config: SpanConfig::default(), resolved: Vec::new() }
+        SpanFile {
+            anchors,
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        }
     }
 
     fn sentinel_anchor(path: &str, start: u32, end: u32) -> AnchorRecord {
-        anchor(path, start, end, RK64_ALGORITHM, &crate::rk64_unmatched_sentinel())
+        anchor(
+            path,
+            start,
+            end,
+            RK64_ALGORITHM,
+            &crate::rk64_unmatched_sentinel(),
+        )
     }
 
     fn merged_at<'a>(
@@ -2290,10 +2395,7 @@ mod tests {
 
         // The divergent survivor carries the sentinel, so the cross-side
         // comparison sees it and reports the preservation.
-        assert_eq!(
-            result.sentinel_preserved,
-            vec![("a.txt".to_string(), 1, 2)]
-        );
+        assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
         // No source to adjudicate the cross-side divergence: still unresolved.
         assert_eq!(result.unresolved.len(), 1);
         assert_eq!(
@@ -2321,7 +2423,10 @@ mod tests {
         // without a report, and not duplicated into the merged output.
         let survivors = merged_at(&result, "b.txt", 4, 6);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
+        assert_eq!(
+            survivors[0].content_hash.as_ref(),
+            crate::RK64_UNMATCHED_SENTINEL_HASH
+        );
         assert_eq!(result.sentinel_preserved, vec![("b.txt".to_string(), 4, 6)]);
     }
 
@@ -2361,7 +2466,10 @@ mod tests {
         // at untouched coordinates, and the real hash is discarded.
         let survivors = merged_at(&result, "a.txt", 1, 2);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
+        assert_eq!(
+            survivors[0].content_hash.as_ref(),
+            crate::RK64_UNMATCHED_SENTINEL_HASH
+        );
         assert_eq!(&*survivors[0].algorithm, RK64_ALGORITHM);
         assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
         assert!(result.unresolved.is_empty());
@@ -2378,7 +2486,10 @@ mod tests {
 
         let survivors = merged_at(&result, "a.txt", 1, 2);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
+        assert_eq!(
+            survivors[0].content_hash.as_ref(),
+            crate::RK64_UNMATCHED_SENTINEL_HASH
+        );
         assert_eq!(survivors[0].start_line, 1);
         assert_eq!(survivors[0].end_line, 2);
         assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
@@ -2396,7 +2507,10 @@ mod tests {
         assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
         let survivors = merged_at(&result, "a.txt", 1, 2);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
+        assert_eq!(
+            survivors[0].content_hash.as_ref(),
+            crate::RK64_UNMATCHED_SENTINEL_HASH
+        );
         assert!(result.unresolved.is_empty());
     }
 
@@ -2409,7 +2523,10 @@ mod tests {
         assert_eq!(result.sentinel_preserved, vec![("b.txt".to_string(), 3, 4)]);
         let survivors = merged_at(&result, "b.txt", 3, 4);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
+        assert_eq!(
+            survivors[0].content_hash.as_ref(),
+            crate::RK64_UNMATCHED_SENTINEL_HASH
+        );
         assert!(result.unresolved.is_empty());
     }
 
@@ -2632,12 +2749,30 @@ mod tests {
     #[test]
     fn merge_why_ours_changed() {
         let a = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 3,
-            algorithm: "rk64".into(), content_hash: "1111".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 3,
+            algorithm: "rk64".into(),
+            content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let base = SpanFile {
+            anchors: vec![a.clone()],
+            why: "common why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let ours = SpanFile {
+            anchors: vec![a.clone()],
+            why: "ours why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![a.clone()],
+            why: "common why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Only ours changed why → take ours.
         assert_eq!(result.merged.why, "ours why");
@@ -2647,12 +2782,30 @@ mod tests {
     #[test]
     fn merge_why_theirs_changed() {
         let a = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 3,
-            algorithm: "rk64".into(), content_hash: "1111".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 3,
+            algorithm: "rk64".into(),
+            content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let base = SpanFile {
+            anchors: vec![a.clone()],
+            why: "common why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let ours = SpanFile {
+            anchors: vec![a.clone()],
+            why: "common why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![a.clone()],
+            why: "theirs why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Only theirs changed why → take theirs.
         assert_eq!(result.merged.why, "theirs why");
@@ -2662,12 +2815,30 @@ mod tests {
     #[test]
     fn merge_why_both_identical() {
         let a = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 3,
-            algorithm: "rk64".into(), content_hash: "1111".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 3,
+            algorithm: "rk64".into(),
+            content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "original why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "new why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "new why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let base = SpanFile {
+            anchors: vec![a.clone()],
+            why: "original why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let ours = SpanFile {
+            anchors: vec![a.clone()],
+            why: "new why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![a.clone()],
+            why: "new why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Both changed why identically → accept the new common why.
         assert_eq!(result.merged.why, "new why");
@@ -2677,12 +2848,30 @@ mod tests {
     #[test]
     fn merge_why_both_divergent() {
         let a = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 3,
-            algorithm: "rk64".into(), content_hash: "1111".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 3,
+            algorithm: "rk64".into(),
+            content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "base why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let base = SpanFile {
+            anchors: vec![a.clone()],
+            why: "base why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let ours = SpanFile {
+            anchors: vec![a.clone()],
+            why: "ours why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![a.clone()],
+            why: "theirs why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Both sides changed why differently from base — fail closed.
         assert!(result.conflicts.why);
@@ -2692,12 +2881,30 @@ mod tests {
     #[test]
     fn merge_why_neither_changed() {
         let a = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 3,
-            algorithm: "rk64".into(), content_hash: "1111".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 3,
+            algorithm: "rk64".into(),
+            content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let base = SpanFile {
+            anchors: vec![a.clone()],
+            why: "stable why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let ours = SpanFile {
+            anchors: vec![a.clone()],
+            why: "stable why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![a.clone()],
+            why: "stable why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // No side changed why → keep the common value.
         assert_eq!(result.merged.why, "stable why");
@@ -2707,11 +2914,24 @@ mod tests {
     #[test]
     fn merge_why_no_base_divergence() {
         let a = AnchorRecord {
-            path: "a.txt".into(), start_line: 1, end_line: 3,
-            algorithm: "rk64".into(), content_hash: "1111".into(),
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 3,
+            algorithm: "rk64".into(),
+            content_hash: "1111".into(),
         };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile {
+            anchors: vec![a.clone()],
+            why: "ours why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![a.clone()],
+            why: "theirs why".into(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // No base span and divergent why — fail closed.
         assert!(result.conflicts.why);
@@ -2721,19 +2941,38 @@ mod tests {
     #[test]
     fn merge_canonical_ordering() {
         let z = AnchorRecord {
-            path: "z.rs".into(), start_line: 1, end_line: 5,
-            algorithm: "rk64".into(), content_hash: "aaa".into(),
+            path: "z.rs".into(),
+            start_line: 1,
+            end_line: 5,
+            algorithm: "rk64".into(),
+            content_hash: "aaa".into(),
         };
         let a = AnchorRecord {
-            path: "a.rs".into(), start_line: 1, end_line: 5,
-            algorithm: "rk64".into(), content_hash: "bbb".into(),
+            path: "a.rs".into(),
+            start_line: 1,
+            end_line: 5,
+            algorithm: "rk64".into(),
+            content_hash: "bbb".into(),
         };
         let a_later = AnchorRecord {
-            path: "a.rs".into(), start_line: 10, end_line: 15,
-            algorithm: "rk64".into(), content_hash: "ccc".into(),
+            path: "a.rs".into(),
+            start_line: 10,
+            end_line: 15,
+            algorithm: "rk64".into(),
+            content_hash: "ccc".into(),
         };
-        let ours = SpanFile { anchors: vec![z, a_later], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile {
+            anchors: vec![z, a_later],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![a.clone()],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         assert_eq!(result.merged.anchors.len(), 3);
         // Canonical: (path, start_line, end_line) ascending.
@@ -2746,15 +2985,31 @@ mod tests {
     #[test]
     fn merge_whole_file_anchors() {
         let whole = AnchorRecord {
-            path: "f.txt".into(), start_line: 0, end_line: 0,
-            algorithm: "rk64".into(), content_hash: "whole_file_hash".into(),
+            path: "f.txt".into(),
+            start_line: 0,
+            end_line: 0,
+            algorithm: "rk64".into(),
+            content_hash: "whole_file_hash".into(),
         };
         let line = AnchorRecord {
-            path: "f.txt".into(), start_line: 1, end_line: 3,
-            algorithm: "rk64".into(), content_hash: "line_hash".into(),
+            path: "f.txt".into(),
+            start_line: 1,
+            end_line: 3,
+            algorithm: "rk64".into(),
+            content_hash: "line_hash".into(),
         };
-        let ours = SpanFile { anchors: vec![whole.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
-        let theirs = SpanFile { anchors: vec![line.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile {
+            anchors: vec![whole.clone()],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        let theirs = SpanFile {
+            anchors: vec![line.clone()],
+            why: String::new(),
+            config: SpanConfig::default(),
+            resolved: Vec::new(),
+        };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // Whole-file and line-range anchors both preserved.
         assert_eq!(result.merged.anchors.len(), 2);

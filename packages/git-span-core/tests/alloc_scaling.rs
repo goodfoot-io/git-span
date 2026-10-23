@@ -50,7 +50,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static COUNTING: Counting = Counting;
 
-use git_span_core::span_file::{merge_span_files, AnchorRecord, SpanFile};
+use git_span_core::span_file::{AnchorRecord, SpanFile, merge_span_files};
 
 /// N line-range anchors sharing ONE path, distinct extents and hashes so
 /// nothing collapses; ours == theirs so the merge resolves cleanly.
@@ -79,7 +79,11 @@ fn merge_allocations(n: usize) -> usize {
     let before = ALLOCS.load(Ordering::SeqCst);
     let result = merge_span_files(None, &ours, &theirs, &[]);
     let after = ALLOCS.load(Ordering::SeqCst);
-    assert_eq!(result.merged.anchors.len(), n, "clean merge keeps every anchor");
+    assert_eq!(
+        result.merged.anchors.len(),
+        n,
+        "clean merge keeps every anchor"
+    );
     after - before
 }
 

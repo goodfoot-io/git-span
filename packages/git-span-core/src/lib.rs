@@ -33,9 +33,9 @@ pub use span_file::{
     resolve_why_text,
 };
 pub use validation::{
-    SPAN_NAME_RULE, RESERVED_SPAN_NAMES, RETIRED_SPAN_NAMES, is_reserved_span_name,
-    retired_replacement, validate_anchor_id, validate_span_name, validate_span_name_shape,
-    validate_repo_relative_path,
+    RESERVED_SPAN_NAMES, RETIRED_SPAN_NAMES, SPAN_NAME_RULE, is_reserved_span_name,
+    retired_replacement, validate_anchor_id, validate_repo_relative_path, validate_span_name,
+    validate_span_name_shape,
 };
 
 /// The extent of a pinned anchor: either the whole file, or an inclusive
@@ -138,7 +138,11 @@ fn line_range_region(bytes: &[u8], start_line: u32, end_line: u32) -> Option<(us
 /// that `from_utf8_lossy` would rewrite) `digest` receives the
 /// `canonical_join_bytes` fallback so the output is byte-identical.
 fn canonical_region<T>(
-    bytes: &[u8], rs: usize, re: usize, start: u32, end: u32,
+    bytes: &[u8],
+    rs: usize,
+    re: usize,
+    start: u32,
+    end: u32,
     digest: impl FnOnce(&[u8]) -> T,
 ) -> T {
     let slice = &bytes[rs..re];
@@ -458,7 +462,11 @@ impl<'a> LineIndex<'a> {
             pow_hi.push(p);
             p = p.wrapping_mul(POW_LO_STRIDE);
         }
-        PrefixTables { at_start, at_end, pow_hi }
+        PrefixTables {
+            at_start,
+            at_end,
+            pow_hi,
+        }
     }
 
     /// `horner(self.bytes)`, computed at most once and shared across clones.
@@ -579,7 +587,6 @@ const POW_LO_STRIDE: u64 = POW_LO[255].wrapping_mul(FP_BASE);
 fn pow_base(pow_hi: &[u64], n: usize) -> u64 {
     pow_hi[n >> 8].wrapping_mul(POW_LO[n & 0xff])
 }
-
 
 /// Cheap (non-cryptographic) fingerprint of an extent's canonical content:
 /// LF-normalized `lines().join("\n")` for line ranges; the full buffer for
@@ -838,8 +845,8 @@ pub fn jaccard_window_scan_interned(
     // other window it participates in) and unions over `extent - 1` lines
     // instead of `extent`.
     let window_confidence = |intersection: usize,
-                              window_count: &std::collections::HashMap<u32, usize>,
-                              last_idx: usize|
+                             window_count: &std::collections::HashMap<u32, usize>,
+                             last_idx: usize|
      -> f64 {
         if !candidate_raw_empty[last_idx] {
             let union = a_total + extent - intersection;
@@ -1199,7 +1206,9 @@ mod tests {
 
     // Tiny deterministic LCG so the fuzz is reproducible without `rand`.
     fn lcg(state: &mut u64) -> u64 {
-        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *state
     }
 
@@ -1289,7 +1298,11 @@ mod tests {
             return files
                 .iter()
                 .filter(|(_, b)| cheap_fingerprint_with_extent(b, &AnchorExtent::WholeFile) == fp)
-                .map(|(p, _)| Location { path: p.clone(), start_line: 0, end_line: 0 })
+                .map(|(p, _)| Location {
+                    path: p.clone(),
+                    start_line: 0,
+                    end_line: 0,
+                })
                 .collect();
         };
         let extent = line_range_extent(start, end);
@@ -1306,9 +1319,14 @@ mod tests {
             for win in 0..=(n - extent) {
                 let w = (win as u32) + 1;
                 let e = (win as u32) + extent as u32;
-                let wfp = cheap_fingerprint_indexed(&idx, &AnchorExtent::LineRange { start: w, end: e });
+                let wfp =
+                    cheap_fingerprint_indexed(&idx, &AnchorExtent::LineRange { start: w, end: e });
                 if wfp == fp {
-                    out.push(Location { path: path.clone(), start_line: w, end_line: e });
+                    out.push(Location {
+                        path: path.clone(),
+                        start_line: w,
+                        end_line: e,
+                    });
                 }
             }
         }
@@ -1329,8 +1347,16 @@ mod tests {
         assert_eq!(
             hits,
             vec![
-                Location { path: "dup.txt".into(), start_line: 1, end_line: 3 },
-                Location { path: "dup.txt".into(), start_line: 5, end_line: 7 },
+                Location {
+                    path: "dup.txt".into(),
+                    start_line: 1,
+                    end_line: 3
+                },
+                Location {
+                    path: "dup.txt".into(),
+                    start_line: 5,
+                    end_line: 7
+                },
             ]
         );
     }
@@ -1402,7 +1428,10 @@ mod tests {
         }
         let files = vec![("long.txt".to_string(), text.clone().into_bytes())];
         let indexed = index_all(&files);
-        assert!(indexed[0].1.lf_clean, "fixture must take the fast scan path");
+        assert!(
+            indexed[0].1.lf_clean,
+            "fixture must take the fast scan path"
+        );
         assert!(
             indexed[0].1.prefilter_tables().is_some(),
             "fixture must be under the table size threshold"
@@ -1412,7 +1441,10 @@ mod tests {
         for extent_lines in [1usize, 7, 20, 64] {
             for w in (0..=lines.len() - extent_lines).step_by(37) {
                 let start = (w as u32) + 1;
-                let extent = AnchorExtent::LineRange { start, end: start + extent_lines as u32 - 1 };
+                let extent = AnchorExtent::LineRange {
+                    start,
+                    end: start + extent_lines as u32 - 1,
+                };
                 let fp = cheap_fingerprint_with_extent(
                     lines[w..w + extent_lines].join("\n").as_bytes(),
                     &AnchorExtent::WholeFile,
@@ -1446,7 +1478,11 @@ mod tests {
         let fp = cheap_fingerprint_with_extent(b"whole\ncontent\n", &AnchorExtent::WholeFile);
         assert_eq!(
             scan_for_content_hash_rk64(&files, fp, AnchorExtent::WholeFile, None),
-            vec![Location { path: "yes.txt".into(), start_line: 0, end_line: 0 }],
+            vec![Location {
+                path: "yes.txt".into(),
+                start_line: 0,
+                end_line: 0
+            }],
         );
     }
 
@@ -1520,7 +1556,10 @@ mod tests {
         let bytes = b"a\nb\nc\n".to_vec();
         let files = vec![("f.txt".to_string(), bytes.clone())];
         let indexed = index_all(&files);
-        let extent = AnchorExtent::LineRange { start: 0, end: u32::MAX };
+        let extent = AnchorExtent::LineRange {
+            start: 0,
+            end: u32::MAX,
+        };
 
         assert!(scan_indexed_rk64(&indexed, 0, extent, None).is_empty());
     }
@@ -1622,7 +1661,10 @@ mod tests {
         if extent == 0 || candidate_lines.len() < extent {
             return Vec::new();
         }
-        let extent_marker = AnchorExtent::LineRange { start: 1, end: extent as u32 };
+        let extent_marker = AnchorExtent::LineRange {
+            start: 1,
+            end: extent as u32,
+        };
         let win_max = candidate_lines.len() - extent;
         let mut out = Vec::new();
         for w in 0..=win_max {
@@ -1654,11 +1696,7 @@ mod tests {
     #[test]
     fn jaccard_window_scan_matches_naive_reference() {
         // Repeated lines (multiset counting, not set counting).
-        assert_window_scan_matches_naive(
-            b"x\ny\nx\n",
-            &["x", "y", "x", "z", "x", "y", "x"],
-            3,
-        );
+        assert_window_scan_matches_naive(b"x\ny\nx\n", &["x", "y", "x", "z", "x", "y", "x"], 3);
         // Whitespace variants collapse to the same normalized line.
         assert_window_scan_matches_naive(
             b"hello   world\nfoo\n",
@@ -1666,11 +1704,7 @@ mod tests {
             2,
         );
         // Empty lines participate as their own (empty-string) identity.
-        assert_window_scan_matches_naive(
-            b"a\n\nb\n",
-            &["a", "", "b", "", "a", "", "c"],
-            3,
-        );
+        assert_window_scan_matches_naive(b"a\n\nb\n", &["a", "", "b", "", "a", "", "c"], 3);
         // Unicode content (multi-byte chars, combining marks).
         assert_window_scan_matches_naive(
             "café\n日本語\n".as_bytes(),
@@ -1680,19 +1714,11 @@ mod tests {
         // A lone '\r' inside a line (not a line terminator) — split_whitespace
         // treats it as whitespace on both the naive rejoin-then-resplit path
         // and the direct-normalize path.
-        assert_window_scan_matches_naive(
-            b"a\rb\nc\n",
-            &["a\rb", "c", "d", "a\rb"],
-            2,
-        );
+        assert_window_scan_matches_naive(b"a\rb\nc\n", &["a\rb", "c", "d", "a\rb"], 2);
         // A trailing '\r' on a line — cannot arise from a real `str::lines()`
         // split, but the function must still agree with the naive rejoin
         // path if handed one directly (defensive equivalence check).
-        assert_window_scan_matches_naive(
-            b"x\n",
-            &["x\r", "y", "x\r"],
-            2,
-        );
+        assert_window_scan_matches_naive(b"x\n", &["x\r", "y", "x\r"], 2);
         // extent larger than the candidate file: both sides return empty.
         assert_window_scan_matches_naive(b"a\nb\n", &["a", "b"], 5);
         // extent == 1: every single line is its own window.
@@ -1704,7 +1730,15 @@ mod tests {
     #[test]
     fn jaccard_window_scan_property_fuzz_matches_naive() {
         let mut state = 0xabad1deaabad1deau64;
-        let alphabet = ["foo", "bar", "baz  qux", "  spaced  out ", "", "foo\rbar", "unicode 日本"];
+        let alphabet = [
+            "foo",
+            "bar",
+            "baz  qux",
+            "  spaced  out ",
+            "",
+            "foo\rbar",
+            "unicode 日本",
+        ];
         for _ in 0..500 {
             let a_len = 1 + (lcg(&mut state) as usize) % 5;
             let anchored_lines: Vec<&str> = (0..a_len)
@@ -1734,8 +1768,7 @@ mod tests {
     #[test]
     fn jaccard_window_scan_interned_matches_fresh_scan_across_shared_corpus() {
         let candidate_lines: Vec<&str> = vec![
-            "alpha", "beta", "gamma", "alpha", "delta", "beta", "gamma", "epsilon", "alpha",
-            "beta",
+            "alpha", "beta", "gamma", "alpha", "delta", "beta", "gamma", "epsilon", "alpha", "beta",
         ];
         let extent = 3;
         let noise_floor = 0.0;
@@ -1801,8 +1834,7 @@ mod tests {
         let anchored = b"a\nb\n";
         let candidate_whitespace_trailing = ["a", "b", "   "];
         let candidate_raw_empty_trailing = ["a", "b", ""];
-        let with_whitespace =
-            jaccard_window_scan(anchored, &candidate_whitespace_trailing, 3, 0.0);
+        let with_whitespace = jaccard_window_scan(anchored, &candidate_whitespace_trailing, 3, 0.0);
         let with_raw_empty = jaccard_window_scan(anchored, &candidate_raw_empty_trailing, 3, 0.0);
         assert_ne!(
             with_whitespace, with_raw_empty,
@@ -1846,7 +1878,10 @@ mod tests {
             let indexed = [("f.txt".to_string(), idx.clone())];
             let expected = scan_indexed_rk64(&indexed, fp, extent, near);
             let got = scan_indexed_rk64_one("f.txt", &idx, fp, extent, near);
-            assert_eq!(got, expected, "scan_indexed_rk64_one drift: bytes={bytes:?} {extent:?} near={near:?}");
+            assert_eq!(
+                got, expected,
+                "scan_indexed_rk64_one drift: bytes={bytes:?} {extent:?} near={near:?}"
+            );
         }
 
         // Whole-file extent.

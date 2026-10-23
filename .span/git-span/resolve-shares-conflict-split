@@ -1,5 +1,5 @@
 packages/git-span-core/src/span_file.rs#L586-L666 rk64:7a857e3447e5a24d
-packages/git-span-core/src/span_file.rs#L822-L1363 rk64:643065bb6bc7de8d
+packages/git-span-core/src/span_file.rs#L820-L1370 rk64:28f752153b7b8c65
 packages/git-span/src/cli/drift_fix.rs#L413-L513 rk64:31418e90187c4b28
 packages/git-span/src/cli/drift_fix.rs#L544-L666 rk64:850183695a9a5f1e
 packages/git-span/src/cli/drift_fix.rs#L826-L915 rk64:143124268a2cc0b8
