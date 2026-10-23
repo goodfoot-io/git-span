@@ -475,11 +475,13 @@ fn binary_type_changes_and_rename_pathspecs_keep_affected_spans() -> Result<()> 
             ["elsewhere", "selected"]
         );
     }
-    #[cfg(unix)]
-    {
+    if crate::support::symlinks_supported() {
         repo.run_git(["reset", "--hard", "HEAD"])?;
         std::fs::remove_file(repo.path().join("file1.txt"))?;
-        std::os::unix::fs::symlink("file2.txt", repo.path().join("file1.txt"))?;
+        crate::support::symlink_file(
+            std::path::Path::new("file2.txt"),
+            &repo.path().join("file1.txt"),
+        )?;
         assert_eq!(
             names(&query(&repo, "diff", &[])?),
             ["elsewhere", "selected"]
