@@ -10,11 +10,13 @@ import {
   type TouchExecutors,
   type TouchInput
 } from '../../src/common/touch-core.js';
+import { guidanceClaims } from '../guidance-helpers.js';
 import { itemAt, makeTempRepo } from '../helpers.js';
 
 function memoStore(): MemoStore {
   const surfaced = new Map<string, Set<string>>();
   return {
+    claimGuidance: guidanceClaims(),
     getSurfaced: (sessionId) => new Set(surfaced.get(sessionId) ?? []),
     addSurfaced: (sessionId, names, known) => {
       surfaced.set(sessionId, new Set([...known, ...names]));
@@ -319,11 +321,11 @@ describe('plural touch execution', () => {
       expect(await run()).toBeNull();
       span.evidence_revision = '1'.repeat(64);
       itemAt(span.anchors, 0).status = { code: 'CHANGED' };
-      expect(await run()).toContain('— changed');
+      expect(await run()).toContain('(changed in span/a.ts)');
       expect(await run()).toBeNull();
       span.evidence_revision = '0'.repeat(64);
       itemAt(span.anchors, 0).status = { code: 'FRESH' };
-      expect(await run()).not.toBeNull();
+      expect(await run()).toBeNull();
       expect(await run()).toBeNull();
       expect(memo.getSurfaced('session').size).toBe(1);
     } finally {

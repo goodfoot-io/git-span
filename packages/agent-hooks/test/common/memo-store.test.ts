@@ -12,8 +12,10 @@
  * base is a value the caller supplies.
  */
 
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   cleanupSessionState,
@@ -22,7 +24,7 @@ import {
   pruneStaleSessionsThrottled,
   resetPruneThrottleForTests
 } from '../../src/common/agent-hooks-common.js';
-import { createDiskMemoStore } from '../../src/common/span-surface.js';
+import { createDiskMemoStore, resetExposure } from '../../src/common/span-surface.js';
 import { makeAbsentLayout, makeTempLayout } from '../session-layout-helpers.js';
 
 const logger = { warn: () => {} };
@@ -231,4 +233,105 @@ describe('pruneStaleSessionsThrottled', () => {
     pruneStaleSessionsThrottled(layout, now + 1000);
     expect(fs.existsSync(dir)).toBe(false);
   });
+});
+
+describe('session retrieval guidance claims', () => {
+  it('claims each family once across independent stores and exposure resets', () => {
+    const first = createDiskMemoStore(logger, layout);
+    const second = createDiskMemoStore(logger, layout);
+    expect(first.claimGuidance('s', 'list')).toBe(true);
+    expect(second.claimGuidance('s', 'list')).toBe(false);
+    expect(second.claimGuidance('s', 'drift')).toBe(true);
+    resetExposure(layout, 's', logger);
+    expect(first.claimGuidance('s', 'list')).toBe(false);
+    expect(first.claimGuidance('s', 'drift')).toBe(false);
+    expect(first.claimGuidance('other-session', 'list')).toBe(true);
+    cleanupSessionState(layout, 's');
+    expect(first.claimGuidance('s', 'list')).toBe(false);
+  });
+
+  it('allows exactly one winner among independent process claims', async () => {
+    fs.mkdirSync(layout.base, { recursive: true });
+    const bundle = nodePath.join(layout.base, 'guidance-worker.mjs');
+    const buildOptions = {
+      stdin: {
+        resolveDir: process.cwd(),
+        contents: `
+        import { createDiskMemoStore } from ${JSON.stringify(fileURLToPath(new URL('../../src/common/span-surface.ts', import.meta.url)))};
+        import { createSessionLayout } from ${JSON.stringify(fileURLToPath(new URL('../../src/common/agent-hooks-common.ts', import.meta.url)))};
+        process.stdin.once('data', () => {
+          const store = createDiskMemoStore({ warn: () => {} }, createSessionLayout(process.argv[2]));
+          console.log(JSON.stringify(store.claimGuidance('s', 'list')));
+        });
+      `
+      },
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      outfile: bundle
+    };
+    execFileSync(process.execPath, ['-e', `require('esbuild').buildSync(${JSON.stringify(buildOptions)})`], {
+      stdio: 'pipe'
+    });
+    const workers = Array.from({ length: 8 }, () =>
+      spawn(process.execPath, [bundle, layout.base], { stdio: ['pipe', 'pipe', 'pipe'] })
+    );
+    const results = workers.map(
+      (worker) =>
+        new Promise<boolean>((resolve, reject) => {
+          let stdout = '';
+          let stderr = '';
+          worker.stdout.on('data', (chunk) => {
+            stdout += chunk;
+          });
+          worker.stderr.on('data', (chunk) => {
+            stderr += chunk;
+          });
+          worker.once('error', reject);
+          worker.once('close', (code) => (code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))));
+        })
+    );
+    for (const worker of workers) worker.stdin.end('claim');
+    expect((await Promise.all(results)).filter(Boolean)).toHaveLength(1);
+  });
+
+  it('logs an I/O failure without claiming guidance and permits retry', () => {
+    const warnings: unknown[] = [];
+    const store = createDiskMemoStore({ warn: (...args) => warnings.push(args) }, layout);
+    fs.mkdirSync(layout.base, { recursive: true });
+    fs.writeFileSync(layout.guidanceDir('s'), 'blocked');
+    expect(() => store.claimGuidance('s', 'list')).toThrow();
+    expect(warnings).toHaveLength(1);
+    fs.rmSync(layout.guidanceDir('s'));
+    expect(store.claimGuidance('s', 'list')).toBe(true);
+  });
+});
+
+describe('guidance retention namespace', () => {
+  it('cannot collide with ordinary sanitized session directories', () => {
+    expect(layout.guidanceDir('s')).not.toBe(layout.dir('@guidance-s'));
+    expect(layout.guidanceDir('s')).not.toBe(layout.dir('s.guidance'));
+  });
+
+  it('refreshes active claims and lets abandoned guidance age out', () => {
+    const store = createDiskMemoStore(logger, layout);
+    store.claimGuidance('s', 'list');
+    fs.utimesSync(layout.guidanceDir('s'), 1, 1);
+    expect(store.claimGuidance('s', 'list')).toBe(false);
+    expect(fs.statSync(layout.guidanceDir('s')).mtimeMs).toBeGreaterThan(Date.now() - 1000);
+    fs.utimesSync(layout.guidanceDir('s'), 1, 1);
+    pruneStaleSessions(layout);
+    expect(fs.existsSync(layout.guidanceDir('s'))).toBe(false);
+    expect(store.claimGuidance('s', 'list')).toBe(true);
+  });
+});
+
+it('keeps guidance alive while an unchanged session reads its memo beyond the retention interval', () => {
+  const store = createDiskMemoStore(logger, layout);
+  store.addSurfaced('s', ['unchanged'], new Set());
+  store.claimGuidance('s', 'list');
+  fs.utimesSync(layout.guidanceDir('s'), 1, 1);
+  resetPruneThrottleForTests();
+  expect(store.getSurfaced('s')).toEqual(new Set(['unchanged']));
+  expect(store.claimGuidance('s', 'list')).toBe(false);
 });

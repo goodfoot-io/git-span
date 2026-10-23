@@ -18,9 +18,8 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
-  type DriftPorcelainRow,
   humanStatusLabel,
   isDebt,
   type LineRange,
@@ -31,7 +30,6 @@ import {
   relativeToRepo,
   resolveRepoRoot
 } from './agent-hooks-common.js';
-import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
 import {
   BROAD_READ_BYTES,
   type DeliverySnapshot,
@@ -39,7 +37,6 @@ import {
   readSnapshots,
   recordSnapshots,
   shellArgument,
-  showRoute,
   snapshot,
   TARGETED_BYTES
 } from './delivery-presentation.js';
@@ -904,123 +901,6 @@ function anchorText(row: PorcelainRow): string {
   return `${row.path}#L${row.start}-L${row.end}`;
 }
 
-function cleanHeader(fileName: string): string {
-  return `${fileName} has implicit couplings:`;
-}
-
-function cleanFooter(fileName: string): string {
-  return `If you change ${fileName} check the other files to confirm they still work together.`;
-}
-
-/**
- * The write path names the edit as the cause; the read path only surfaces
- * pre-existing drift it didn't create, so it names the dependency instead.
- */
-function driftHeader(driftedCount: number, kind: TouchInput['kind']): string {
-  if (kind === 'write') {
-    return driftedCount === 1
-      ? 'This edit put an implicit coupling out of date:'
-      : 'This edit put implicit couplings out of date:';
-  }
-  return driftedCount === 1
-    ? 'This file has an implicit coupling out of date:'
-    : 'This file has implicit couplings out of date:';
-}
-
-function driftFooter(driftedNames: string[]): string {
-  if (driftedNames.length === 1 && (driftedNames[0]?.length ?? 0) <= 200) {
-    const name = driftedNames[0];
-    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require ${inlineCode(`git span drift -- ${shellArgument(name ?? '')}`)} to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
-  }
-  return 'For each out-of-date span: restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.';
-}
-
-/** The {@link RangeLabel} for a porcelain row — `0-0` is the whole-file anchor. */
-function rangeLabel(row: PorcelainRow): RangeLabel {
-  if (row.start === 0 && row.end === 0) return { kind: 'whole-file' };
-  return { kind: 'range', start: row.start, end: row.end };
-}
-
-/**
- * A span's full anchor list, rendered as a shared-prefix tree by
- * {@link renderAnchorTree}, with each anchor that carries genuine drift
- * suffixed by its lowercase status token(s) (` — changed`).
- *
- * A drift row matches an anchor by exact path+range, or by path alone when the
- * span has a single anchor on that path (ranges can disagree after a heal).
- * `soleOnPath` is deliberately computed over the **full flat anchor list**,
- * before any grouping — the tree layout must never be able to change *which*
- * anchors get labeled, only where they sit on the page.
- */
-function anchorBullets(
-  anchors: PorcelainRow[],
-  debtRows: DriftPorcelainRow[],
-  logger: CoreLogger | undefined
-): string[] {
-  const entries = anchors.map((anchor) => {
-    const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
-    const statuses = new Set<PorcelainStatus>();
-    for (const row of debtRows) {
-      if (row.path !== anchor.path) continue;
-      if (soleOnPath || (row.start === anchor.start && row.end === anchor.end)) {
-        statuses.add(row.status);
-      }
-    }
-    const sorted = [...statuses].sort();
-    const suffix = sorted.length > 0 ? ` — ${sorted.map(humanStatusLabel).join(', ')}` : '';
-    return { anchor, row: { path: anchor.path, range: rangeLabel(anchor), suffix } };
-  });
-  try {
-    return renderAnchorTree(collapseByPath(entries.map(({ row }) => row)));
-  } catch (err) {
-    // FAIL-CLOSED, not a `<greenfield>`-forbidden fallback — do not remove it
-    // on the theory that a degraded fallback is itself forbidden. An uncaught
-    // throw here does not degrade to a flat list: it escapes to
-    // `runTouchHook`'s catch, which resolves the whole hook to
-    // `additionalContext: null`, so the agent is never told about the drift at
-    // all. Catching locally narrows what a rendering defect can cost from "the
-    // reminder disappears" to "the reminder looks like it did before the tree".
-    // Whether to surface and what shape to surface in are different things, and
-    // this catch only ever touches the latter.
-    // `entries` pairs each anchor with its row, so this reproduces today's flat
-    // bullet run byte for byte, suffixes included. The degraded shape is still
-    // a defect, so it is recorded on the run log rather than absorbed.
-    reportFailOpen(logger, 'anchor-tree-render', err, { span: anchors[0]?.name, anchorCount: anchors.length });
-    return entries.map(({ anchor, row }) => `- ${anchorText(anchor)}${row.suffix}`);
-  }
-}
-
-/**
- * One human-format span section: `## <name>`, the full anchor list (drifted
- * anchors status-suffixed), and the why sentence when one is recorded.
- *
- * The name header and the why sentence are the same shape `git span list`
- * renders; the anchor list deliberately is not — it renders as a shared-prefix
- * tree ({@link anchorBullets}) where the CLI prints a flat `- path#Lrange`
- * bullet run. The CLI's own text format is untouched; only this hook's
- * re-presentation of it groups.
- */
-function renderSpanSection(
-  name: string,
-  anchors: PorcelainRow[],
-  debtRows: DriftPorcelainRow[],
-  why: string | null,
-  logger: CoreLogger | undefined
-): string {
-  const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows, logger)];
-  if (why) lines.push('', why);
-  return lines.join('\n');
-}
-
-/**
- * Assemble the merged `<git-span>` block: header, one section per surfaced
- * span (separated by `---`), and a single footer after a final `---`.
- */
-function buildBlock(sections: string[], header: string, footer: string): string {
-  const body = `${header}\n\n${sections.join('\n\n---\n\n')}\n\n---\n\n${footer}`;
-  return `\n<git-span>\n${body}\n</git-span>\n`;
-}
-
 // ---------------------------------------------------------------------------
 // Touch hook entry point
 // ---------------------------------------------------------------------------
@@ -1112,10 +992,6 @@ function contextAnchorRow(name: string, anchor: ContextAnchor): PorcelainRow {
   };
 }
 
-function contextDriftRow(name: string, anchor: ContextAnchor): DriftPorcelainRow {
-  return { ...contextAnchorRow(name, anchor), status: contextStatusToken(anchor.status) };
-}
-
 function spanTouchesInput(
   span: ContextSpan,
   document: ContextDocument,
@@ -1128,6 +1004,7 @@ function spanTouchesInput(
   });
 }
 
+/** Render complete identity enumerations in individually bounded notices. */
 function renderContextTouch(
   input: TouchInput,
   document: ContextDocument,
@@ -1142,123 +1019,83 @@ function renderContextTouch(
     .digest('hex');
   const surfaced = memo.getSurfaced(input.sessionId);
   const previous = readSnapshots(surfaced);
-  const candidates = document.spans
-    .filter((span) => {
-      if (!spanTouchesInput(span, document, repoPath, ranges)) return false;
-      const statuses = span.anchors.map((anchor) => contextStatusToken(anchor.status));
-      return statuses.every((status) => status === 'FRESH') || statuses.some(isDebt);
-    })
-    .sort((a, b) => {
-      const debt = (span: ContextSpan) => span.anchors.some((anchor) => isDebt(contextStatusToken(anchor.status)));
-      return Number(debt(b)) - Number(debt(a)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-    });
-  const eligible = candidates.filter(
-    (span) =>
-      previous.get(deliveryIdentity(repoRoot, span.name, input.recipientId))?.value.revision !== span.evidence_revision
-  );
-  if (eligible.length === 0) return null;
-  const broad = input.kind === 'read' && input.broadDiscovery === true;
-  const unknown = input.kind === 'read' && input.observedRange === null;
-  const discoveryOnly = unknown && (broad || ranges === 'whole-file');
-  const observed =
-    input.kind === 'read' && input.observedRange !== undefined && input.observedRange !== null
-      ? [input.observedRange]
-      : ranges;
-  const full = (span: ContextSpan): string =>
-    renderSpanSection(
-      span.name,
-      span.anchors.map((anchor) => contextAnchorRow(span.name, anchor)),
-      span.anchors
-        .filter((anchor) => isDebt(contextStatusToken(anchor.status)))
-        .map((anchor) => contextDriftRow(span.name, anchor)),
-      span.why,
-      logger
-    );
-  const qualifier = eligible.every((span) => span.anchors.every((anchor) => anchor.status.code === 'FRESH'))
-    ? 'Anchors located; relationship review not recorded in this context.'
-    : 'Tracked evidence shown; relationship review not recorded in this context. Match provenance is not reported here.';
-  const discovery = (): string => {
-    const lines: string[] = [];
-    const header = `Discovery only — ${eligible.length} relationships; ${unknown ? 'read extent unknown' : 'full details not delivered'}.`;
-    const route = 'Retrieve omitted relationships with `git span list`; use `git span show <name>` for details.';
-    for (const span of eligible) {
-      const prior = previous.get(deliveryIdentity(repoRoot, span.name, input.recipientId));
-      const line = `- ${inlineCode(span.name)} — ${prior === undefined ? 'not fully shown' : 'evidence changed'}; ${new Set(span.anchors.map((anchor) => anchor.anchored.path)).size} files; ${showRoute(span.name)}`;
-      const omitted = eligible.length - lines.length - 1;
-      const result = buildBlock([...lines, line], header, `${omitted} spans omitted. ${route}`);
-      if (Buffer.byteLength(result) > BROAD_READ_BYTES) break;
-      lines.push(line);
-    }
-    return buildBlock(lines, header, `${eligible.length - lines.length} spans omitted. ${route}`);
-  };
-  const fullFooterSeen =
-    input.recipientResetSupported === true &&
-    [...previous.values()].some(({ value }) => value.recipient === recipient && value.fullFooter);
-  const shortFooter =
-    'Check the coupled evidence before committing; zero drift does not establish relationship review.';
-  const fileName = basename(input.filePath);
-  const driftedNames = eligible
-    .filter((span) => span.anchors.some((anchor) => isDebt(contextStatusToken(anchor.status))))
-    .map((span) => span.name);
-  const header = `${unknown ? 'Tool read extent unknown; hook details target the requested lines.\n' : ''}${driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName)}\n${qualifier}`;
-  const footer = fullFooterSeen
-    ? shortFooter
-    : `${driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName)}\nTo move an address: \`git span replace <name> <old-anchor> <new-anchor>\`. To explicitly accept content at the same address: \`git span add <name> <anchor>\`. Zero drift does not establish relationship review.`;
-  // Discovery never consumes full exposure, including spans outside the tool's actual visible range.
-  if (
-    discoveryOnly ||
-    (broad &&
-      (eligible.length > 3 ||
-        eligible.some((span) => !spanTouchesInput(span, document, repoPath, observed)) ||
-        Buffer.byteLength(buildBlock(eligible.map(full), header, footer)) > BROAD_READ_BYTES))
-  )
-    return discovery();
-  const sections: string[] = [];
   const updates = new Map<string, DeliverySnapshot>();
-  let incomplete = 0;
-  for (const [spanIndex, span] of eligible.entries()) {
+  const display = (value: string): string =>
+    value.replace(/\p{Cc}/gu, (character) => JSON.stringify(character).slice(1, -1));
+  const clean: string[] = [];
+  const drift: Array<{ item: string; name: string }> = [];
+  for (const span of [...document.spans].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    if (!spanTouchesInput(span, document, repoPath, ranges)) continue;
+    const debt = span.anchors.filter((anchor) => isDebt(contextStatusToken(anchor.status)));
+    if (debt.length === 0 && !span.anchors.every((anchor) => anchor.status.code === 'FRESH')) continue;
     const identity = deliveryIdentity(repoRoot, span.name, input.recipientId);
     const prior = previous.get(identity)?.value;
-    const current = snapshot(span, input.recipientResetSupported === true, recipient);
-    let section = full(span);
-    if (prior !== undefined) {
-      const changed = span.anchors.filter((_anchor, index) => prior.anchors[index] !== current.anchors[index]);
-      const removed = Math.max(0, prior.anchors.length - current.anchors.length);
-      const why = prior.why !== span.why ? span.why : (span.why?.split(/(?<=[.!?])\s/)[0] ?? null);
-      const rows = changed.map((anchor) => contextAnchorRow(span.name, anchor));
-      const debtRows = changed
-        .filter((anchor) => isDebt(contextStatusToken(anchor.status)))
-        .map((anchor) => contextDriftRow(span.name, anchor));
-      // The producer's evidence revision includes source identities absent
-      // from the visible anchor metadata. Preserve source/status context when
-      // those identities change instead of emitting a rowless delta.
-      section =
-        changed.length === 0 && removed === 0 && prior.why === span.why
-          ? `${section}\nEvidence revision changed; visible anchor metadata is unchanged. ${showRoute(span.name)}`
-          : `${renderSpanSection(span.name, rows, debtRows, why, logger)}\nEvidence changed since full exposure.${removed > 0 ? ` ${removed} anchor(s) removed.` : ''} ${showRoute(span.name)}`;
-    }
-    const omissionReserve = `\n${eligible.length - spanIndex - 1} additional relationships incomplete; retrieve with \`git span list\` and \`git span show <name>\`.`;
-    if (Buffer.byteLength(buildBlock([...sections, section], header, footer + omissionReserve)) > TARGETED_BYTES) {
-      // Keep the evidence identity and a complete retrieval route; reserve all remaining count.
-      incomplete = eligible.length - spanIndex;
-      const detail = `Incomplete relationship details; evidence ${inlineCode(span.evidence_revision)}. ${showRoute(span.name)}`;
-      if (Buffer.byteLength(buildBlock([...sections, detail], header, footer + omissionReserve)) <= TARGETED_BYTES)
-        sections.push(detail);
-      break;
-    }
-    sections.push(section);
-    updates.set(identity, current);
+    if (prior?.revision === span.evidence_revision) continue;
+    updates.set(identity, snapshot(span, false, recipient));
+    if (debt.length > 0) {
+      for (const anchor of debt) {
+        drift.push({
+          item: `${display(anchorText(contextAnchorRow(span.name, anchor)))} (${humanStatusLabel(contextStatusToken(anchor.status))} in ${display(span.name)})`,
+          name: span.name
+        });
+      }
+    } else if (prior === undefined) clean.push(span.name);
   }
+  const budget = input.kind === 'read' && input.broadDiscovery === true ? BROAD_READ_BYTES : TARGETED_BYTES;
+  const blocks: string[] = [];
+  const wrap = (body: string): string => `\n<git-span>\n${body}\n</git-span>\n`;
+  const command = (family: 'list' | 'drift', names: string[]): string => {
+    const args = [...new Set(names)].map((name) =>
+      /^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(name) ? name : shellArgument(name)
+    );
+    const value = `git span ${family} ${args.some((arg) => !/^[A-Za-z0-9]/.test(arg)) ? '-- ' : ''}${args.join(' ')}`;
+    return value.includes('`') ? inlineCode(value) : `\`${value}\``;
+  };
+  const enumerate = (prefix: string, items: Array<{ item: string; name: string }>, family: 'list' | 'drift'): void => {
+    if (items.length === 0) return;
+    const body = (rows: typeof items, guidance: boolean): string =>
+      prefix +
+      rows.map((row) => row.item).join(', ') +
+      (guidance
+        ? `\n\nUse ${command(
+            family,
+            rows.map((row) => row.name)
+          )} for more information`
+        : '');
+    // Construct every possible block before claiming so rendering failures cannot consume guidance.
+    const partitions: Array<typeof items> = [];
+    let rows: typeof items = [];
+    for (const item of items) {
+      const next = [...rows, item];
+      if (rows.length > 0 && Buffer.byteLength(wrap(body(next, partitions.length === 0))) > budget) {
+        partitions.push(rows);
+        rows = [item];
+      } else rows = next;
+    }
+    if (rows.length > 0) partitions.push(rows);
+    const withGuidance = partitions.map((part, index) => wrap(body(part, index === 0)));
+    const withoutGuidance = partitions.map((part) => wrap(body(part, false)));
+    try {
+      blocks.push(...(memo.claimGuidance(input.sessionId, family) ? withGuidance : withoutGuidance));
+    } catch (err) {
+      // Keep successfully delivered families, and retry only the undelivered identities.
+      for (const { name } of items) updates.delete(deliveryIdentity(repoRoot, name, input.recipientId));
+      reportFailOpen(logger, 'touch-render', err, { family, stage: 'retrieval-guidance-claim' });
+    }
+  };
+  enumerate(
+    `${display(repoPath)} is anchored in: `,
+    clean.map((name) => ({ item: display(name), name })),
+    'list'
+  );
+  enumerate(
+    input.kind === 'write' ? 'Change introduced drift from ' : 'Check for drift from ',
+    drift,
+    input.kind === 'write' ? 'list' : 'drift'
+  );
   recordSnapshots(surfaced, updates);
   memo.addSurfaced(input.sessionId, [], surfaced);
-  return buildBlock(
-    sections,
-    header,
-    footer +
-      (incomplete > 0
-        ? `\n${incomplete} relationships incomplete; retrieve with \`git span list\` and \`git span show <name>\`.`
-        : '')
-  );
+  return blocks.length === 0 ? null : blocks.join('');
 }
 
 interface PreparedTouch {

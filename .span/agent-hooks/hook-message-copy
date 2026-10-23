@@ -1,13 +1,13 @@
-packages/agent-hooks/src/common/delivery-presentation.ts#L6-L19 rk64:11418e7e7b8a51fe
-packages/agent-hooks/src/common/delivery-presentation.ts#L95-L122 rk64:10f51d2889adbdbc
-packages/agent-hooks/src/common/touch-core.ts#L907-L936 rk64:b195b5e9c47bd71a
-packages/agent-hooks/src/common/touch-core.ts#L1131-L1262 rk64:65eb53436caa22e6
+packages/agent-hooks/src/common/delivery-presentation.ts#L5-L18 rk64:11418e7e7b8a51fe
+packages/agent-hooks/src/common/delivery-presentation.ts#L45-L54 rk64:4bae0891074a2139
+packages/agent-hooks/src/common/delivery-presentation.ts#L101-L128 rk64:10f51d2889adbdbc
+packages/agent-hooks/src/common/touch-core.ts#L1008-L1099 rk64:269470fe4311684d
 packages/git-span/src/cli/context.rs#L559-L581 rk64:ff505775865efacb
-packages/website/content/docs/agent-integration.mdx rk64:09c29414867660c7
-plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:028fac503f10ffd4
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:e137bb08485e3d5a
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:6cb819cc32f02b89
-plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:bd3ba704cc39f809
-skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:4cef56ecfbf57cba
+packages/website/content/docs/agent-integration.mdx rk64:e7a41efc12cca8c5
+plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:7145c0423b99bb31
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:6f915260bda80466
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:216da357416a221b
+plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:5902ea38f215f371
+skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:fb2b7e6d9f2f6719
 
-The shared touch renderer, bounded presentation snapshots and CLI evidence revisions define delivery behavior; the hook-output template and website preserve "Identical repeats are suppressed; new changes are delivered again, even when the status is unchanged." Template-generated references preserve the same discovery-only exposure, byte budgets and source/status replay when an opaque revision changes without visible anchor changes.
+The shared touch renderer and evidence revisions drive the short wrapped notices described by the hook-output template, its four generated references and website. Per-command retrieval guidance survives exposure resets and Codex turn cleanup; complete enumerations are partitioned without truncation, while previously delivered revisions without genuine drift advance silently.

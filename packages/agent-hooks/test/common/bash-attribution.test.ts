@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /** Focused lifecycle checks for the authoritative static Bash attribution pipeline. */
 
 import { execFileSync } from 'node:child_process';
@@ -22,6 +23,7 @@ const SESSION_ID = 'static-attribution-lifecycle';
 function memo(): MemoStore {
   let surfaced = new Set<string>();
   return {
+    claimGuidance: guidanceClaims(),
     getSurfaced: () => new Set(surfaced),
     addSurfaced: (_sessionId, names, known) => {
       surfaced = new Set([...known, ...names]);

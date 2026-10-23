@@ -2,7 +2,7 @@
 title: Git Span Documentation Touchpoints
 summary: Sources, mirrors, generated artifacts, and checks for git-span guidance changes.
 tags: [meta, git-span, tooling]
-links-reviewed: 4
+links-reviewed: 5
 ---
 
 # Git span documentation touchpoints
@@ -156,8 +156,15 @@ Do not hand-maintain this list anywhere a gate reasons from: the hooks freshness
 its measured trees by replaying the `build:*` scripts and observing what they write,
 reconciled both ways against the registry's platform set.
 
-Keep text marked verbatim exact in the website integration page and both
-`understanding-hook-output.md` files. Reconciliation text must say:
+The [touch renderer](/packages/agent-hooks/src/common/touch-core.ts#L1008-L1091)
+owns short wrapped anchored-path and drift notices, with `list` and `drift`
+guidance each shown once per session. Keep the website integration page aligned
+with the [authored hook-output reference](/skills-src/git-span/git-span/references/understanding-hook-output.md.eta#L31-L94),
+then regenerate all four platform references. Broad notices record delivery;
+changed revisions without current drift advance prior baselines silently.
+Guidance survives exposure resets and eager session cleanup.
+
+Repair procedures belong in explicit reference guidance, not emitted notices:
 
 - refresh the exact anchor when identity is unchanged — whole-file stays whole-file and a range keeps its exact boundaries;
 - treat a file shrunken below its anchored end as an identity change — swap it with `git span replace` to the file's current line count;

@@ -949,6 +949,7 @@ function createSessionLayout(base) {
     base,
     trashDir: nodePath.join(nodePath.dirname(base), "session-trash"),
     dir,
+    guidanceDir: (sessionId) => nodePath.join(base, `@guidance-${sanitizeSessionId(sessionId)}`),
     memoFile: (sessionId) => nodePath.join(dir(sessionId), "touch-memo.json"),
     plannedTouchesDir,
     plannedTouchRecordFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".json"),
@@ -1016,7 +1017,7 @@ function pruneStaleSessionsThrottled(layout, now = Date.now()) {
 }
 
 // packages/agent-hooks/src/common/bash-attribution.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import * as fs7 from "node:fs";
 import * as nodePath5 from "node:path";
 
@@ -6742,12 +6743,11 @@ function filterTrackedEligibility(candidates, options) {
 
 // packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import * as fs6 from "node:fs";
-import { basename as basename5, dirname as dirname6, join as join6 } from "node:path";
+import { dirname as dirname6, join as join6 } from "node:path";
 
 // packages/agent-hooks/src/common/delivery-presentation.ts
-import { createHash as createHash2 } from "node:crypto";
 var MAX_MEMO_BYTES = 256 * 1024;
 
 // packages/agent-hooks/src/common/touch-core.ts
@@ -6784,7 +6784,7 @@ function planEvidence(matches, requirements) {
     return {
       kind: "content-digest",
       algorithm: "sha256",
-      digest: createHash4("sha256").update(expectedContent).digest("hex"),
+      digest: createHash3("sha256").update(expectedContent).digest("hex"),
       range: unionRange(ranges)
     };
   }
@@ -6893,7 +6893,7 @@ import { homedir as homedir2 } from "node:os";
 import { join as join10 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-association.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 // packages/agent-hooks/src/common/commit-contracts.ts
@@ -6977,7 +6977,7 @@ function decideCommitClaim(owner, liveness, remainingMs) {
 }
 
 // packages/agent-hooks/src/common/commit-observation.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { resolve as resolve6 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-git.ts
@@ -7113,9 +7113,9 @@ function checkpointCommitInvocation(enrollment, deadline) {
 import { relative as relative3, resolve as resolve7 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-storage.ts
-import { createHash as createHash7, randomBytes } from "node:crypto";
+import { createHash as createHash6, randomBytes } from "node:crypto";
 import {
-  closeSync as closeSync3,
+  closeSync as closeSync4,
   constants as constants2,
   existsSync as existsSync6,
   fstatSync as fstatSync2,
@@ -7123,7 +7123,7 @@ import {
   lstatSync,
   mkdirSync as mkdirSync5,
   opendirSync,
-  openSync as openSync3,
+  openSync as openSync4,
   readFileSync as readFileSync8,
   renameSync as renameSync4,
   rmSync as rmSync4,
@@ -7207,14 +7207,14 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
 
 // packages/agent-hooks/src/common/commit-storage.ts
 function identityKey(identity) {
-  return createHash7("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
+  return createHash6("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
 }
 async function privateDirectory(path, deadline) {
   if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
   if (performance.now() >= deadline) throw new Error("receipt directory phase deadline exhausted");
   mkdirSync5(path, { recursive: true, mode: 448 });
   const owner = process.getuid?.();
-  const descriptor = owner === void 0 ? void 0 : openSync3(path, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+  const descriptor = owner === void 0 ? void 0 : openSync4(path, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
   try {
     for (; ; ) {
       const stat = descriptor === void 0 ? lstatSync(path) : fstatSync2(descriptor);
@@ -7226,7 +7226,7 @@ async function privateDirectory(path, deadline) {
       await delay(Math.min(5, remaining));
     }
   } finally {
-    if (descriptor !== void 0) closeSync3(descriptor);
+    if (descriptor !== void 0) closeSync4(descriptor);
   }
 }
 function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {

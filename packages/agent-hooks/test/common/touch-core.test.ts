@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Skipped acceptance checks for touch-core.ts (Phase 2.2 of the TDD bootstrap
  * described in plans/initial.md's Phase 2). Phase 2.1 declared `recoverRange`
@@ -75,6 +76,7 @@ const runBashTouches = (...args: Parameters<typeof runBashTouchesImpl>): ReturnT
 function createMemoryMemoStore(): MemoStore {
   const bySession = new Map<string, Set<string>>();
   return {
+    claimGuidance: guidanceClaims(),
     getSurfaced(sessionId: string): Set<string> {
       return new Set(bySession.get(sessionId) ?? []);
     },
@@ -207,7 +209,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.additionalContext).toBeNull();
     });
 
-    it('surfaces the full human-format span render for semantic drift exactly once per span per status in a session', async () => {
+    it('surfaces a short anchored write-drift notice once per evidence revision', async () => {
       const memo = createMemoryMemoStore();
       const executors: TouchExecutors = {
         fix: async (): Promise<TouchFixResult> => ({ modified: false }),
@@ -223,25 +225,10 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       const first = await runTouchHook(input, executors, memo);
       expect(first.additionalContext).not.toBeNull();
       const block = first.additionalContext ?? '';
-      // Drift header + full span section: name heading, every declared anchor
-      // grouped under its directory branch (the drifted one
-      // lowercase-status-suffixed, the clean cross-file one bare), the why
-      // sentence, and the drift footer after a final `---`.
-      expect(block).toContain('This edit put an implicit coupling out of date:');
-      expect(block).toContain('## billing/checkout-request-flow');
-      expect(block).toContain('├─ src/app.ts    #L1-L10 — changed');
-      expect(block).toContain('└─ api/charge.ts #L30-L76\n');
-      expect(block).not.toContain('#L30-L76 —');
-      // The flat bullet run this section used to render is gone entirely.
-      expect(block).not.toContain('- src/app.ts#L1-L10');
-      expect(block).toContain(WHY);
-      expect(block).toContain('\n\n---\n\n');
-      expect(block).toContain('Restore agreement before committing');
-      expect(block).toContain('Preserve anchor shape');
-      expect(block).toContain('swap the old anchor for the new one with `git span replace`');
-      expect(block).toContain("git span drift -- 'billing/checkout-request-flow'");
-      expect(block).toContain('Follow confirmed authority');
-      expect(block).toContain('Conform a side only when confirmed authority or a satisfied gate decides it');
+      expect(block).toBe(
+        '\n<git-span>\nChange introduced drift from src/app.ts#L1-L10 (changed in billing/checkout-request-flow)\n\nUse `git span list billing/checkout-request-flow` for more information\n</git-span>\n'
+      );
+      expect(block).not.toContain(WHY);
 
       // Same span, same status, same session (same MemoStore instance) — the
       // render must not repeat.
@@ -249,7 +236,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(second.additionalContext).toBeNull();
     });
 
-    it('re-renders the full span when drift appears after the span already surfaced healthy', async () => {
+    it('surfaces write drift after clean exposure without repeating list guidance', async () => {
       const memo = createMemoryMemoStore();
       let drifted = false;
       const executors: TouchExecutors = {
@@ -260,27 +247,26 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       };
       const input = writeInput();
 
-      // First touch: clean — the span surfaces once with the clean header/footer.
+      // First touch delivers an anchored notice and session list guidance.
       const first = await runTouchHook(input, executors, memo);
       const cleanBlock = first.additionalContext ?? '';
-      expect(cleanBlock).toContain('app.ts has implicit couplings:');
-      expect(cleanBlock).toContain('## billing/checkout-request-flow');
-      expect(cleanBlock).toContain(WHY);
-      expect(cleanBlock).toContain('If you change app.ts check the other files to confirm they still work together.');
+      expect(cleanBlock).toContain('src/app.ts is anchored in:');
+      expect(cleanBlock).toContain('billing/checkout-request-flow');
+      expect(cleanBlock).not.toContain(WHY);
+      expect(cleanBlock).toContain('Use `git span list billing/checkout-request-flow` for more information');
       expect(cleanBlock).not.toContain('— changed');
 
       // Clean again: nothing new to say.
       const second = await runTouchHook(input, executors, memo);
       expect(second.additionalContext).toBeNull();
 
-      // Drift appears later in the session: the full span re-renders (anchors
-      // and why included) — never a bare directive without paths.
+      // Drift appearing later carries its anchored address without repeating guidance.
       drifted = true;
       const third = await runTouchHook(input, executors, memo);
       const driftBlock = third.additionalContext ?? '';
-      expect(driftBlock).toContain('This edit put an implicit coupling out of date:');
-      expect(driftBlock).toContain('└─ src/app.ts #L1-L10 — changed');
-      expect(driftBlock).toContain(WHY);
+      expect(driftBlock).toContain('Change introduced drift from');
+      expect(driftBlock).toContain('src/app.ts#L1-L10 (changed in billing/checkout-request-flow)');
+      expect(driftBlock).not.toContain(WHY);
 
       // Same (span, status) pair again: deduped.
       const fourth = await runTouchHook(input, executors, memo);
@@ -324,7 +310,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
 
       // A read never edited anything — only a write's header may say "This
       // edit put ... out of date"; a read names the dependency instead.
-      expect(output.additionalContext).toContain('This file has an implicit coupling out of date:');
+      expect(output.additionalContext).toContain('Check for drift from');
       expect(output.additionalContext).not.toContain('This edit put');
     });
 
@@ -392,7 +378,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         const output = await runTouchHook(readInput({ filePath, offset: 39, limit: 60 }), executors, memo);
 
         expect(output.additionalContext).not.toBeNull();
-        expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+        expect(output.additionalContext).toContain('billing/checkout-request-flow');
       });
 
       it('uses the default 2000-line window when offset is given without limit', async () => {
@@ -424,7 +410,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         const output = await runTouchHook(readInput({ filePath }), executors, memo);
 
         expect(output.additionalContext).not.toBeNull();
-        expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+        expect(output.additionalContext).toContain('billing/checkout-request-flow');
       });
     });
   });
@@ -456,42 +442,6 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
 
       expect(output.additionalContext).toBeNull();
       expect(output.treeModified).toBe(false);
-    });
-
-    /**
-     * The touch hook's fail-open case. An uncaught
-     * throw from the tree renderer would escape to `runTouchHook`'s catch,
-     * which resolves the whole hook to `additionalContext: null` — the agent
-     * would never hear about the drift at all. The local catch keeps the
-     * reminder, just flat.
-     */
-    it('still returns a flat-bullet reminder, not null, when the tree renderer throws', async () => {
-      vi.resetModules();
-      vi.doMock('../../src/common/anchor-tree.js', async (importOriginal) => ({
-        ...(await importOriginal<typeof import('../../src/common/anchor-tree.js')>()),
-        renderAnchorTree: (): string[] => {
-          throw new Error('injected tree-renderer defect');
-        }
-      }));
-      try {
-        const { runTouchHook: run } = await import('../../src/common/touch-core.js');
-        const memo = createMemoryMemoStore();
-        const executors: TouchExecutors = {
-          fix: async (): Promise<TouchFixResult> => ({ modified: false }),
-          list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-          drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
-          why: async (): Promise<string | null> => WHY
-        };
-
-        const output = await run(writeInput(), contextExecutors(executors), memo);
-
-        expect(output.additionalContext).not.toBeNull();
-        expect(output.additionalContext).toContain('- src/app.ts#L1-L10 — changed');
-        expect(output.additionalContext).not.toContain('└─');
-      } finally {
-        vi.doUnmock('../../src/common/anchor-tree.js');
-        vi.resetModules();
-      }
     });
   });
 
@@ -551,7 +501,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       );
 
       expect(output.additionalContext).not.toBeNull();
-      expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+      expect(output.additionalContext).toContain('billing/checkout-request-flow');
     });
 
     it("the 'exists' gate fails closed when the target is missing: zero executor calls", async () => {
@@ -635,7 +585,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       );
 
       expect(fixCalls).toBe(1);
-      expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+      expect(output.additionalContext).toContain('billing/checkout-request-flow');
     });
 
     it("the 'absent' gate fails closed when the target was never real (phantom): zero executor calls", async () => {
@@ -715,7 +665,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       );
 
       expect(output.additionalContext).not.toBeNull();
-      expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+      expect(output.additionalContext).toContain('billing/checkout-request-flow');
     });
 
     it('a delete touch surfaces the deleted file through the write path (porcelain on a deleted file)', async () => {
@@ -739,7 +689,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       );
 
       expect(output.additionalContext).not.toBeNull();
-      expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+      expect(output.additionalContext).toContain('billing/checkout-request-flow');
     });
   });
 

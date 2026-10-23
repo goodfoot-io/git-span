@@ -8,38 +8,40 @@ observes `bash`/`read`/`edit`/`write`, plus `apply_patch` on gpt models, and
 appends bounded `<git-span>` context to the tool output. The experimental
 `execute` tool is outside this coverage.
 
-## The touch hook: bounded context and discovery
+## The touch hook: short notices
 
-A targeted touch delivers the span's anchors and why in a `<git-span>` block.
-Anchors use a shared-prefix tree; changed or unavailable evidence carries status
-suffixes. Matching anchors and successful repairs do not establish semantic
-agreement: output says relationship review is not recorded in this context.
+Each retained notice is wrapped in `<git-span>` tags. Initial clean touches,
+including broad reads, identify the touched path and every relevant span:
 
-Structured reads distinguish requested discovery from the tool's visible extent.
-OpenCode's structured read response has no pinned extent metadata contract in
-this adapter. Its read extent remains unknown; explicit requested ranges can
-still receive complete hook relationship context with that uncertainty stated.
+```text
+<git-span>
+src/validate.ts is anchored in: input-selection-validation
 
-A broad read can discover relationships outside its visible lines. Above three
-sections or 1.5 KiB, or when broad extent is unknown, it shows an index with
-span names, file counts, changed-evidence signals and retrieval commands. The
-index reports omitted spans. It does not record full exposure: a later targeted
-read or write still gets the complete first section. Targeted output is bounded
-at 8 KiB; incomplete details retain a retrieval route and remain eligible.
-These provisional byte budgets constrain context; they are not measured optima.
+Use `git span list input-selection-validation` for more information
+</git-span>
+```
 
-After complete exposure, changed visible fields render a delta: changed anchors,
-the why's first sentence, the complete why when changed, and `git span show`.
-When only the opaque evidence revision changes and the why and anchor metadata
-are identical, the hook repeats the full source/status section within the same
-byte budget and reports the changed revision. Exact repeats are suppressed,
-including after a delta. A→B→A is delivered again. Snapshot eviction or malformed private state
-requires full delivery again. The session store holds at most 128 latest
-snapshots, at most 8 KiB each and 256 KiB serialized state; it stores no file blobs.
-Recipient transcript identities separate Claude structured-read/write baselines.
+Reads encountering drift use `Check for drift from <anchor> (<reason> in <span>)`
+and recommend `git span drift <names>`. Writes use
+`Change introduced drift from <anchor> (<reason> in <span>)` and recommend
+`git span list <names>`. Notices enumerate all applicable spans and drifting
+anchors. Whole-file anchors remain bare paths; ranged anchors retain line bounds.
 
-This adapter has no wired, trustworthy compaction reset. It retains
-self-contained footer instructions; suppression is not claimed compaction-safe.
+Guidance appears once for `list` and once for `drift` per session, shared across
+paths, spans, repositories and recipients. Later notices retain their wrapper
+and substantive line. Exposure resets, compact/resume and snapshot eviction do
+not renew guidance; a new session identity does. Separate session-keyed
+`@guidance-*` directories survive eager session-state cleanup, including Codex
+stops between turns. Active claims refresh their modification time; TTL pruning
+retires abandoned guidance. No substantive output means no guidance or empty
+wrapper. Notices omit trees, explanations, read-extent qualifications,
+incomplete-details messages and instructional footers.
+
+Complete items are partitioned into wrappers targeting 1,536 bytes for broad
+reads and 8,192 bytes for targeted touches, including any guidance. Aggregate
+output grows with enumeration size; an indivisible item or retrieval instruction
+exceeding its target is emitted intact with substantive content in its own
+wrapper. No span identity is silently omitted.
 
 Check coupled evidence before committing. Moving an address uses
 `git span replace <name> <old-anchor> <new-anchor>`; deliberately accepting
@@ -54,14 +56,18 @@ elsewhere in addressed files; response selection stays scoped.
 Whitespace edits and fuzzy matches remain drifting for review. Repairs update
 `.span/` worktree files; include them with the source change when committing.
 
-
 ### When a span surfaces (and resurfaces)
 
-Delivery compares the latest completely injected relationship context for this
-repository, span and recipient identity. Identical repeats are suppressed; new
-changes are delivered again, even when status is unchanged. Discovery indexes
-and incomplete output never advance that baseline. The evidence revision covers
-the definition and relevant captured source state, not a semantic verdict.
+Delivery compares the latest snapshot for this repository, span and recipient.
+Broad and targeted notices both record delivery; identical repeats are suppressed.
+After prior delivery, a changed evidence revision with no current drifting anchor
+advances the baseline silently, including definition-only or opaque changes.
+Changed revisions with genuine drift surface the short drift notice. Snapshot
+eviction or malformed state can cause another initial notice. The evidence
+revision is not a semantic verdict.
+
+This adapter has no wired, trustworthy compaction exposure reset.
+
 
 ## Bash intent attribution
 

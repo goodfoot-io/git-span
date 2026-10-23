@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * The plan's verification matrix (card main-212, Phase 3 step 11, plan
  * §Verification): real commands in real temp repositories, fake executors
@@ -104,6 +105,7 @@ const runBashTouches = (...args: Parameters<typeof runBashTouchesImpl>): ReturnT
 function createMemoryMemoStore(): MemoStore {
   const bySession = new Map<string, Set<string>>();
   return {
+    claimGuidance: guidanceClaims(),
     getSurfaced(sessionId: string): Set<string> {
       return new Set(bySession.get(sessionId) ?? []);
     },

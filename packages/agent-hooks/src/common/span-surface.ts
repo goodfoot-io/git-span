@@ -104,6 +104,8 @@ export function createDefaultDriftExecutor(timeoutMs = 10_000): DriftExecutor {
 // ---------------------------------------------------------------------------
 
 export interface MemoStore {
+  /** Atomically claim retrieval guidance once per family for the entire session. */
+  claimGuidance(sessionId: string, family: 'list' | 'drift'): boolean;
   getSurfaced(sessionId: string): Set<string>;
   /**
    * Record `names` as surfaced, merging into `known` — the set the caller
@@ -145,7 +147,32 @@ export function createDiskMemoStore(logger: MemoLogger, layout: SessionLayout): 
   // A write belongs to the epoch of its caller-known set, even across reset.
   const destinations = new WeakMap<ReadonlySet<string>, string>();
   return {
+    claimGuidance(sessionId, family) {
+      const directory = layout.guidanceDir(sessionId);
+      try {
+        fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+        const now = new Date();
+        fs.utimesSync(directory, now, now);
+        try {
+          const descriptor = fs.openSync(nodePath.join(directory, family), 'wx', 0o600);
+          fs.closeSync(descriptor);
+          return true;
+        } catch (err) {
+          if (errnoCode(err) === 'EEXIST') return false;
+          throw err;
+        }
+      } catch (err) {
+        logger.warn('git-span retrieval guidance claim failed', { err });
+        throw err;
+      }
+    },
     getSurfaced(sessionId) {
+      try {
+        const now = new Date();
+        fs.utimesSync(layout.guidanceDir(sessionId), now, now);
+      } catch (err) {
+        if (errnoCode(err) !== 'ENOENT') logger.warn('git-span guidance keepalive failed', { err });
+      }
       pruneStaleSessionsThrottled(layout);
       const empty = new Set<string>();
       try {

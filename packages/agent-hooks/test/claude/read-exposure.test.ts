@@ -4,12 +4,13 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createHandler } from '../../src/claude/post-tool-use.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
+import { guidanceClaims } from '../guidance-helpers.js';
 import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 import { contextExecutors } from '../touch-context-fake.js';
 
 describe('Claude visible read extent and discovery', () => {
-  it('advertises unseen late anchors on a default 2000-line read, then delivers complete context for the targeted read', async () => {
+  it('delivers the complete short discovery notice once and scopes later targeted reads', async () => {
     const repo = makeTempRepo();
     const temp = makeTempLayout();
     try {
@@ -18,6 +19,7 @@ describe('Claude visible read extent and discovery', () => {
       execFileSync('git', ['add', 'app.ts'], { cwd: repo.root });
       let saved = new Set<string>();
       const memo: MemoStore = {
+        claimGuidance: guidanceClaims(),
         getSurfaced: () => new Set(saved),
         addSurfaced: (_sid, names, known) => {
           saved = new Set([...known, ...names]);
@@ -47,8 +49,8 @@ describe('Claude visible read extent and discovery', () => {
         } as never,
         ctx as never
       );
-      expect(broad?.stdout.hookSpecificOutput?.additionalContext).toContain('Discovery only');
-      expect(saved.size).toBe(0);
+      expect(broad?.stdout.hookSpecificOutput?.additionalContext).toContain('app.ts is anchored in: late/contract');
+      expect(saved.size).toBe(1);
       const targeted = await handler(
         {
           ...base,
@@ -57,11 +59,9 @@ describe('Claude visible read extent and discovery', () => {
         } as never,
         ctx as never
       );
-      expect(targeted?.stdout.hookSpecificOutput?.additionalContext).toContain(
-        'The late boundary must preserve its consumer contract.'
-      );
+      expect(targeted).toBeNull();
       expect(saved.size).toBe(1);
-      // Same targeted request was truncated before the late anchor: not a full exposure.
+      // Same targeted request was truncated before the late anchor: outside the actual visible range.
       saved = new Set();
       const truncated = await handler(
         {

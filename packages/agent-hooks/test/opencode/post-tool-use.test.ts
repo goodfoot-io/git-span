@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Tests for the OpenCode after-hook touch adapter
  * (packages/agent-hooks/src/opencode/post-tool-use.ts): injection appends to
@@ -53,6 +54,7 @@ vi.mock('../../src/common/touch-core.js', async (importOriginal) => {
 function inMemoryMemoFactory() {
   const store = new Map<string, Set<string>>();
   return () => ({
+    claimGuidance: guidanceClaims(),
     getSurfaced: (sid: string) => new Set(store.get(sid) ?? []),
     addSurfaced: (sid: string, names: string[], known: ReadonlySet<string>) => {
       store.set(sid, new Set([...known, ...names]));

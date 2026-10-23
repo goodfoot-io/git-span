@@ -1,5 +1,4 @@
 /** Bounded presentation history; never a semantic review or approval record. */
-import { createHash } from 'node:crypto';
 import { isRecord } from './guards.js';
 import type { ContextSpan } from './touch-core.js';
 
@@ -20,6 +19,13 @@ export interface DeliverySnapshot {
 
 /** Safely quote one literal shell argument, including embedded quote characters. */
 export function shellArgument(value: string): string {
+  if (/\p{Cc}/u.test(value)) {
+    const escaped = value.replace(/[\\'\p{Cc}]/gu, (character) => {
+      if (character === "'" || character === '\\') return `\\${character}`;
+      return `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`;
+    });
+    return `$'${escaped}'`;
+  }
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
@@ -40,8 +46,8 @@ export function snapshot(span: ContextSpan, fullFooter: boolean, recipient: stri
   return {
     version: 1,
     revision: span.evidence_revision,
-    why: span.why,
-    anchors: span.anchors.map((anchor) => createHash('sha256').update(JSON.stringify(anchor)).digest('hex')),
+    why: null,
+    anchors: [],
     fullFooter,
     recipient
   };

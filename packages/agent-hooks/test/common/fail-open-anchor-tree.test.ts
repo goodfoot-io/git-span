@@ -1,28 +1,13 @@
-/**
- * The anchor-tree render catch in the touch core: a tree defect degrades the
- * span's anchor list to the flat bullet run (fail-open, unchanged) and now
- * records the swallow on the run log instead of absorbing it silently.
- */
+import { guidanceClaims } from '../guidance-helpers.js';
+/** Short notices carry anchored drift identities without rendering trees or explanations. */
 
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CoreLogger, MemoStore } from '../../src/common/span-surface.js';
 import { runTouchHooks, type TouchInput } from '../../src/common/touch-core.js';
 import { itemAt, makeTempRepo } from '../helpers.js';
 import { contextExecutors } from '../touch-context-fake.js';
-
-const treeDefect = new RangeError('anchor tree defect');
-
-vi.mock('../../src/common/anchor-tree.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/common/anchor-tree.js')>();
-  return {
-    ...actual,
-    renderAnchorTree: () => {
-      throw treeDefect;
-    }
-  };
-});
 
 function recordingLogger(): CoreLogger & { warns: Array<{ message: string; context?: Record<string, unknown> }> } {
   const warns: Array<{ message: string; context?: Record<string, unknown> }> = [];
@@ -34,7 +19,7 @@ function recordingLogger(): CoreLogger & { warns: Array<{ message: string; conte
   };
 }
 
-describe('anchor-tree render fail-open', () => {
+describe('short notices exclude full anchor trees', () => {
   let repo: { root: string; cleanup: () => void };
   beforeAll(() => {
     repo = makeTempRepo();
@@ -42,7 +27,7 @@ describe('anchor-tree render fail-open', () => {
   });
   afterAll(() => repo.cleanup());
 
-  it('renders the flat bullet list and records the tree defect on the run log', async () => {
+  it('renders only drift identity and retrieval guidance without diagnostic warnings', async () => {
     const logger = recordingLogger();
     const executors = contextExecutors({
       fix: async () => ({ modified: false }),
@@ -50,7 +35,11 @@ describe('anchor-tree render fail-open', () => {
       drift: async () => [{ name: 'billing/checkout', path: 'app.ts', start: 1, end: 10, status: 'CHANGED' }],
       why: async () => 'Checkout flow.'
     });
-    const memo: MemoStore = { getSurfaced: () => new Set<string>(), addSurfaced: () => undefined };
+    const memo: MemoStore = {
+      claimGuidance: guidanceClaims(),
+      getSurfaced: () => new Set<string>(),
+      addSurfaced: () => undefined
+    };
     const input: TouchInput = {
       kind: 'read',
       sessionId: 'session-anchor-tree',
@@ -61,11 +50,9 @@ describe('anchor-tree render fail-open', () => {
 
     const batch = await runTouchHooks([input], executors, memo, 'session-anchor-tree:batch', undefined, logger);
 
-    expect(itemAt(batch.outputs, 0).additionalContext).toContain('- app.ts#L1-L10 — changed');
-    expect(logger.warns).toHaveLength(1);
-    expect(itemAt(logger.warns, 0)).toMatchObject({
-      message: 'git-span failed open',
-      context: { site: 'anchor-tree-render', error: 'anchor tree defect', span: 'billing/checkout', err: treeDefect }
-    });
+    expect(itemAt(batch.outputs, 0).additionalContext).toContain('app.ts#L1-L10 (changed in billing/checkout)');
+    expect(itemAt(batch.outputs, 0).additionalContext).not.toContain('Checkout flow.');
+    expect(itemAt(batch.outputs, 0).additionalContext).not.toMatch(/[└├]─/);
+    expect(logger.warns).toHaveLength(0);
   });
 });

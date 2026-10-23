@@ -1,10 +1,10 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /** Touch drift marks the exact anchor, with path fallback only for a single anchor. */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
-import { matchGroups } from '../../src/common/regex-groups.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import { runTouchHook, type TouchExecutors, type TouchWriteInput } from '../../src/common/touch-core.js';
 import { itemAt, makeTempRepo } from '../helpers.js';
@@ -39,6 +39,7 @@ const DRIFT: DriftPorcelainRow[] = [{ name: SPAN, path: SPECIMENS, start: 133, e
 function createMemoryMemoStore(): MemoStore {
   const bySession = new Map<string, Set<string>>();
   return {
+    claimGuidance: guidanceClaims(),
     getSurfaced(sessionId: string): Set<string> {
       return new Set(bySession.get(sessionId) ?? []);
     },
@@ -72,39 +73,9 @@ async function touchBlock(anchors: PorcelainRow[], drift: DriftPorcelainRow[]): 
   return output.additionalContext ?? '';
 }
 
-/**
- * Every anchor address carrying a ` — <label>` suffix in a rendered block.
- *
- * The touch hook renders anchors as a tree, so an address is spread across the
- * directory lines above it and, for a stacked range, sits on a continuation
- * line carrying no filename at all. Reassembling it is what makes this file
- * assert attribution rather than absence: a parser that only recognized the
- * flat `- path#range — label` bullet would return `[]` for every tree, and
- * `[]` compares equal to `[]` without proving attribution.
- */
+/** Drift notices carry complete anchored addresses beside their reason and span. */
 function markedAnchors(rendered: string): string[] {
-  const marked: string[] = [];
-  const dirs: { indent: number; name: string }[] = [];
-  let file: string | null = null;
-  for (const line of rendered.split('\n')) {
-    const branch = matchGroups(line, /^([ │]*)(?:├─|└─) (.*)$/, 2);
-    if (branch) {
-      const [pad, rest] = branch;
-      while (dirs.length > 0 && itemAt(dirs, dirs.length - 1).indent >= pad.length) dirs.pop();
-      if (rest.endsWith('/')) {
-        dirs.push({ indent: pad.length, name: rest });
-        file = null;
-        continue;
-      }
-      const anchor = matchGroups(rest, /^(\S+)\s+(#L\d+-L\d+)( — .+)?$/, 2);
-      file = anchor ? `${dirs.map((dir) => dir.name).join('')}${anchor[0]}` : null;
-      if (anchor?.[2]) marked.push(`${file}${anchor[1]}`);
-      continue;
-    }
-    const stacked = /^[ │]*(#L\d+-L\d+)( — .+)?$/.exec(line);
-    if (stacked?.[2] && file !== null) marked.push(`${file}${stacked[1]}`);
-  }
-  return marked;
+  return [...rendered.matchAll(/([\w./-]+#L\d+-L\d+) \(changed in /g)].map((match) => itemAt(match, 1));
 }
 
 describe('per-anchor touch drift attribution', () => {

@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Tests for the Claude PostToolUse touch hook
  * (packages/agent-hooks/src/claude/post-tool-use.ts).
@@ -89,6 +90,7 @@ function makeExecutors(opts: FakeOpts = {}): {
 function inMemoryMemoFactory(): MemoFactory {
   const store = new Map<string, Set<string>>();
   return (_logger: MemoLogger): MemoStore => ({
+    claimGuidance: guidanceClaims(),
     getSurfaced: (sid) => new Set(store.get(sid) ?? []),
     addSurfaced: (sid, names, known) => {
       store.set(sid, new Set([...known, ...names]));
@@ -166,7 +168,7 @@ describe('claude post-tool-use touch signal', () => {
     expect(calls.fix).toBe(1); // write path heals the tree
     const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
     expect(ctx).toContain(SPAN);
-    expect(ctx).toContain('— changed');
+    expect(ctx).toContain('(changed in billing/checkout-request-flow)');
     // The user-facing mirror carries the identical block.
     expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.additionalContext);
   });
@@ -524,7 +526,7 @@ describe('claude post-tool-use touch signal', () => {
       expect(ctx).toContain(SPAN);
       // The response-derived hunk overlaps the command-derived range on the
       // same span; the per-session memo dedupes the duplicate surface.
-      expect(ctx.match(/## billing\/checkout-request-flow/g) ?? []).toHaveLength(1);
+      expect(ctx.match(/is anchored in: billing\/checkout-request-flow/g) ?? []).toHaveLength(1);
     });
   });
 });

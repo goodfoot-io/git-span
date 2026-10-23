@@ -411,6 +411,8 @@ export interface SessionLayout {
   readonly trashDir: string;
   /** The per-session state directory for a given session id. */
   dir(sessionId: string): string;
+  /** Session guidance retained across eager touch-state cleanup. */
+  guidanceDir(sessionId: string): string;
   /** The touch-hook session memo (span-surface.ts's MemoStore). */
   memoFile(sessionId: string): string;
   /** Directory holding bounded pre-tool plans for one session. */
@@ -434,6 +436,7 @@ export function createSessionLayout(base: string): SessionLayout {
     base,
     trashDir: nodePath.join(nodePath.dirname(base), 'session-trash'),
     dir,
+    guidanceDir: (sessionId) => nodePath.join(base, `@guidance-${sanitizeSessionId(sessionId)}`),
     memoFile: (sessionId) => nodePath.join(dir(sessionId), 'touch-memo.json'),
     plannedTouchesDir,
     plannedTouchRecordFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, '.json'),
