@@ -64,7 +64,13 @@ fn top_level_help_template() -> String {
     let groups: &[(&str, &[&str])] = &[
         (
             "Inspect spans",
-            &["show", "list", "context", "commit-context", "pending-context"],
+            &[
+                "show",
+                "list",
+                "context",
+                "commit-context",
+                "pending-context",
+            ],
         ),
         (
             "Check and maintain spans",

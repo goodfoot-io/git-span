@@ -3,7 +3,6 @@ packages/agent-hooks/src/common/delivery-presentation.ts#L5-L18 rk64:11418e7e7b8
 packages/agent-hooks/src/common/delivery-presentation.ts#L45-L54 rk64:4bae0891074a2139
 packages/agent-hooks/src/common/delivery-presentation.ts#L101-L128 rk64:10f51d2889adbdbc
 packages/agent-hooks/src/common/span-surface.ts#L147-L177 rk64:14e6c74ed83ba33c
-packages/agent-hooks/src/common/touch-core.ts#L1008-L1099 rk64:269470fe4311684d
 packages/agent-hooks/src/common/touch-core.ts#L1010-L1101 rk64:269470fe4311684d
 packages/agent-hooks/test/common/guidance-lifecycle-bundle.test.ts#L25-L85 rk64:15155dd38012c836
 packages/agent-hooks/test/common/memo-store.test.ts#L238-L251 rk64:b958323cec665bc8

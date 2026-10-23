@@ -345,7 +345,9 @@ fn collection_race_refuses_mixed_snapshot() -> Result<()> {
             let ready = hooks.path().join(format!("{stage}.ready"));
             let deadline = Instant::now() + Duration::from_secs(120);
             let token = loop {
-                if let Ok(token) = std::fs::read_to_string(&ready) {
+                if let Ok(token) = std::fs::read_to_string(&ready)
+                    && uuid::Uuid::parse_str(&token).is_ok()
+                {
                     break token;
                 }
                 ensure!(Instant::now() < deadline, "waiting for {stage}");
@@ -585,7 +587,9 @@ fn configuration_changed_after_repository_open_uses_live_selection_or_refuses() 
             let ready = hooks.path().join(format!("{stage}.ready"));
             let deadline = Instant::now() + Duration::from_secs(120);
             let token = loop {
-                if let Ok(token) = std::fs::read_to_string(&ready) {
+                if let Ok(token) = std::fs::read_to_string(&ready)
+                    && uuid::Uuid::parse_str(&token).is_ok()
+                {
                     break token;
                 }
                 ensure!(Instant::now() < deadline, "waiting for {stage}");

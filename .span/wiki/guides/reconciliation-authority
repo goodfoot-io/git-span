@@ -1,7 +1,7 @@
-packages/git-span/src/cli/mod.rs#L174-L184 rk64:63995aac353e603d
-packages/git-span/src/cli/mod.rs#L356-L358 rk64:8634578a5784b22e
-packages/git-span/src/cli/mod.rs#L437-L447 rk64:071528346ca6e2cf
+packages/git-span/src/cli/mod.rs#L180-L190 rk64:63995aac353e603d
+packages/git-span/src/cli/mod.rs#L362-L364 rk64:8634578a5784b22e
+packages/git-span/src/cli/mod.rs#L443-L453 rk64:071528346ca6e2cf
 packages/git-span/src/types.rs#L128-L139 rk64:125dd45ecbbc16be
-wiki/guides/reconciliation-authority.md rk64:8c797833d2de2b84
+wiki/guides/reconciliation-authority.md rk64:8e7e6d175093cad4
 
 The guide restates the drift --fix residue boundary, the add/why span-wide line with its 0/1/2 exit contract, and the AnchorStatus vocabulary from the CLI's doc comments and types, while wiki check pins only the link targets rather than the prose claims; a behavior or wording change on either side alone silently falsifies the other.
