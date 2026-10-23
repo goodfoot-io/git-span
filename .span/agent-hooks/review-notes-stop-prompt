@@ -1,8 +1,9 @@
 packages/agent-hooks/src/common/review-notes-stop.ts#L13-L22 rk64:0047d8acec4df2e2
+packages/agent-hooks/test/common/review-notes-stop.test.ts#L143-L160 rk64:ff54f4460fc078ba
 packages/website/content/docs/agent-integration.mdx#L69-L71 rk64:0b9e5d1cdfdf5392
 skills-src/git-span/reconcile/references/procedure.md.eta#L143-L152 rk64:522092e5614987ec
 skills-src/git-span/review-notes/SKILL.md.eta#L6-L8 rk64:94c1ea6f9f2e9107
 skills-src/git-span/review-notes/SKILL.md.eta#L30-L34 rk64:4117963f654363ed
 skills-src/git-span/review-notes/SKILL.md.eta#L110-L115 rk64:3f4608ae8ad49f1e
 
-The Stop prompt dispatches the note-processing skill to extend existing spans or create missing coverage, validate anchors and whys against the current tree, and remove only successfully processed notes. The skill and integration guide preserve that scope and its unstaged delivery; requirement conflicts remain explicit rather than being hidden by refreshed anchors. The prompt passes no session scope, so the skill locates notes across repositories used in the session.
+The Stop prompt dispatches the note-processing skill to extend existing spans or create missing coverage, validate anchors and whys against the current tree, and remove only successfully processed notes. The skill and integration guide preserve that scope and its unstaged delivery; requirement conflicts remain explicit rather than being hidden by refreshed anchors. The prompt passes no session scope, so the skill locates notes across repositories used in the session. The real-hook test "emits a fork prompt and allows continuation without another prompt" asserts creation and note-processing phrases and excludes the former behavioral-review phrases for Claude and Codex; it does not establish that the invoked skill follows those instructions or cover the OpenCode and Antigravity prompt delivery paths.
