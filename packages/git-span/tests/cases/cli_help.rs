@@ -28,7 +28,10 @@ fn short_help_groups_cover_public_metadata_with_compact_copy() {
     assert!(rendered.split_whitespace().count() <= 400, "{rendered}");
     assert_eq!(help(&[]), rendered);
     let expected = [
-        ("Inspect spans:", vec!["show", "list", "context"]),
+        (
+            "Inspect spans:",
+            vec!["show", "list", "context", "commit-context"],
+        ),
         (
             "Check and maintain spans:",
             vec!["drift", "replace", "add", "why"],

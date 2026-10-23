@@ -61,7 +61,10 @@ fn top_level_help_template() -> String {
     let mut inventory = Commands::augment_subcommands(clap::Command::new("git-span"));
     inventory.build();
     let groups: &[(&str, &[&str])] = &[
-        ("Inspect spans", &["show", "list", "context"]),
+        (
+            "Inspect spans",
+            &["show", "list", "context", "commit-context"],
+        ),
         (
             "Check and maintain spans",
             &["drift", "replace", "add", "why"],
@@ -101,7 +104,7 @@ fn top_level_help_template() -> String {
                     .expect("public command has a summary")
                     .to_string()
             };
-            writeln!(template, "  {name:<13} {summary}").expect("write to String");
+            writeln!(template, "  {name:<14} {summary}").expect("write to String");
         }
     }
     template.push_str("\nOptions:\n{options}{after-help}\n");
@@ -234,6 +237,10 @@ pub enum Commands {
     Context(ContextArgs),
 
     /// Return complete current relationship context selected by immutable commit changes.
+    #[command(
+        about = "Get current relationship context for commit changes",
+        long_about
+    )]
     CommitContext(CommitContextArgs),
 
     #[command(name = "__context-service", hide = true)]

@@ -1,12 +1,8 @@
 packages/git-span/src/cli/context_service.rs#L1113-L1152 rk64:f081abae2eb0bf5a
-packages/git-span/src/cli/mod.rs#L860-L867 rk64:fab925a0db3154ab
-packages/git-span/src/cli/mod.rs#L884-L888 rk64:00eea0bd49c31c5d
-packages/git-span/src/cli/mod.rs#L928-L935 rk64:fab925a0db3154ab
-packages/git-span/src/cli/mod.rs#L952-L956 rk64:00eea0bd49c31c5d
-packages/git-span/src/cli/mod.rs#L964-L969 rk64:4844e9c978107ce7
-packages/git-span/src/cli/mod.rs#L1028-L1033 rk64:4844e9c978107ce7
+packages/git-span/src/cli/mod.rs#L946-L953 rk64:fab925a0db3154ab
+packages/git-span/src/cli/mod.rs#L970-L974 rk64:00eea0bd49c31c5d
+packages/git-span/src/cli/mod.rs#L1050-L1055 rk64:4844e9c978107ce7
 packages/git-span/src/update_check/mod.rs#L60-L128 rk64:2d8da38270df9a51
 packages/git-span/src/update_check/mod.rs#L212-L273 rk64:cdf92471487daf26
-packages/git-span/src/update_check/mod.rs#L212-L275 rk64:09c0dbede7013fe7
 
 dispatch() engages the check after span-root resolution and the recovery-domain guard for span commands, while standalone notes engage before their independent storage dispatch; both paths remind only on command success, so guard failures on span commands neither spawn the detached child nor print a note. spawn_detached_child mirrors the context-service spawn shape (current exe, hidden subcommand, stdin null, stdout+stderr appended to the run log, setsid session detach), and changes to that shared spawn shape preserve both surfaces.
