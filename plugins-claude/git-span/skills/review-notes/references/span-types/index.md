@@ -1,4 +1,4 @@
-# Find and declare spans during behavioral review: choose a span type
+# Add and update spans: choose a span type
 
 Scope: category selection for `review-notes`. These are authoring patterns, not new CLI or storage types.
 

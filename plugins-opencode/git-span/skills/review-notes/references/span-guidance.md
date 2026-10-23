@@ -1,6 +1,6 @@
 # Span evidence and anchor guidance
 
-Scope: Use after behavioral review identifies a candidate rule or reminder. Search existing spans before step 5b; leave edits unstaged for the parent. Return to [the review workflow](../SKILL.md).
+Scope: Select evidence and anchors for a candidate rule or reminder. Search existing spans before step 5b; leave edits unstaged. Return to [the span workflow](../SKILL.md).
 
 ## Authority and specifications
 
@@ -42,14 +42,12 @@ test name>: <observation>. Not checked: <residual obligation>.` State complete c
 accurately when there is no residual obligation. Do not create a test merely to fill this
 convention. Inspect the test and package runner; confirm collection or run a focused check
 when needed. Missing tests invalidate references; absent references mean unknown protection.
-Named tests do not limit checks for credible impact on dependencies, formats, defaults
-or consumers outside the anchors. Keep long commands in the owning test/document.
-For dependency candidates, inspect existing packaging, import, build and runtime-profile
-checks and the actual selected artifact's capabilities. Propose missing identity or
-capability checks without installing dependencies or changing runtime policy during review.
+Keep long commands in the owning test/document. For dependency candidates, anchor
+the selected artifact and authoritative capability contract where useful; label
+unverified capabilities rather than inferring them from a version string.
 
 Assess information, knowledge timing, feasible anchors, likely delivery, changed decision,
 verification and maintenance separately. A later discovery can prevent recurrence without
 proving earlier knowledge. Extend or combine shared rules; split independent authority or
 update rhythms. Retain useful tested/single-anchor reminders; retire obsolete or valueless
-context. Zero drift records content agreement, not correctness or review completion.
+context. Zero drift records content agreement, not correctness.

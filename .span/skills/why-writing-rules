@@ -2,7 +2,7 @@ skills-src/git-span/git-span/SKILL.md.eta#L82-L122 rk64:bf931570c137a5ca
 skills-src/git-span/git-span/references/span-guidance.md.eta rk64:f8513c5625f74956
 skills-src/git-span/reconcile/references/procedure.md.eta#L143-L152 rk64:522092e5614987ec
 skills-src/git-span/reconcile/references/span-guidance.md.eta rk64:db2279b602816e74
-skills-src/git-span/review-notes/SKILL.md.eta#L19-L30 rk64:b02c66fafe13b7c7
-skills-src/git-span/review-notes/references/span-guidance.md.eta rk64:1258986d0571c088
+skills-src/git-span/review-notes/SKILL.md.eta#L19-L28 rk64:ed9bd360e01d3c2e
+skills-src/git-span/review-notes/references/span-guidance.md.eta rk64:42039ed025a0d8a0
 
-Each skill owns its local span-selection, evidence and why-writing guidance; declaration, review and reconciliation preserve decision-changing context for same-file, single-anchor, generated-artifact and tested relationships without treating content freshness as correctness.
+Each skill owns its local span-selection, evidence and why-writing guidance; declaration, note-driven span creation and reconciliation preserve decision-changing context for same-file, single-anchor, generated-artifact and tested relationships without treating content freshness as correctness.

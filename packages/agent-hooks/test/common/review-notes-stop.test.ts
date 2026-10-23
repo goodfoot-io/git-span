@@ -149,7 +149,13 @@ describe('emitted Stop protocol', () => {
       expect(result.output?.decision).toBe('block');
       expect(result.output?.reason).toContain('forked subagent');
       expect(result.output?.reason).toContain('git-span:review-notes');
-      expect(result.output?.reason).toContain('Report metadata completion separately from material findings');
+      expect(result.output?.reason).toContain(
+        'Extend existing spans where applicable; create new spans where coverage is missing'
+      );
+      expect(result.output?.reason).toContain('remove only successfully processed notes');
+      expect(result.output?.reason).toContain('Summarize spans created or updated');
+      expect(result.output?.reason).not.toContain('Review changed behavior');
+      expect(result.output?.reason).not.toContain('material findings');
       expect(result.output?.reason).not.toContain('review complete');
       expect(result.output?.reason).not.toContain('Review scope');
 

@@ -3,7 +3,7 @@ packages/agent-hooks/src/common/delivery-presentation.ts#L95-L122 rk64:10f51d288
 packages/agent-hooks/src/common/touch-core.ts#L907-L936 rk64:b195b5e9c47bd71a
 packages/agent-hooks/src/common/touch-core.ts#L1131-L1262 rk64:65eb53436caa22e6
 packages/git-span/src/cli/context.rs#L559-L581 rk64:ff505775865efacb
-packages/website/content/docs/agent-integration.mdx rk64:9ac1c04648c1adb0
+packages/website/content/docs/agent-integration.mdx rk64:740babfda70a672c
 plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:028fac503f10ffd4
 plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:e137bb08485e3d5a
 plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:6cb819cc32f02b89

@@ -1,6 +1,6 @@
 # Diagnostic evidence and causal localization
 
-Scope: find and declare spans during behavioral review using diagnostic evidence and causal localization.
+Scope: add and update spans for diagnostic evidence and causal localization.
 
 ## When to use this type
 
@@ -12,13 +12,11 @@ Name candidate causes, evidence origin, fields/channel retained, correlation ide
 
 Candidate anchor roles: evidence-producing stage; lossy wrapper; diagnostic schema/consumer; bounded worked decomposition. Select existing content carrying the rule or likely to be encountered at the risky decision. These are roles, not a required anchor count.
 
-## Review and add
+## Add or update a span
 
-1. Begin with the reviewed change and affected consumer: Check whether wrappers discard stage evidence, new diagnostics violate a public channel contract, or a timeout is being mistaken for a cause.
-2. Establish the rule independently of the changed implementation. Distinguish a defect, an authorised change and an unresolved requirement before editing metadata.
-3. Obtain or propose applicable distinguishing evidence: Distinguish compile, launch, runtime and decode failure, or decompose a numerical discrepancy before changing the aggregate formula.
-4. Inspect existing spans at the changed site and participating locations. Extend a useful existing span; otherwise propose a new span carrying this rule and scope, then follow step 5b in [the skill](../../SKILL.md). A useful single-anchor reminder is eligible.
-5. Report the changed decision, evidence limits and unresolved finding to the parent. Leave span edits unstaged; the parent owns production edits, validation and commits.
+1. Locate the rule and participating locations using the anchor roles above. Preserve its authority, scope and evidence limits in the why.
+2. Inspect existing spans at those locations. Extend useful coverage; otherwise add a span following step 5b in [the skill](../../SKILL.md). A useful single-anchor reminder is eligible.
+3. Update anchors and the why when the relationship changes; preserve unresolved authority or interpretation explicitly.
 
 ## Illustrative why
 
@@ -30,4 +28,4 @@ This example supplies no authority for another repository. Substitute its actual
 
 Use [observable outcomes](observable-outcome-contracts.md) for the public success/failure contract; use [disambiguating examples](disambiguating-examples-and-counterexamples.md) when the uncertainty is the intended rule rather than the failure cause.
 
-Return to the [type selector](index.md) or [span guidance](../span-guidance.md) for authority, anchor delivery and test-reference rules. The suggested checks require separate execution; a span does not run them.
+Return to the [type selector](index.md) or [span guidance](../span-guidance.md) for authority, anchor delivery and test-reference rules.

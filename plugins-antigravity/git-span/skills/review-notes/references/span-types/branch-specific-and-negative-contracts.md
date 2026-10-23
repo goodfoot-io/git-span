@@ -1,6 +1,6 @@
 # Branch-specific and negative contracts
 
-Scope: find and declare spans during behavioral review using branch-specific and negative contracts.
+Scope: add and update spans for branch-specific and negative contracts.
 
 ## When to use this type
 
@@ -12,13 +12,11 @@ State the branch condition and observations or effects that must be omitted; dis
 
 Candidate anchor roles: branch guard; response constructor or effect-capable call; authoritative condition table; contrasting branch example. Select existing content carrying the rule or likely to be encountered at the risky decision. These are roles, not a required anchor count.
 
-## Review and add
+## Add or update a span
 
-1. Begin with the reviewed change and affected consumer: Check shared finalizers, unconditional response fields and bypass calls that can introduce the forbidden observation.
-2. Establish the rule independently of the changed implementation. Distinguish a defect, an authorised change and an unresolved requirement before editing metadata.
-3. Obtain or propose applicable distinguishing evidence: Exercise both branches and inspect field presence and effects; rejection must not send a request or persist state when that is the promise.
-4. Inspect existing spans at the changed site and participating locations. Extend a useful existing span; otherwise propose a new span carrying this rule and scope, then follow step 5b in [the skill](../../SKILL.md). A useful single-anchor reminder is eligible.
-5. Report the changed decision, evidence limits and unresolved finding to the parent. Leave span edits unstaged; the parent owns production edits, validation and commits.
+1. Locate the rule and participating locations using the anchor roles above. Preserve its authority, scope and evidence limits in the why.
+2. Inspect existing spans at those locations. Extend useful coverage; otherwise add a span following step 5b in [the skill](../../SKILL.md). A useful single-anchor reminder is eligible.
+3. Update anchors and the why when the relationship changes; preserve unresolved authority or interpretation explicitly.
 
 ## Illustrative why
 
@@ -30,4 +28,4 @@ This example supplies no authority for another repository. Substitute its actual
 
 Use [representation boundaries](representation-boundaries.md) for the meaning of a present value; use [transactional effects](transactional-effects-and-reversal.md) for partial effects and their recovery across failure or retry.
 
-Return to the [type selector](index.md) or [span guidance](../span-guidance.md) for authority, anchor delivery and test-reference rules. The suggested checks require separate execution; a span does not run them.
+Return to the [type selector](index.md) or [span guidance](../span-guidance.md) for authority, anchor delivery and test-reference rules.

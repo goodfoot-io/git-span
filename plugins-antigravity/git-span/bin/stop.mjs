@@ -934,11 +934,11 @@ async function hasReviewNotes(scope, logger2, io) {
 // packages/agent-hooks/src/common/review-notes-stop.ts
 function reviewNotesPrompt(scope) {
   const skill = scope.host === "claude" || scope.host === "codex" ? "git-span:review-notes" : "review-notes";
-  const worker = `Load the ${skill} skill. Review changed behavior and its consumers, then document residual implicit couplings using git-span. Return findings or patches to the parent; do not independently edit production requirements, stage, or commit. Intentional code does not supersede a requirement. Report metadata completion separately from material findings; retain disputed consequences.`;
+  const worker = `Load the ${skill} skill. Use commit notes to identify decision-changing contracts, implicit couplings and useful reminders. Extend existing spans where applicable; create new spans where coverage is missing. Validate anchors and whys against the current tree, and remove only successfully processed notes. Leave edits unstaged.`;
   return [
     "Dispatch a forked subagent with this prompt:",
     JSON.stringify(worker),
-    "Wait for the subagent. Include unresolved findings, incomplete scope and lookup failures in your final response. Review completion is not semantic approval."
+    "Wait for the subagent. Summarize spans created or updated, validation results, retained notes and incomplete scope in your final response."
   ].join("\n");
 }
 
