@@ -1,6 +1,8 @@
 /** Real-Git selection through each supported host's actual response channel. */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Logger as ClaudeLogger } from '@goodfoot/agent-hooks/claude-code';
 import { Logger as CodexLogger } from '@goodfoot/agent-hooks/codex';
 import { describe, expect, it } from 'vitest';
@@ -11,7 +13,17 @@ import { createDefaultCommitInspectionExecutor } from '../../src/common/commit-i
 import type { MemoFactory } from '../../src/common/span-surface.js';
 import type { TouchExecutors } from '../../src/common/touch-core.js';
 import { createAfterHandler } from '../../src/opencode/post-tool-use.js';
-import { commitRepo, makeRealBundleRepo, writeRepoFile } from '../real-bundle-helpers.js';
+import {
+  addLineSpan,
+  buildRealHookBundles,
+  buildWorkspaceGitSpan,
+  commitRepo,
+  hookContext,
+  invokeRealHook,
+  makeRealBundleRepo,
+  runRealShell,
+  writeRepoFile
+} from '../real-bundle-helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 function fixture() {
@@ -75,7 +87,11 @@ function fixture() {
       };
     }
   };
-  const memoFactory: MemoFactory = () => ({ getSurfaced: () => new Set(), addSurfaced: () => undefined });
+  const memoFactory: MemoFactory = () => ({
+    getSurfaced: () => new Set(),
+    addSurfaced: () => undefined,
+    claimGuidance: () => true
+  });
   const logger = { warn: () => undefined };
   return {
     repo,
@@ -187,6 +203,84 @@ describe('shared complete commit inspection delivery', () => {
       f.cleanup();
     }
   });
+});
+
+describe('emitted hook ordinary exposure and commit inspection', () => {
+  it('repeats full current reports after a real short notice without accepting changed anchor evidence', () => {
+    const native = buildWorkspaceGitSpan();
+    const bundles = buildRealHookBundles();
+    const repo = makeRealBundleRepo(native.pathDir);
+    try {
+      writeRepoFile(repo, 'src/main.ts', 'original\n');
+      writeRepoFile(repo, 'src/counterpart.ts', 'counterpart\n');
+      writeRepoFile(repo, 'src/unrelated.ts', 'unrelated\n');
+      commitRepo(repo, 'Create files');
+      addLineSpan(repo, 'selected-contract', 'src/main.ts', 1, 1, 'Original explanation.');
+      addLineSpan(repo, 'selected-contract', 'src/counterpart.ts', 1, 1, 'Original explanation.');
+      addLineSpan(repo, 'unrelated', 'src/unrelated.ts', 1, 1);
+      commitRepo(repo, 'Record relationships');
+      writeRepoFile(repo, 'src/main.ts', 'modified\n');
+      commitRepo(repo, 'Change selected anchor');
+      const currentWhy = 'Current explanation replaces the historical text. Every sentence must remain visible.';
+      const why = spawnSync('git', ['span', 'why', 'selected-contract', currentWhy], {
+        cwd: repo.root,
+        env: repo.env,
+        encoding: 'utf8'
+      });
+      // Writing prose succeeds while the CLI still reports the intentionally drifting anchor.
+      expect(why.error).toBeUndefined();
+      expect(why.status).toBe(1);
+      expect(why.stderr).toBe('');
+      expect(why.stdout).toContain('Set why on span `selected-contract`.');
+      let sequence = 0;
+      const inspect = (command: string) => {
+        const shell = runRealShell(repo, command);
+        expect(shell.exitCode).toBe(0);
+        const result = invokeRealHook(
+          join(bundles.claudeHooksDir, 'post-tool-use.mjs'),
+          {
+            hook_event_name: 'PostToolUse',
+            cwd: repo.root,
+            session_id: 'ordinary-then-commit',
+            transcript_path: join(repo.home, 'transcript.jsonl'),
+            tool_use_id: `tool-${++sequence}`,
+            tool_name: 'Bash',
+            tool_input: { command },
+            tool_response: { stdout: shell.stdout, stderr: shell.stderr, interrupted: false }
+          },
+          repo.env
+        );
+        expect(result.stderr).toBe('');
+        return hookContext(result.output);
+      };
+      expect(inspect('cat src/main.ts')).toBe(
+        '\n<git-span>\nCheck for drift from src/main.ts#L1-L1 (changed in selected-contract)\n\nUse `git span drift selected-contract` for more information\n</git-span>\n'
+      );
+      // A second process in the same session proves the first notice persisted actual exposure.
+      expect(inspect('cat src/main.ts')).toBe('');
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: repo.root, env: repo.env, encoding: 'utf8' });
+      const files = git('ls-files', '-z', '.span').split('\0').filter(Boolean);
+      expect(files.length).toBeGreaterThan(0);
+      const definitions = files.map((path) => readFileSync(join(repo.root, path), 'utf8'));
+      const status = git('status', '--porcelain');
+      for (const command of ['git show HEAD', 'git log --oneline -n1', 'git show HEAD', 'git log --oneline -n1']) {
+        const report = inspect(command);
+        expect(report.match(/<git-span>/g)).toHaveLength(1);
+        expect(report.match(/## selected-contract/g)).toHaveLength(1);
+        expect(report).toMatch(/main\.ts +#L1-L1 — changed/);
+        expect(report).toContain('counterpart.ts #L1-L1');
+        expect(report).toContain(currentWhy);
+        expect(report).not.toContain('Original explanation.');
+        expect(report).not.toContain('unrelated');
+        expect(report).not.toMatch(/coupling|repair|Use `git span (?:list|drift)|Check for drift|is anchored in:/i);
+        expect(files.map((path) => readFileSync(join(repo.root, path), 'utf8'))).toEqual(definitions);
+        expect(git('status', '--porcelain')).toBe(status);
+      }
+    } finally {
+      repo.cleanup();
+      bundles.cleanup();
+    }
+  }, 600_000);
 });
 
 describe('supported host completion evidence', () => {
