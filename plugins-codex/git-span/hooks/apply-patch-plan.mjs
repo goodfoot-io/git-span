@@ -991,6 +991,7 @@ function createSessionLayout(base) {
     base,
     trashDir: nodePath.join(nodePath.dirname(base), "session-trash"),
     dir,
+    guidanceDir: (sessionId2) => nodePath.join(base, `@guidance-${sanitizeSessionId(sessionId2)}`),
     memoFile: (sessionId2) => nodePath.join(dir(sessionId2), "touch-memo.json"),
     plannedTouchesDir,
     plannedTouchRecordFile: (sessionId2, toolUseId) => plannedTouchFile(sessionId2, toolUseId, ".json"),
@@ -1058,7 +1059,7 @@ function pruneStaleSessionsThrottled(layout, now = Date.now()) {
 }
 
 // packages/agent-hooks/src/common/bash-attribution.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import * as fs6 from "node:fs";
 import * as nodePath5 from "node:path";
 
@@ -1274,7 +1275,32 @@ function exposureDestination(layout, sessionId2) {
 function createDiskMemoStore(logger2, layout) {
   const destinations = /* @__PURE__ */ new WeakMap();
   return {
+    claimGuidance(sessionId2, family) {
+      const directory = layout.guidanceDir(sessionId2);
+      try {
+        fs3.mkdirSync(directory, { recursive: true, mode: 448 });
+        const now = /* @__PURE__ */ new Date();
+        fs3.utimesSync(directory, now, now);
+        try {
+          const descriptor = fs3.openSync(nodePath3.join(directory, family), "wx", 384);
+          fs3.closeSync(descriptor);
+          return true;
+        } catch (err) {
+          if (errnoCode(err) === "EEXIST") return false;
+          throw err;
+        }
+      } catch (err) {
+        logger2.warn("git-span retrieval guidance claim failed", { err });
+        throw err;
+      }
+    },
     getSurfaced(sessionId2) {
+      try {
+        const now = /* @__PURE__ */ new Date();
+        fs3.utimesSync(layout.guidanceDir(sessionId2), now, now);
+      } catch (err) {
+        if (errnoCode(err) !== "ENOENT") logger2.warn("git-span guidance keepalive failed", { err });
+      }
       pruneStaleSessionsThrottled(layout);
       const empty2 = /* @__PURE__ */ new Set();
       try {
@@ -6859,214 +6885,24 @@ function filterTrackedEligibility(candidates, options) {
 
 // packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import * as fs5 from "node:fs";
-import { basename as basename5, dirname as dirname6, join as join6 } from "node:path";
-
-// packages/agent-hooks/src/common/anchor-tree.ts
-function collapseByPath(rows) {
-  const anchors = [];
-  const byPath = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    let anchor = byPath.get(row.path);
-    if (!anchor) {
-      anchor = { path: row.path, ranges: [] };
-      byPath.set(row.path, anchor);
-      anchors.push(anchor);
-    }
-    anchor.ranges.push({ range: row.range, suffix: row.suffix });
-  }
-  return anchors;
-}
-function splitSegments(path) {
-  const dirs = path.split("/");
-  const leaf = dirs.pop();
-  if (leaf === void 0 || leaf.length === 0 || dirs.some((segment) => segment.length === 0)) return null;
-  return { dirs, leaf };
-}
-function findOrCreateDir(parent, name) {
-  for (const child of parent.children) {
-    if (child.kind === "dir" && child.name === name) return child;
-  }
-  const node = { kind: "dir", name, children: [] };
-  parent.children.push(node);
-  return node;
-}
-function insertAnchor(root2, { dirs, leaf }, anchor) {
-  let cur = root2;
-  for (const dir of dirs) {
-    cur = findOrCreateDir(cur, dir);
-  }
-  cur.children.push({ kind: "leaf", name: leaf, anchor });
-}
-function buildForest(anchors) {
-  const root2 = { kind: "dir", name: "", children: [] };
-  for (const anchor of anchors) {
-    const segments = splitSegments(anchor.path);
-    if (segments === null) {
-      root2.children.push({ kind: "leaf", name: anchor.path, anchor });
-      continue;
-    }
-    insertAnchor(root2, segments, anchor);
-  }
-  return root2.children;
-}
-function foldChain(node) {
-  let name = node.name;
-  let cur = node;
-  while (cur.kind === "dir") {
-    const [child, ...siblings] = cur.children;
-    if (child === void 0 || siblings.length > 0) break;
-    name = `${name}/${child.name}`;
-    cur = child;
-  }
-  return { name, node: cur };
-}
-function rangeRank(range) {
-  switch (range.kind) {
-    case "whole-file":
-      return 0;
-    case "range":
-      return 1;
-  }
-}
-function compareRangeEntries(a, b) {
-  const rank = rangeRank(a.range) - rangeRank(b.range);
-  if (rank !== 0) return rank;
-  if (a.range.kind === "range" && b.range.kind === "range") {
-    return a.range.start - b.range.start || a.range.end - b.range.end;
-  }
-  return 0;
-}
-function labelFor(range, sole) {
-  switch (range.kind) {
-    case "range":
-      return `#L${range.start}-L${range.end}`;
-    case "whole-file":
-      return sole ? null : "(whole file)";
-  }
-}
-var cachedSegmenter;
-function graphemeSegmenter() {
-  if (cachedSegmenter === void 0) {
-    try {
-      cachedSegmenter = { value: new Intl.Segmenter("en", { granularity: "grapheme" }) };
-    } catch {
-      cachedSegmenter = { value: null };
-    }
-  }
-  return cachedSegmenter.value;
-}
-var WIDE_RANGES = [
-  [4352, 4447],
-  [9001, 9002],
-  [9728, 10175],
-  [11904, 12350],
-  [12353, 13311],
-  [13312, 19903],
-  [19968, 40959],
-  [40960, 42191],
-  [43360, 43391],
-  [44032, 55203],
-  [63744, 64255],
-  [65040, 65049],
-  [65072, 65135],
-  [65280, 65376],
-  [65504, 65510],
-  [94208, 101119],
-  [127462, 127487],
-  [127744, 128591],
-  [128640, 128767],
-  [129280, 129535],
-  [129648, 129791],
-  [131072, 196605],
-  [196608, 262141]
-];
-function isWideCodePoint(cp) {
-  for (const [lo, hi] of WIDE_RANGES) {
-    if (cp < lo) return false;
-    if (cp <= hi) return true;
-  }
-  return false;
-}
-function displayWidth(name) {
-  const segmenter = graphemeSegmenter();
-  let width = 0;
-  if (segmenter === null) {
-    for (const codePoint of name) {
-      width += isWideCodePoint(codePoint.codePointAt(0) ?? 0) ? 2 : 1;
-    }
-    return width;
-  }
-  for (const { segment } of segmenter.segment(name)) {
-    width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
-  }
-  return width;
-}
-var MAX_ALIGN_COLUMN = 48;
-function computeGroupTarget(items) {
-  let max = 0;
-  for (const item of items) {
-    if (item.node.kind === "leaf" && printsRangeColumn(item.node.anchor)) {
-      max = Math.max(max, displayWidth(item.name));
-    }
-  }
-  return max > MAX_ALIGN_COLUMN ? 0 : max;
-}
-function printsRangeColumn(anchor) {
-  const { ranges } = anchor;
-  if (ranges.length === 0) return false;
-  return ranges.some((entry) => labelFor(entry.range, ranges.length === 1) !== null);
-}
-function computePad(nameWidth, target) {
-  if (nameWidth >= target) return " ";
-  return " ".repeat(target - nameWidth + 1);
-}
-function renderLeafLines(name, anchor, ownPrefix, childPrefix, groupTarget) {
-  const { ranges } = anchor;
-  if (ranges.length === 0) return [`${ownPrefix}${name}`];
-  const sorted = [...ranges].sort(compareRangeEntries);
-  const sole = sorted.length === 1;
-  const nameWidth = displayWidth(name);
-  const pad = computePad(nameWidth, groupTarget);
-  const blank = " ".repeat(nameWidth + pad.length);
-  return sorted.map((entry, i2) => {
-    const label = labelFor(entry.range, sole);
-    if (label === null) return `${ownPrefix}${name}${entry.suffix}`;
-    const base = i2 === 0 ? `${ownPrefix}${name}${pad}` : `${childPrefix}${blank}`;
-    return `${base}${label}${entry.suffix}`;
-  });
-}
-function renderNodes(nodes, prefix) {
-  const lines = [];
-  const items = nodes.map(foldChain);
-  const groupTarget = computeGroupTarget(items);
-  items.forEach((item, i2) => {
-    const isLast = i2 === items.length - 1;
-    const ownPrefix = `${prefix}${isLast ? "\u2514\u2500 " : "\u251C\u2500 "}`;
-    const childPrefix = `${prefix}${isLast ? "   " : "\u2502  "}`;
-    if (item.node.kind === "leaf") {
-      lines.push(...renderLeafLines(item.name, item.node.anchor, ownPrefix, childPrefix, groupTarget));
-    } else {
-      lines.push(`${ownPrefix}${item.name}/`);
-      lines.push(...renderNodes(item.node.children, childPrefix));
-    }
-  });
-  return lines;
-}
-function renderAnchorTree(anchors) {
-  const forest = buildForest(anchors);
-  return renderNodes(forest, "");
-}
+import { dirname as dirname6, join as join6 } from "node:path";
 
 // packages/agent-hooks/src/common/delivery-presentation.ts
-import { createHash as createHash2 } from "node:crypto";
 var BROAD_READ_BYTES = 1536;
 var TARGETED_BYTES = 8192;
 var MAX_SNAPSHOTS = 128;
 var MAX_SNAPSHOT_BYTES = 8192;
 var MAX_MEMO_BYTES = 256 * 1024;
 function shellArgument(value) {
+  if (new RegExp("\\p{Cc}", "u").test(value)) {
+    const escaped = value.replace(/[\\'\p{Cc}]/gu, (character) => {
+      if (character === "'" || character === "\\") return `\\${character}`;
+      return `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
+    });
+    return `$'${escaped}'`;
+  }
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 function inlineCode(value) {
@@ -7074,17 +6910,12 @@ function inlineCode(value) {
   const fence = "`".repeat(longest + 1);
   return `${fence} ${value.replace(new RegExp("\\p{Cc}", "gu"), " ")} ${fence}`;
 }
-function showRoute(name) {
-  if (Buffer.byteLength(name) > 256 || new RegExp("\\p{Cc}", "u").test(name))
-    return "`git span list` (retrieve the complete name, then `git span show <name>`)";
-  return inlineCode(`git span show -- ${shellArgument(name)}`);
-}
 function snapshot(span, fullFooter, recipient) {
   return {
     version: 1,
     revision: span.evidence_revision,
-    why: span.why,
-    anchors: span.anchors.map((anchor) => createHash2("sha256").update(JSON.stringify(anchor)).digest("hex")),
+    why: null,
+    anchors: [],
     fullFooter,
     recipient
   };
@@ -7530,74 +7361,11 @@ function decodeContextDocument(stdout) {
   return { schema_version: 2, scopes, mutation, spans };
 }
 function deliveryIdentity(repoRoot, name, recipient = "") {
-  return `touch:${createHash3("sha256").update(JSON.stringify([repoRoot, name, recipient])).digest("hex")}`;
+  return `touch:${createHash2("sha256").update(JSON.stringify([repoRoot, name, recipient])).digest("hex")}`;
 }
 function anchorText(row) {
   if (row.start === 0 && row.end === 0) return row.path;
   return `${row.path}#L${row.start}-L${row.end}`;
-}
-function cleanHeader(fileName) {
-  return `${fileName} has implicit couplings:`;
-}
-function cleanFooter(fileName) {
-  return `If you change ${fileName} check the other files to confirm they still work together.`;
-}
-function driftHeader(driftedCount, kind) {
-  if (kind === "write") {
-    return driftedCount === 1 ? "This edit put an implicit coupling out of date:" : "This edit put implicit couplings out of date:";
-  }
-  return driftedCount === 1 ? "This file has an implicit coupling out of date:" : "This file has implicit couplings out of date:";
-}
-function driftFooter(driftedNames) {
-  if (driftedNames.length === 1 && (driftedNames[0]?.length ?? 0) <= 200) {
-    const name = driftedNames[0];
-    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require ${inlineCode(`git span drift -- ${shellArgument(name ?? "")}`)} to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
-  }
-  return "For each out-of-date span: restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.";
-}
-function rangeLabel(row) {
-  if (row.start === 0 && row.end === 0) return { kind: "whole-file" };
-  return { kind: "range", start: row.start, end: row.end };
-}
-function anchorBullets(anchors, debtRows, logger2) {
-  const entries = anchors.map((anchor) => {
-    const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
-    const statuses = /* @__PURE__ */ new Set();
-    for (const row of debtRows) {
-      if (row.path !== anchor.path) continue;
-      if (soleOnPath || row.start === anchor.start && row.end === anchor.end) {
-        statuses.add(row.status);
-      }
-    }
-    const sorted = [...statuses].sort();
-    const suffix = sorted.length > 0 ? ` \u2014 ${sorted.map(humanStatusLabel).join(", ")}` : "";
-    return { anchor, row: { path: anchor.path, range: rangeLabel(anchor), suffix } };
-  });
-  try {
-    return renderAnchorTree(collapseByPath(entries.map(({ row }) => row)));
-  } catch (err) {
-    reportFailOpen(logger2, "anchor-tree-render", err, { span: anchors[0]?.name, anchorCount: anchors.length });
-    return entries.map(({ anchor, row }) => `- ${anchorText(anchor)}${row.suffix}`);
-  }
-}
-function renderSpanSection(name, anchors, debtRows, why, logger2) {
-  const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows, logger2)];
-  if (why) lines.push("", why);
-  return lines.join("\n");
-}
-function buildBlock(sections, header, footer) {
-  const body = `${header}
-
-${sections.join("\n\n---\n\n")}
-
----
-
-${footer}`;
-  return `
-<git-span>
-${body}
-</git-span>
-`;
 }
 function recoverRangeFromDisk(written, filePath) {
   if (written.length === 0) return "whole-file";
@@ -7657,9 +7425,6 @@ function contextAnchorRow(name, anchor) {
     end: extent.kind === "whole" ? 0 : extent.end
   };
 }
-function contextDriftRow(name, anchor) {
-  return { ...contextAnchorRow(name, anchor), status: contextStatusToken(anchor.status) };
-}
 function spanTouchesInput(span, document, repoPath, ranges) {
   return span.overlaps.some((overlap) => {
     const scope = document.scopes[overlap.scope];
@@ -7667,95 +7432,84 @@ function spanTouchesInput(span, document, repoPath, ranges) {
   });
 }
 function renderContextTouch(input, document, repoRoot, repoPath, ranges, memo, logger2) {
-  const recipient = createHash3("sha256").update(input.recipientId ?? "").digest("hex");
+  const recipient = createHash2("sha256").update(input.recipientId ?? "").digest("hex");
   const surfaced = memo.getSurfaced(input.sessionId);
   const previous = readSnapshots(surfaced);
-  const candidates = document.spans.filter((span) => {
-    if (!spanTouchesInput(span, document, repoPath, ranges)) return false;
-    const statuses = span.anchors.map((anchor) => contextStatusToken(anchor.status));
-    return statuses.every((status) => status === "FRESH") || statuses.some(isDebt);
-  }).sort((a, b) => {
-    const debt = (span) => span.anchors.some((anchor) => isDebt(contextStatusToken(anchor.status)));
-    return Number(debt(b)) - Number(debt(a)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-  });
-  const eligible = candidates.filter(
-    (span) => previous.get(deliveryIdentity(repoRoot, span.name, input.recipientId))?.value.revision !== span.evidence_revision
-  );
-  if (eligible.length === 0) return null;
-  const broad = input.kind === "read" && input.broadDiscovery === true;
-  const unknown = input.kind === "read" && input.observedRange === null;
-  const discoveryOnly = unknown && (broad || ranges === "whole-file");
-  const observed = input.kind === "read" && input.observedRange !== void 0 && input.observedRange !== null ? [input.observedRange] : ranges;
-  const full = (span) => renderSpanSection(
-    span.name,
-    span.anchors.map((anchor) => contextAnchorRow(span.name, anchor)),
-    span.anchors.filter((anchor) => isDebt(contextStatusToken(anchor.status))).map((anchor) => contextDriftRow(span.name, anchor)),
-    span.why,
-    logger2
-  );
-  const qualifier = eligible.every((span) => span.anchors.every((anchor) => anchor.status.code === "FRESH")) ? "Anchors located; relationship review not recorded in this context." : "Tracked evidence shown; relationship review not recorded in this context. Match provenance is not reported here.";
-  const discovery = () => {
-    const lines = [];
-    const header2 = `Discovery only \u2014 ${eligible.length} relationships; ${unknown ? "read extent unknown" : "full details not delivered"}.`;
-    const route = "Retrieve omitted relationships with `git span list`; use `git span show <name>` for details.";
-    for (const span of eligible) {
-      const prior = previous.get(deliveryIdentity(repoRoot, span.name, input.recipientId));
-      const line = `- ${inlineCode(span.name)} \u2014 ${prior === void 0 ? "not fully shown" : "evidence changed"}; ${new Set(span.anchors.map((anchor) => anchor.anchored.path)).size} files; ${showRoute(span.name)}`;
-      const omitted = eligible.length - lines.length - 1;
-      const result = buildBlock([...lines, line], header2, `${omitted} spans omitted. ${route}`);
-      if (Buffer.byteLength(result) > BROAD_READ_BYTES) break;
-      lines.push(line);
-    }
-    return buildBlock(lines, header2, `${eligible.length - lines.length} spans omitted. ${route}`);
-  };
-  const fullFooterSeen = input.recipientResetSupported === true && [...previous.values()].some(({ value }) => value.recipient === recipient && value.fullFooter);
-  const shortFooter = "Check the coupled evidence before committing; zero drift does not establish relationship review.";
-  const fileName = basename5(input.filePath);
-  const driftedNames = eligible.filter((span) => span.anchors.some((anchor) => isDebt(contextStatusToken(anchor.status)))).map((span) => span.name);
-  const header = `${unknown ? "Tool read extent unknown; hook details target the requested lines.\n" : ""}${driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName)}
-${qualifier}`;
-  const footer = fullFooterSeen ? shortFooter : `${driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName)}
-To move an address: \`git span replace <name> <old-anchor> <new-anchor>\`. To explicitly accept content at the same address: \`git span add <name> <anchor>\`. Zero drift does not establish relationship review.`;
-  if (discoveryOnly || broad && (eligible.length > 3 || eligible.some((span) => !spanTouchesInput(span, document, repoPath, observed)) || Buffer.byteLength(buildBlock(eligible.map(full), header, footer)) > BROAD_READ_BYTES))
-    return discovery();
-  const sections = [];
   const updates = /* @__PURE__ */ new Map();
-  let incomplete = 0;
-  for (const [spanIndex, span] of eligible.entries()) {
+  const display = (value) => value.replace(new RegExp("\\p{Cc}", "gu"), (character) => JSON.stringify(character).slice(1, -1));
+  const clean = [];
+  const drift = [];
+  for (const span of [...document.spans].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+    if (!spanTouchesInput(span, document, repoPath, ranges)) continue;
+    const debt = span.anchors.filter((anchor) => isDebt(contextStatusToken(anchor.status)));
+    if (debt.length === 0 && !span.anchors.every((anchor) => anchor.status.code === "FRESH")) continue;
     const identity = deliveryIdentity(repoRoot, span.name, input.recipientId);
     const prior = previous.get(identity)?.value;
-    const current2 = snapshot(span, input.recipientResetSupported === true, recipient);
-    let section = full(span);
-    if (prior !== void 0) {
-      const changed = span.anchors.filter((_anchor, index) => prior.anchors[index] !== current2.anchors[index]);
-      const removed = Math.max(0, prior.anchors.length - current2.anchors.length);
-      const why = prior.why !== span.why ? span.why : span.why?.split(/(?<=[.!?])\s/)[0] ?? null;
-      const rows = changed.map((anchor) => contextAnchorRow(span.name, anchor));
-      const debtRows = changed.filter((anchor) => isDebt(contextStatusToken(anchor.status))).map((anchor) => contextDriftRow(span.name, anchor));
-      section = changed.length === 0 && removed === 0 && prior.why === span.why ? `${section}
-Evidence revision changed; visible anchor metadata is unchanged. ${showRoute(span.name)}` : `${renderSpanSection(span.name, rows, debtRows, why, logger2)}
-Evidence changed since full exposure.${removed > 0 ? ` ${removed} anchor(s) removed.` : ""} ${showRoute(span.name)}`;
-    }
-    const omissionReserve = `
-${eligible.length - spanIndex - 1} additional relationships incomplete; retrieve with \`git span list\` and \`git span show <name>\`.`;
-    if (Buffer.byteLength(buildBlock([...sections, section], header, footer + omissionReserve)) > TARGETED_BYTES) {
-      incomplete = eligible.length - spanIndex;
-      const detail = `Incomplete relationship details; evidence ${inlineCode(span.evidence_revision)}. ${showRoute(span.name)}`;
-      if (Buffer.byteLength(buildBlock([...sections, detail], header, footer + omissionReserve)) <= TARGETED_BYTES)
-        sections.push(detail);
-      break;
-    }
-    sections.push(section);
-    updates.set(identity, current2);
+    if (prior?.revision === span.evidence_revision) continue;
+    updates.set(identity, snapshot(span, false, recipient));
+    if (debt.length > 0) {
+      for (const anchor of debt) {
+        drift.push({
+          item: `${display(anchorText(contextAnchorRow(span.name, anchor)))} (${humanStatusLabel(contextStatusToken(anchor.status))} in ${display(span.name)})`,
+          name: span.name
+        });
+      }
+    } else if (prior === void 0) clean.push(span.name);
   }
+  const budget = input.kind === "read" && input.broadDiscovery === true ? BROAD_READ_BYTES : TARGETED_BYTES;
+  const blocks = [];
+  const wrap = (body) => `
+<git-span>
+${body}
+</git-span>
+`;
+  const command = (family, names) => {
+    const args = [...new Set(names)].map(
+      (name) => /^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(name) ? name : shellArgument(name)
+    );
+    const value = `git span ${family} ${args.some((arg) => !/^[A-Za-z0-9]/.test(arg)) ? "-- " : ""}${args.join(" ")}`;
+    return value.includes("`") ? inlineCode(value) : `\`${value}\``;
+  };
+  const enumerate = (prefix, items, family) => {
+    if (items.length === 0) return;
+    const body = (rows2, guidance) => prefix + rows2.map((row) => row.item).join(", ") + (guidance ? `
+
+Use ${command(
+      family,
+      rows2.map((row) => row.name)
+    )} for more information` : "");
+    const partitions = [];
+    let rows = [];
+    for (const item of items) {
+      const next = [...rows, item];
+      if (rows.length > 0 && Buffer.byteLength(wrap(body(next, partitions.length === 0))) > budget) {
+        partitions.push(rows);
+        rows = [item];
+      } else rows = next;
+    }
+    if (rows.length > 0) partitions.push(rows);
+    const withGuidance = partitions.map((part, index) => wrap(body(part, index === 0)));
+    const withoutGuidance = partitions.map((part) => wrap(body(part, false)));
+    try {
+      blocks.push(...memo.claimGuidance(input.sessionId, family) ? withGuidance : withoutGuidance);
+    } catch (err) {
+      for (const { name } of items) updates.delete(deliveryIdentity(repoRoot, name, input.recipientId));
+      reportFailOpen(logger2, "touch-render", err, { family, stage: "retrieval-guidance-claim" });
+    }
+  };
+  enumerate(
+    `${display(repoPath)} is anchored in: `,
+    clean.map((name) => ({ item: display(name), name })),
+    "list"
+  );
+  enumerate(
+    input.kind === "write" ? "Change introduced drift from " : "Check for drift from ",
+    drift,
+    input.kind === "write" ? "list" : "drift"
+  );
   recordSnapshots(surfaced, updates);
   memo.addSurfaced(input.sessionId, [], surfaced);
-  return buildBlock(
-    sections,
-    header,
-    footer + (incomplete > 0 ? `
-${incomplete} relationships incomplete; retrieve with \`git span list\` and \`git span show <name>\`.` : "")
-  );
+  return blocks.length === 0 ? null : blocks.join("");
 }
 function normalizedAddressIdentity(touches) {
   const byPath = /* @__PURE__ */ new Map();
@@ -7786,7 +7540,7 @@ function normalizedAddressIdentity(touches) {
   return identity;
 }
 function deterministicOperationId(invocationId, repoRoot, addresses) {
-  const bytes = createHash3("sha256").update(invocationId).update("\0").update(repoRoot).update("\0").update(addresses.join("\0")).digest();
+  const bytes = createHash2("sha256").update(invocationId).update("\0").update(repoRoot).update("\0").update(addresses.join("\0")).digest();
   bytes.writeUInt8(bytes.readUInt8(6) & 15 | 80, 6);
   bytes.writeUInt8(bytes.readUInt8(8) & 63 | 128, 8);
   const hex = bytes.subarray(0, 16).toString("hex");
@@ -9111,7 +8865,7 @@ function plannedSpans(record2, cwd, logger2) {
     let expectedContent;
     if (touch.evidence?.kind === "content-digest") {
       const content = readText(absolutePath);
-      const digest = content === null ? null : createHash4("sha256").update(content).digest("hex");
+      const digest = content === null ? null : createHash3("sha256").update(content).digest("hex");
       if (digest !== touch.evidence.digest) {
         logger2.warn("git-span static attribution discarded unverifiable planned evidence", {
           path: touch.repoRelativePath,
@@ -9279,7 +9033,7 @@ async function runLayeredBashTouches(command, cwd, sessionId2, toolUseId, toolRe
     sessionId2,
     executors,
     memo,
-    `${sessionId2}:${toolUseId ?? createHash4("sha256").update(command).digest("hex")}:response`,
+    `${sessionId2}:${toolUseId ?? createHash3("sha256").update(command).digest("hex")}:response`,
     logger2
   );
   const blocks = [...commandBlocks, ...responseBatch.blocks];
@@ -9604,7 +9358,7 @@ import { homedir as homedir2 } from "node:os";
 import { join as join10 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-association.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 function noteDocument(value) {
   if (!isRecord(value) || value.schemaVersion !== 1 || value.host !== "claude" && value.host !== "codex") return null;
@@ -9622,7 +9376,7 @@ function noteDocument(value) {
   };
 }
 function commitAssociationKey(receipt, document) {
-  return createHash5("sha256").update(JSON.stringify([receipt.repository.commonDirectory, document.host, document.sessionId, receipt.sha])).digest("hex");
+  return createHash4("sha256").update(JSON.stringify([receipt.repository.commonDirectory, document.host, document.sessionId, receipt.sha])).digest("hex");
 }
 function selectCommitAssociation(document, existing) {
   if (!noteDocument(document)) return { kind: "reject", reason: "invalid association document" };
@@ -9811,7 +9565,7 @@ function commitCliBudgetMs(phaseStartedMs, nowMs) {
 }
 
 // packages/agent-hooks/src/common/commit-observation.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { resolve as resolve6 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-git.ts
@@ -9879,7 +9633,7 @@ function observedCommitReceipts(observation, enrollment) {
   return [...commits].map((sha) => ({
     schemaVersion: 1,
     invocationKey: enrollment.invocationKey,
-    nonce: `observed-${createHash6("sha256").update(repository.gitDirectory).digest("hex")}-${sha}`,
+    nonce: `observed-${createHash5("sha256").update(repository.gitDirectory).digest("hex")}-${sha}`,
     sha,
     repository
   }));
@@ -9924,9 +9678,9 @@ async function inspectCommitSpanMetadata(executable, cwd, sha, deadline, gitDire
 }
 
 // packages/agent-hooks/src/common/commit-storage.ts
-import { createHash as createHash7, randomBytes } from "node:crypto";
+import { createHash as createHash6, randomBytes } from "node:crypto";
 import {
-  closeSync as closeSync3,
+  closeSync as closeSync4,
   constants as constants2,
   existsSync as existsSync6,
   fstatSync as fstatSync2,
@@ -9934,7 +9688,7 @@ import {
   lstatSync,
   mkdirSync as mkdirSync5,
   opendirSync,
-  openSync as openSync3,
+  openSync as openSync4,
   readFileSync as readFileSync9,
   renameSync as renameSync4,
   rmSync as rmSync4,
@@ -10018,14 +9772,14 @@ async function acquireNativeReceiptLock(directory, key2, deadline, executable) {
 
 // packages/agent-hooks/src/common/commit-storage.ts
 function identityKey(identity) {
-  return createHash7("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
+  return createHash6("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
 }
 async function privateDirectory(path, deadline) {
   if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
   if (performance.now() >= deadline) throw new Error("receipt directory phase deadline exhausted");
   mkdirSync5(path, { recursive: true, mode: 448 });
   const owner = process.getuid?.();
-  const descriptor = owner === void 0 ? void 0 : openSync3(path, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+  const descriptor = owner === void 0 ? void 0 : openSync4(path, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
   try {
     for (; ; ) {
       const stat = descriptor === void 0 ? lstatSync(path) : fstatSync2(descriptor);
@@ -10037,7 +9791,7 @@ async function privateDirectory(path, deadline) {
       await delay(Math.min(5, remaining));
     }
   } finally {
-    if (descriptor !== void 0) closeSync3(descriptor);
+    if (descriptor !== void 0) closeSync4(descriptor);
   }
 }
 function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {

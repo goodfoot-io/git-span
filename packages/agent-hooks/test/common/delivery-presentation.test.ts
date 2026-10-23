@@ -3,12 +3,14 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import { runTouchHooks, type TouchInput } from '../../src/common/touch-core.js';
+import { guidanceClaims } from '../guidance-helpers.js';
 import { makeTempRepo } from '../helpers.js';
 import { contextExecutors } from '../touch-context-fake.js';
 
 function memory(): MemoStore {
   let saved = new Set<string>();
   return {
+    claimGuidance: guidanceClaims(),
     getSurfaced: () => new Set(saved),
     addSurfaced: (_sid, names, known) => {
       saved = new Set([...known, ...names]);
@@ -17,7 +19,7 @@ function memory(): MemoStore {
 }
 
 describe('bounded evidence presentation', () => {
-  it('treats an unknown broad extent as discovery and leaves targeted first exposure available', async () => {
+  it('records complete short exposure even when the broad read extent is unknown', async () => {
     const repo = makeTempRepo();
     try {
       writeFileSync(join(repo.root, 'app.ts'), 'line\n');
@@ -31,8 +33,8 @@ describe('bounded evidence presentation', () => {
       const base = { kind: 'read', sessionId: 's', cwd: repo.root, filePath: join(repo.root, 'app.ts') } as const;
       const discovery = { ...base, broadDiscovery: true, observedRange: null } satisfies TouchInput;
       const first = await runTouchHooks([discovery], executors, memo, null);
-      expect(first.outputs[0]?.additionalContext).toContain('Discovery only');
-      expect(memo.getSurfaced('s').size).toBe(0);
+      expect(first.outputs[0]?.additionalContext).toContain('app.ts is anchored in: late/relationship');
+      expect(memo.getSurfaced('s').size).toBeGreaterThan(0);
       const targeted = {
         ...base,
         offset: 12000,
@@ -40,14 +42,13 @@ describe('bounded evidence presentation', () => {
         observedRange: { start: 12000, end: 12010 }
       } satisfies TouchInput;
       const full = await runTouchHooks([targeted], executors, memo, null);
-      expect(full.outputs[0]?.additionalContext).toContain('Preserve late evidence.');
-      expect(full.outputs[0]?.additionalContext).toContain('relationship review not recorded');
+      expect(full.outputs[0]?.additionalContext).toBeNull();
     } finally {
       repo.cleanup();
     }
   });
 
-  it('bounds broad fan-out and reports omitted spans without recording exposure', async () => {
+  it('partitions broad fan-out without dropping span identities', async () => {
     const repo = makeTempRepo();
     try {
       writeFileSync(join(repo.root, 'app.ts'), 'line\n');
@@ -80,9 +81,11 @@ describe('bounded evidence presentation', () => {
         null
       );
       const output = result.outputs[0]?.additionalContext ?? '';
-      expect(Buffer.byteLength(output)).toBeLessThanOrEqual(1536);
-      expect(output).toMatch(/\d+ spans omitted/);
-      expect(memo.getSurfaced('s').size).toBe(0);
+      for (const block of output.match(/<git-span>[\s\S]*?<\/git-span>/g) ?? [])
+        expect(Buffer.byteLength(block)).toBeLessThanOrEqual(1536);
+      for (let i = 0; i < 200; i++) expect(output).toContain(`span/${String(i).padStart(3, '0')}`);
+      expect(output).not.toContain('omitted');
+      expect(memo.getSurfaced('s').size).toBeGreaterThan(0);
     } finally {
       repo.cleanup();
     }
@@ -160,7 +163,7 @@ it('quotes hostile shell arguments and bounds routes without cutting shell synta
   expect(showRoute('a\nb')).not.toContain('a\nb');
 });
 
-it('bounds huge targeted obligations and keeps all incomplete revisions eligible', async () => {
+it('omits huge explanations while recording every complete short notice', async () => {
   const repo = makeTempRepo();
   try {
     writeFileSync(join(repo.root, 'app.ts'), 'line\n');
@@ -181,16 +184,17 @@ it('bounds huge targeted obligations and keeps all incomplete revisions eligible
     };
     const output = (await runTouchHooks([touch], executors, memo, null)).outputs[0]?.additionalContext ?? '';
     expect(Buffer.byteLength(output)).toBeLessThanOrEqual(8192);
-    expect(output).toContain('20 relationships incomplete');
-    expect(output).toContain('git span show');
-    expect(memo.getSurfaced('s').size).toBe(0);
-    expect((await runTouchHooks([touch], executors, memo, null)).outputs[0]?.additionalContext).not.toBeNull();
+    expect(output).not.toContain('incomplete');
+    for (let i = 0; i < 20; i++) expect(output).toContain(`span/${i}`);
+    expect(output).toContain('git span list');
+    expect(memo.getSurfaced('s').size).toBeGreaterThan(0);
+    expect((await runTouchHooks([touch], executors, memo, null)).outputs[0]?.additionalContext).toBeNull();
   } finally {
     repo.cleanup();
   }
 });
 
-it('renders why and anchor deltas, suppresses exact repeats, and uses a short footer only with reliable lifecycle support', async () => {
+it('silently advances prior clean revisions when definitions or anchor metadata change', async () => {
   const repo = makeTempRepo();
   try {
     writeFileSync(join(repo.root, 'app.ts'), 'line\n');
@@ -211,22 +215,20 @@ it('renders why and anchor deltas, suppresses exact repeats, and uses a short fo
       recipientResetSupported: true
     };
     const run = async () => (await runTouchHooks([touch], executors, memo, null)).outputs[0]?.additionalContext;
-    expect(await run()).toContain('To explicitly accept content');
+    expect(await run()).toContain('Use `git span list flow` for more information');
     expect(await run()).toBeNull();
     why = 'Updated contract. All new guidance stays visible.';
     const delta = await run();
-    expect(delta).toContain(why);
-    expect(delta).toContain('Evidence changed since full exposure');
-    expect(delta).not.toContain('To explicitly accept content');
+    expect(delta).toBeNull();
     end = 2;
-    expect(await run()).toContain('#L1-L2');
+    expect(await run()).toBeNull();
     expect(await run()).toBeNull();
   } finally {
     repo.cleanup();
   }
 });
 
-it('separates sibling recipient baselines and forgets both baseline and cadence on explicit reset', async () => {
+it('separates recipient exposure while retaining session guidance across explicit reset', async () => {
   const repo = makeTempRepo();
   try {
     writeFileSync(join(repo.root, 'app.ts'), 'line\n');
@@ -246,19 +248,19 @@ it('separates sibling recipient baselines and forgets both baseline and cadence 
     };
     const render = async (recipientId: string) =>
       (await runTouchHooks([{ ...base, recipientId }], executors, memo, null)).outputs[0]?.additionalContext;
-    expect(await render('child-a')).toContain('To explicitly accept content');
+    expect(await render('child-a')).toContain('Use `git span list flow` for more information');
     expect(await render('child-a')).toBeNull();
-    expect(await render('child-b')).toContain('To explicitly accept content');
+    expect(await render('child-b')).toBe('\n<git-span>\napp.ts is anchored in: flow\n</git-span>\n');
     expect(await render('child-b')).toBeNull();
     // This is the same empty authoritative memo state that SessionStart installs.
     memo.addSurfaced('s', [], new Set());
-    expect(await render('child-a')).toContain('To explicitly accept content');
+    expect(await render('child-a')).toBe('\n<git-span>\napp.ts is anchored in: flow\n</git-span>\n');
   } finally {
     repo.cleanup();
   }
 });
 
-it('keeps a huge single span name within the targeted envelope without broken retrieval syntax', async () => {
+it('keeps an indivisible huge span identity intact in its own wrapper', async () => {
   const repo = makeTempRepo();
   try {
     writeFileSync(join(repo.root, 'app.ts'), 'line\n');
@@ -276,11 +278,11 @@ it('keeps a huge single span name within the targeted envelope without broken re
       null
     );
     const output = result.outputs[0]?.additionalContext ?? '';
-    expect(Buffer.byteLength(output)).toBeLessThanOrEqual(8192);
-    expect(output).toContain('1 relationships incomplete');
-    expect(output).toContain('retrieve the complete name');
+    expect(Buffer.byteLength(output)).toBeGreaterThan(8192);
+    expect(output).toContain(`long/${'x'.repeat(20000)}`);
+    expect(output).not.toContain('incomplete');
     expect(output.match(/<\/git-span>/g)).toHaveLength(1);
-    expect(memo.getSurfaced('s').size).toBe(0);
+    expect(memo.getSurfaced('s').size).toBeGreaterThan(0);
   } finally {
     repo.cleanup();
   }
@@ -314,12 +316,12 @@ it('retains changed source evidence when only the opaque evidence revision chang
       limit: 1
     };
     const render = async () => (await runTouchHooks([touch], executors, memo, null)).outputs[0]?.additionalContext;
-    expect(await render()).toContain('app.ts #L1-L1 — changed');
+    expect(await render()).toContain('app.ts#L1-L1 (changed in caller/contract)');
     expect(await render()).toBeNull();
     revision = '2'.repeat(64);
     const next = await render();
-    expect(next).toContain('app.ts #L1-L1 — changed');
-    expect(next).toContain('Keep the caller contract intact.');
+    expect(next).toContain('app.ts#L1-L1 (changed in caller/contract)');
+    expect(next).not.toContain('Use `git span drift');
     expect(await render()).toBeNull();
   } finally {
     repo.cleanup();

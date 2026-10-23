@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Acceptance checks for bash-touch.ts (card main-212, TDD Phases 2-3).
  *
@@ -55,6 +56,7 @@ const runBashTouches = (...args: Parameters<typeof runBashTouchesImpl>): ReturnT
 function createMemoryMemoStore(): MemoStore {
   const bySession = new Map<string, Set<string>>();
   return {
+    claimGuidance: guidanceClaims(),
     getSurfaced(sessionId: string): Set<string> {
       return new Set(bySession.get(sessionId) ?? []);
     },

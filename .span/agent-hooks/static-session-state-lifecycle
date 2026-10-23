@@ -1,7 +1,7 @@
 packages/agent-hooks/src/claude/review-note-additions.ts#L63-L70 rk64:76e3448d76407492
 packages/agent-hooks/src/claude/session-end.ts rk64:d3f900fb4bf58bb9
 packages/agent-hooks/src/codex/stop.ts rk64:8e023bae02828326
-packages/agent-hooks/src/common/agent-hooks-common.ts#L592-L614 rk64:764d10b2d0ada31a
-packages/agent-hooks/test/common/memo-store.test.ts#L74-L87 rk64:33db9f153ebc8665
+packages/agent-hooks/src/common/agent-hooks-common.ts#L595-L617 rk64:764d10b2d0ada31a
+packages/agent-hooks/test/common/memo-store.test.ts#L76-L89 rk64:33db9f153ebc8665
 
 Claude SessionEnd and Codex empty stops or Stop continuations retire session-shared state through the common cleanup contract. Claude durable note-review checkpoints live inside layout.dir(sessionId), alongside memo and bounded planned-touch state, so they survive ordinary Stop processes and hook-active continuations but retire with SessionEnd; clearing them at each Stop repeats unchanged review instructions. Codex preserves state while note review is requested or its bounded lookup fails; stale-session pruning covers hosts that terminate without an end event.

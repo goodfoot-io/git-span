@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Fault-injection checks for the core-layer failure-logging contract
  * (CARD main-349).
@@ -85,6 +86,7 @@ describe('runTouchHooks / runTouchHook fault injection (main-349)', () => {
     const executors = contextExecutors(surfaceFake({ list: [coveredSpanRow()], drift: [driftedRow()] }));
     const defect = new TypeError('core defect: surfaced.set is not a function');
     const memo: MemoStore = {
+      claimGuidance: guidanceClaims(),
       getSurfaced: () => new Set<string>(),
       addSurfaced: () => {
         throw defect;
@@ -118,6 +120,7 @@ describe('runTouchHooks / runTouchHook fault injection (main-349)', () => {
     const logger = recordingLogger();
     const executors = contextExecutors(surfaceFake({ list: [coveredSpanRow()], drift: [driftedRow()] }));
     const memo: MemoStore = {
+      claimGuidance: guidanceClaims(),
       getSurfaced: () => new Set<string>(),
       addSurfaced: () => undefined
     };
@@ -149,6 +152,7 @@ describe('runTouchHooks / runTouchHook fault injection (main-349)', () => {
       readInput(repo.root),
       executors,
       {
+        claimGuidance: guidanceClaims(),
         getSurfaced: () => new Set<string>(),
         addSurfaced: () => undefined
       },
@@ -173,6 +177,7 @@ describe('runTouchHooks / runTouchHook fault injection (main-349)', () => {
       readInput(repo.root),
       executors,
       {
+        claimGuidance: guidanceClaims(),
         getSurfaced: () => new Set<string>(),
         addSurfaced: () => undefined
       },

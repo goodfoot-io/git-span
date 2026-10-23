@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Tests for the Codex PostToolUse touch hook
  * (packages/agent-hooks/src/codex/post-tool-use.ts).
@@ -125,6 +126,7 @@ function makeExecutors(opts: FakeOpts = {}): {
 function inMemoryMemoFactory(): MemoFactory {
   const store = new Map<string, Set<string>>();
   return (_logger: MemoLogger): MemoStore => ({
+    claimGuidance: guidanceClaims(),
     getSurfaced: (sid) => new Set(store.get(sid) ?? []),
     addSurfaced: (sid, names, known) => {
       store.set(sid, new Set([...known, ...names]));
@@ -796,7 +798,7 @@ describe('codex post-tool-use touch signal', () => {
         expect(ctx).toContain(SPAN);
         // The response-derived hunk overlaps the command-derived range on
         // the same span; the per-session memo dedupes the duplicate surface.
-        expect(ctx.match(/## billing\/checkout-request-flow/g) ?? []).toHaveLength(1);
+        expect(ctx.match(/is anchored in: billing\/checkout-request-flow/g) ?? []).toHaveLength(1);
       } finally {
         repo.cleanup();
       }

@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Tests for Antigravity's three-way touch-attribution split
  * (packages/agent-hooks/src/antigravity/{tool-call-stash,static-plan,post-tool-use,post-invocation}.ts).
@@ -80,6 +81,7 @@ function makeExecutors(opts: FakeOpts = {}): {
 function inMemoryMemoFactory(): MemoFactory {
   const store = new Map<string, Set<string>>();
   return (_logger: MemoLogger): MemoStore => ({
+    claimGuidance: guidanceClaims(),
     getSurfaced: (sid) => new Set(store.get(sid) ?? []),
     addSurfaced: (sid, names, known) => {
       store.set(sid, new Set([...known, ...names]));

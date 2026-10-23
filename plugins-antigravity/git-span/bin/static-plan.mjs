@@ -830,6 +830,7 @@ function createSessionLayout(base) {
     base,
     trashDir: nodePath.join(nodePath.dirname(base), "session-trash"),
     dir,
+    guidanceDir: (sessionId) => nodePath.join(base, `@guidance-${sanitizeSessionId(sessionId)}`),
     memoFile: (sessionId) => nodePath.join(dir(sessionId), "touch-memo.json"),
     plannedTouchesDir,
     plannedTouchRecordFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".json"),
@@ -897,7 +898,7 @@ function pruneStaleSessionsThrottled(layout, now = Date.now()) {
 }
 
 // packages/agent-hooks/src/common/bash-attribution.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import * as fs6 from "node:fs";
 import * as nodePath5 from "node:path";
 
@@ -6427,12 +6428,11 @@ function filterTrackedEligibility(candidates, options) {
 
 // packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import * as fs5 from "node:fs";
-import { basename as basename5, dirname as dirname6, join as join6 } from "node:path";
+import { dirname as dirname6, join as join6 } from "node:path";
 
 // packages/agent-hooks/src/common/delivery-presentation.ts
-import { createHash as createHash2 } from "node:crypto";
 var MAX_MEMO_BYTES = 256 * 1024;
 
 // packages/agent-hooks/src/common/touch-core.ts
@@ -6469,7 +6469,7 @@ function planEvidence(matches, requirements) {
     return {
       kind: "content-digest",
       algorithm: "sha256",
-      digest: createHash4("sha256").update(expectedContent).digest("hex"),
+      digest: createHash3("sha256").update(expectedContent).digest("hex"),
       range: unionRange(ranges)
     };
   }

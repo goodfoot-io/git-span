@@ -76,41 +76,41 @@ describe('delivery memo correctness reproductions', () => {
   it('D4: re-delivers a second distinct CHANGED revision after Read', async () => {
     const repo = setupRepo();
     const hook = setupHook();
-    expect(await hook(repo)).toContain('## probe');
+    expect(await hook(repo)).toContain('is anchored in: probe');
     expect(await hook(repo)).toBe(''); // Identical evidence remains deduplicated.
     repo.setValue(2);
-    expect(await hook(repo)).toContain('— changed');
+    expect(await hook(repo)).toContain('(changed in probe)');
     expect(await hook(repo)).toBe('');
     repo.setValue(3);
     const secondChange = await hook(repo);
     // A fresh session proves the missing block is memo suppression, not missing context.
-    expect(await hook(repo, 'Read', 3, 'fresh-session')).toContain('— changed');
-    expect(secondChange).toContain('— changed');
+    expect(await hook(repo, 'Read', 3, 'fresh-session')).toContain('(changed in probe)');
+    expect(secondChange).toContain('(changed in probe)');
   });
 
   it('D4b: re-delivers a second Edit while the CLI still reports CHANGED', async () => {
     const repo = setupRepo();
     const hook = setupHook();
-    expect(await hook(repo)).toContain('## probe');
+    expect(await hook(repo)).toContain('is anchored in: probe');
     repo.setValue(2);
-    expect(await hook(repo, 'Edit', 2)).toContain('— changed');
+    expect(await hook(repo, 'Edit', 2)).toContain('(changed in probe)');
     expect(await hook(repo)).toBe('');
     repo.setValue(3);
     const secondEdit = await hook(repo, 'Edit', 3);
     const drift = spawnSync(binary, ['drift'], { cwd: repo.root, encoding: 'utf8' });
     expect(drift.status).toBe(1);
     expect(drift.stdout).toContain('app.py#L1-L1 — changed in the working tree');
-    expect(secondEdit).toContain('— changed');
+    expect(secondEdit).toContain('(changed in probe)');
   });
 
   it('D4: delivers the same-named span from another repository in one session', async () => {
     const first = setupRepo();
     const second = setupRepo(100);
     const hook = setupHook();
-    expect(await hook(first)).toContain('## probe');
+    expect(await hook(first)).toContain('is anchored in: probe');
     expect(await hook(first)).toBe('');
     const otherRepo = await hook(second);
-    expect(await hook(second, 'Read', 100, 'fresh-session')).toContain('## probe');
-    expect(otherRepo).toContain('## probe');
+    expect(await hook(second, 'Read', 100, 'fresh-session')).toContain('is anchored in: probe');
+    expect(otherRepo).toContain('is anchored in: probe');
   });
 });

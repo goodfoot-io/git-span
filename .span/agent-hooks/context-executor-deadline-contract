@@ -1,4 +1,4 @@
-packages/agent-hooks/src/common/touch-core.ts#L1503-L1532 rk64:a74f9c019349f4cb
+packages/agent-hooks/src/common/touch-core.ts#L1340-L1369 rk64:a74f9c019349f4cb
 packages/agent-hooks/test/common/context-executor.test.ts#L38-L122 rk64:67efe46ad15b5d36
 
 The CLI bounds the complete context request at 4.5 seconds and the hook executor retains a five-second subprocess ceiling while inheriting repository lock settings; the focused executor test preserves this timeout and environment contract.

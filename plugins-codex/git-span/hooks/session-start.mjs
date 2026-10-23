@@ -777,6 +777,7 @@ function createSessionLayout(base) {
     base,
     trashDir: nodePath.join(nodePath.dirname(base), "session-trash"),
     dir,
+    guidanceDir: (sessionId) => nodePath.join(base, `@guidance-${sanitizeSessionId(sessionId)}`),
     memoFile: (sessionId) => nodePath.join(dir(sessionId), "touch-memo.json"),
     plannedTouchesDir,
     plannedTouchRecordFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".json"),

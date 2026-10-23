@@ -9,6 +9,7 @@ import {
   type TouchExecutors,
   type TouchInput
 } from '../../src/common/touch-core.js';
+import { guidanceClaims } from '../guidance-helpers.js';
 import { itemAt } from '../helpers.js';
 import {
   buildWorkspaceGitSpan,
@@ -34,6 +35,7 @@ const SESSION = 'batch-context-session';
 function createMemoStore(): MemoStore {
   const bySession = new Map<string, Set<string>>();
   return {
+    claimGuidance: guidanceClaims(),
     getSurfaced(sessionId: string): Set<string> {
       return new Set(bySession.get(sessionId) ?? []);
     },
@@ -72,7 +74,13 @@ function writeTouch(repo: RealBundleRepo, rel: string, written: string): TouchIn
 /** Surfaced-span names, in order, parsed out of a rendered `<git-span>` block. */
 function surfacedNames(block: string | null): string[] {
   if (block === null) return [];
-  return [...block.matchAll(/^## (.+)$/gm)].map((m) => itemAt(m, 1));
+  return [
+    ...new Set(
+      [...block.matchAll(/in ([\w/-]+)\)/g)]
+        .map((match) => itemAt(match, 1))
+        .concat([...block.matchAll(/is anchored in: (.+)/g)].flatMap((match) => itemAt(match, 1).split(', ')))
+    )
+  ];
 }
 
 /** Every `path#Lstart-Lend` anchor address a rendered block mentions. */
@@ -213,8 +221,9 @@ describe('batched touch context', () => {
     const batched = await runBatched(repo, touches);
     const bAnchors = anchorAddresses(itemAt(batched, 0)).filter((a) => a.startsWith('b.txt'));
 
-    // The whole point: a.txt's block already reports b.txt healed at L4.
-    expect(bAnchors).toContain('b.txt#L4-L4');
+    // Repair still heals b.txt to L4; short notices enumerate only genuine debt.
+    expect(git(repo, 'list', 'cross')).toContain('b.txt#L4-L4');
+    expect(bAnchors).toEqual([]);
     expect(bAnchors).not.toContain('b.txt#L2-L2');
   });
 

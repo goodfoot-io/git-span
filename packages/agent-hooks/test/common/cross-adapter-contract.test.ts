@@ -1,3 +1,4 @@
+import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Cross-adapter contract (plan §9): the same shell command produces the same
  * `runTouchHook` call sequence — filePath, offset, limit, and the cwd each
@@ -98,6 +99,7 @@ vi.mock('../../src/common/touch-core.js', async (importOriginal) => {
 function inMemoryMemoFactory(): MemoFactory {
   const store = new Map<string, Set<string>>();
   return (_logger: MemoLogger): MemoStore => ({
+    claimGuidance: guidanceClaims(),
     getSurfaced: (sid) => new Set(store.get(sid) ?? []),
     addSurfaced: (sid, names, known) => {
       store.set(sid, new Set([...known, ...names]));
