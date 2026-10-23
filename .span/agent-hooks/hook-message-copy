@@ -1,7 +1,11 @@
+packages/agent-hooks/src/common/agent-hooks-common.ts#L427-L442 rk64:087b8c1be3cf5b21
 packages/agent-hooks/src/common/delivery-presentation.ts#L5-L18 rk64:11418e7e7b8a51fe
 packages/agent-hooks/src/common/delivery-presentation.ts#L45-L54 rk64:4bae0891074a2139
 packages/agent-hooks/src/common/delivery-presentation.ts#L101-L128 rk64:10f51d2889adbdbc
+packages/agent-hooks/src/common/span-surface.ts#L147-L177 rk64:14e6c74ed83ba33c
 packages/agent-hooks/src/common/touch-core.ts#L1008-L1099 rk64:269470fe4311684d
+packages/agent-hooks/test/common/guidance-lifecycle-bundle.test.ts#L25-L85 rk64:15155dd38012c836
+packages/agent-hooks/test/common/memo-store.test.ts#L238-L251 rk64:b958323cec665bc8
 packages/git-span/src/cli/context.rs#L559-L581 rk64:ff505775865efacb
 packages/website/content/docs/agent-integration.mdx rk64:829c403133890c9e
 plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:3d22a8c6b0b45f54
@@ -10,4 +14,4 @@ plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md r
 plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:0ef5cc85ea07d4ec
 skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:7c662cc8c3de79ac
 
-The shared touch renderer and evidence revisions drive the short wrapped notices described by the hook-output template, its four generated references and website. Per-command retrieval guidance survives exposure resets and Codex turn cleanup; complete enumerations are partitioned without truncation, while previously delivered revisions without genuine drift advance silently.
+The shared touch renderer and evidence revisions drive the short wrapped notices described by the hook-output template, its four generated references and website. Once-per-session retrieval guidance depends on per-command-family claims in guidanceDir remaining outside the exposure directory retired by Codex Stop and reset by compaction or resume; moving claims into touch state repeats guidance within a session. The memo-store lifecycle case checks claims survive exposure reset and cleanup, and the emitted-hook lifecycle case checks Claude compaction/resume and Codex Stop followed by another touch omit guidance while a fresh session receives it. Complete enumerations are partitioned without truncation; previously delivered revisions without genuine drift advance silently.
