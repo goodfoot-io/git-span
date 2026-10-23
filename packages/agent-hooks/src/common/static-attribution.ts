@@ -3053,13 +3053,15 @@ export type PreStateEvidence =
       readonly tracked: true;
     };
 
-/** A single tracked repository-relative operation retained across a tool call. */
+/** A scoped repository-relative operation retained across a tool call. */
 export interface PlannedTouch {
   readonly repoRelativePath: string;
   readonly operation: Operation;
   readonly ranges: readonly LineRange[];
   readonly simpleCommandIndex: number;
   readonly evidence?: PreStateEvidence;
+  /** False for untracked pre-state writes retained only for first-write observation. */
+  readonly contextEligible?: boolean;
 }
 
 /** Content-minimal, versioned record keyed by session and tool-use id. */
@@ -3343,6 +3345,8 @@ function normalizePlannedTouchRecord(record: unknown, budgets: PlannedTouchBudge
     if (!safeInteger(touch.simpleCommandIndex, 0)) {
       throw new Error('invalid planned-touch command index');
     }
+    if (touch.contextEligible !== undefined && typeof touch.contextEligible !== 'boolean')
+      throw new Error('invalid planned-touch context eligibility');
     const evidence = normalizeEvidence(touch.evidence);
     if (evidence !== undefined) evidenceBytes += Buffer.byteLength(JSON.stringify(evidence));
     return {
@@ -3350,7 +3354,8 @@ function normalizePlannedTouchRecord(record: unknown, budgets: PlannedTouchBudge
       operation: touch.operation,
       ranges,
       simpleCommandIndex: touch.simpleCommandIndex,
-      ...(evidence === undefined ? {} : { evidence })
+      ...(evidence === undefined ? {} : { evidence }),
+      ...(touch.contextEligible === undefined ? {} : { contextEligible: touch.contextEligible })
     };
   });
   if (evidenceBytes > budgets.maxEvidenceBytes) throw new Error('planned-touch record exceeds evidence budget');

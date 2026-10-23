@@ -23,6 +23,7 @@ import {
 import { bashResponseExitCode } from '../common/bash-touch.js';
 import type { CommitInspectionContextExecutor } from '../common/commit-inspection-context.js';
 import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
+import { firstWriteGuidance } from '../common/first-write-guidance.js';
 import { isRecord } from '../common/guards.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import type { PlannedTouchRecord } from '../common/static-attribution.js';
@@ -82,8 +83,9 @@ export function createHandler(
   const options = { stateRoot: join(dirname(layout.base), 'commit-receipts'), ...runtimeOptions };
   return async (input: PostToolUseInput, ctx: HookContext) => {
     let original: Awaited<ReturnType<typeof terminalCommitInvocation>>['original'] = null;
-    const shellTool = ['Bash', 'shell', 'local_shell', 'exec_command', 'exec'].includes(input.tool_name);
+    let shellTool = ['Bash', 'shell', 'local_shell', 'exec_command', 'exec'].includes(input.tool_name);
     const poll = input.tool_name === 'write_stdin';
+    let invocationToolId = input.tool_use_id;
     if ((shellTool || poll) && input.session_id && input.tool_use_id) {
       try {
         const executionId = poll ? polledExecution(input.tool_input) : null;
@@ -93,6 +95,7 @@ export function createHandler(
             : findExecution(input.session_id, executionId, options)
           : { host: 'codex' as const, sessionId: input.session_id, toolUseId: input.tool_use_id };
         if (identity !== null) {
+          invocationToolId = identity.toolUseId;
           const running = yieldedExecution(input.tool_response);
           if (running !== null) {
             if (!poll && narrowShellExecutions(input.tool_input).executions.length > 1) {
@@ -111,7 +114,10 @@ export function createHandler(
         ctx.logger.warn('git-span terminal commit attribution failed', { err });
       }
     }
-    if (poll) return undefined;
+    if (poll) {
+      if (original === null) return undefined;
+      shellTool = true;
+    }
     if (
       original === null &&
       input.tool_name === 'Bash' &&
@@ -150,7 +156,7 @@ export function createHandler(
             execution.command,
             effectiveCwd,
             sessionId,
-            recovered.executions.length === 1 ? input.tool_use_id : undefined,
+            recovered.executions.length === 1 ? invocationToolId : undefined,
             input.tool_response,
             executors,
             memo,
@@ -161,7 +167,8 @@ export function createHandler(
                 recovered.executions.length === 1 &&
                 recovered.executions[0]?.background === false &&
                 bashResponseExitCode(input.tool_response) === 0,
-              executor: inspectionExecutor
+              executor: inspectionExecutor,
+              onWrite: () => firstWriteGuidance(sessionId, memo, true)
             }
           ))
         );
@@ -192,7 +199,8 @@ export function createHandler(
       executors,
       memo,
       input.tool_use_id === undefined ? null : `${sessionId}:${input.tool_use_id}`,
-      ctx.logger
+      ctx.logger,
+      () => firstWriteGuidance(sessionId, memo, true)
     );
     if (blocks.length === 0) return undefined;
     const combined = blocks.join('');

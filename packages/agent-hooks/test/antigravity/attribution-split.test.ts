@@ -80,8 +80,9 @@ function makeExecutors(opts: FakeOpts = {}): {
 
 function inMemoryMemoFactory(): MemoFactory {
   const store = new Map<string, Set<string>>();
+  const claimGuidance = guidanceClaims();
   return (_logger: MemoLogger): MemoStore => ({
-    claimGuidance: guidanceClaims(),
+    claimGuidance,
     getSurfaced: (sid) => new Set(store.get(sid) ?? []),
     addSurfaced: (sid, names, known) => {
       store.set(sid, new Set([...known, ...names]));

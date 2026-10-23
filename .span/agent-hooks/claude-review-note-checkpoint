@@ -1,7 +1,0 @@
-packages/agent-hooks/src/claude/review-note-additions.ts#L81-L87 rk64:6dc6b4e1c6791872
-packages/agent-hooks/test/common/claude-stop-note-additions.test.ts#L51-L78 rk64:66c4c46839880919
-packages/git-span/src/notes.rs#L240-L243 rk64:158a4c757201b647
-packages/git-span/src/notes.rs#L422-L423 rk64:dd4285f82ac08454
-packages/git-span/src/notes_tests.rs#L92-L123 rk64:95a92c8e3939c781
-
-The user requires Claude review instructions only when items were added to git span notes since the last stop (chat requirement, 2026-10-22). Notes IDs increase monotonically within the store in the shared Git common directory, even after removal of every note; Claude checkpoints therefore bind the highest observed ID to the canonical common-directory path, not the current worktree root or commit SHA. Linked worktrees share the observation boundary, while another note added on the same commit remains new. The linked-worktree and same-commit tests cover these distinctions; resetting or replacing a notes database during a live session is outside this checkpoint contract.

@@ -6281,6 +6281,8 @@ function normalizePlannedTouchRecord(record, budgets) {
     if (!safeInteger(touch.simpleCommandIndex, 0)) {
       throw new Error("invalid planned-touch command index");
     }
+    if (touch.contextEligible !== void 0 && typeof touch.contextEligible !== "boolean")
+      throw new Error("invalid planned-touch context eligibility");
     const evidence = normalizeEvidence(touch.evidence);
     if (evidence !== void 0) evidenceBytes += Buffer.byteLength(JSON.stringify(evidence));
     return {
@@ -6288,7 +6290,8 @@ function normalizePlannedTouchRecord(record, budgets) {
       operation: touch.operation,
       ranges,
       simpleCommandIndex: touch.simpleCommandIndex,
-      ...evidence === void 0 ? {} : { evidence }
+      ...evidence === void 0 ? {} : { evidence },
+      ...touch.contextEligible === void 0 ? {} : { contextEligible: touch.contextEligible }
     };
   });
   if (evidenceBytes > budgets.maxEvidenceBytes) throw new Error("planned-touch record exceeds evidence budget");
@@ -6527,8 +6530,11 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     candidates.map((value) => ({ absolutePath: value.span.absolutePath, value })),
     { cwd }
   );
+  const observationOnly = tracked.dropped.filter(({ reason, candidate }) => reason === "untracked-path" && candidate.value.span.operation !== "read").map(({ candidate }) => candidate);
+  const retained = [...tracked.eligible, ...observationOnly];
+  const observationOnlySet = new Set(observationOnly.map(({ value }) => value));
   flushFailOpen(logger2);
-  if (tracked.eligible.length === 0) {
+  if (retained.length === 0) {
     logger2.info?.("git-span static attribution pre-plan", {
       resolved: parsed.resolved.length,
       unresolved: parsed.unresolved.length,
@@ -6547,7 +6553,7 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
   const repoRoot = resolveRepoRoot(cwd);
   if (repoRoot === null) return;
   const groups = /* @__PURE__ */ new Map();
-  for (const { value } of tracked.eligible) {
+  for (const { value } of retained) {
     const key = planGroupKey(value.span);
     const group = groups.get(key) ?? [];
     group.push(value);
@@ -6559,7 +6565,8 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     if (primary === void 0) continue;
     const { span } = primary;
     const requirements = requested.get(key) ?? /* @__PURE__ */ new Set();
-    const evidence = planEvidence(matches, requirements);
+    const observationOnly2 = observationOnlySet.has(primary);
+    const evidence = observationOnly2 && span.operation === "delete" ? void 0 : planEvidence(matches, requirements);
     touches.push({
       repoRelativePath: toPosix(relativeToRepo(repoRoot, span.absolutePath)),
       operation: span.operation,
@@ -6567,7 +6574,8 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
         ({ span: item }) => item.lineStart === void 0 ? [] : [{ start: item.lineStart, end: item.lineEnd ?? item.lineStart }]
       ),
       simpleCommandIndex: span.simpleCommandIndex,
-      ...evidence === void 0 ? {} : { evidence }
+      ...evidence === void 0 ? {} : { evidence },
+      ...observationOnly2 ? { contextEligible: false } : {}
     });
   }
   store.put({ version: 1, sessionId, toolUseId, repoRoot, createdAtMs: Date.now(), touches });

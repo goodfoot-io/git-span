@@ -1912,6 +1912,24 @@ describe('bounded planned-touch store contract (bootstrap)', () => {
     }
   });
 
+  it('round-trips observation-only eligibility and rejects malformed eligibility', () => {
+    const fixture = storeFixture();
+    try {
+      const original = plannedRecord('/repo');
+      const record = { ...original, touches: original.touches.map((touch) => ({ ...touch, contextEligible: false })) };
+      fixture.store.put(record);
+      expect(fixture.store.consume(record.sessionId, record.toolUseId)).toEqual(record);
+      const invalid = {
+        ...record,
+        toolUseId: 'invalid',
+        touches: record.touches.map((touch) => ({ ...touch, contextEligible: 'false' }))
+      } as unknown as PlannedTouchRecord;
+      expect(() => fixture.store.put(invalid)).toThrow('invalid planned-touch context eligibility');
+    } finally {
+      rmSync(fixture.parent, { recursive: true, force: true });
+    }
+  });
+
   it('discard is idempotent for failure and interruption cleanup', () => {
     const fixture = storeFixture();
     try {

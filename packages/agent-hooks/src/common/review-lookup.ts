@@ -6,24 +6,23 @@ import { resolveGitSpanCommand } from './git-span-command.js';
 import { isRecord } from './guards.js';
 import type { MemoLogger } from './span-surface.js';
 
-export interface NoteReviewScope {
+interface NoteReviewScope {
   host: 'claude' | 'codex' | 'opencode' | 'antigravity';
   sessionId: string;
   cwd: string;
   workspacePaths?: readonly string[];
 }
-export interface ReviewNote {
+interface ReviewNote {
   id: number;
   commit_sha: string;
   document: unknown;
 }
-export type NoteLookupOutcome =
+type NoteLookupOutcome =
   | { kind: 'empty' }
   | { kind: 'matching'; repositories: { cwd: string; notes: ReviewNote[] }[] }
   | { kind: 'failure'; reason: string };
-export type NoteReviewCheck = (scope: NoteReviewScope, logger: MemoLogger) => Promise<NoteLookupOutcome>;
 
-export function reviewError(err: unknown): string {
+function reviewError(err: unknown): string {
   return (err instanceof Error ? err.message : 'could not read commit notes').slice(0, 512);
 }
 

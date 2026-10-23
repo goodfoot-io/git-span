@@ -1,3 +1,4 @@
+import { FIRST_WRITE_GUIDANCE } from '../../src/common/first-write-guidance.js';
 import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Tests for the Claude PostToolUse touch hook
@@ -89,8 +90,9 @@ function makeExecutors(opts: FakeOpts = {}): {
 
 function inMemoryMemoFactory(): MemoFactory {
   const store = new Map<string, Set<string>>();
+  const claimGuidance = guidanceClaims();
   return (_logger: MemoLogger): MemoStore => ({
-    claimGuidance: guidanceClaims(),
+    claimGuidance,
     getSurfaced: (sid) => new Set(store.get(sid) ?? []),
     addSurfaced: (sid, names, known) => {
       store.set(sid, new Set([...known, ...names]));
@@ -220,7 +222,7 @@ describe('claude post-tool-use touch signal', () => {
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
   });
 
-  it('fails open (empty output, no throw) when every executor rejects', async () => {
+  it('delivers guidance even when every context executor rejects', async () => {
     const { executors } = makeExecutors({ reject: true });
     const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
@@ -230,8 +232,8 @@ describe('claude post-tool-use touch signal', () => {
     });
 
     const result = toResult(await handler(input as never, { logger }));
-    expect(result.stdout.systemMessage).toBeUndefined();
-    expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+    expect(result.stdout.systemMessage).toBe(FIRST_WRITE_GUIDANCE);
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toBe(FIRST_WRITE_GUIDANCE);
   });
 
   it('warns through ctx.logger when the structured context query fails (main-349)', async () => {
@@ -332,7 +334,7 @@ describe('claude post-tool-use touch signal', () => {
     // appended body at lines 3-5. With `written: span.body` the touch is
     // scoped to the append range and this span does not surface — proving
     // the body reached the touch core (a whole-file touch would surface it).
-    expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toBe(FIRST_WRITE_GUIDANCE);
   });
 
   it('a Bash heredoc write with the body present surfaces a span inside the written lines', async () => {

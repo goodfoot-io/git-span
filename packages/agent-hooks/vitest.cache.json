@@ -1,5 +1,6 @@
 {
   "files": {
+    "packages/agent-hooks/test/common/first-write-hosts.test.ts": [],
     "packages/agent-hooks/test/common/first-write-guidance.test.ts": [],
     "packages/agent-hooks/test/common/pending-context.test.ts": [],
     "packages/agent-hooks/test/antigravity/lifecycle.test.ts": [
@@ -38,7 +39,6 @@
       "packages/git-span/.cargo/**"
     ],
     "packages/agent-hooks/test/common/note-review-guard.test.ts": [],
-    "packages/agent-hooks/test/opencode/review-notes.test.ts": [],
     "packages/agent-hooks/test/opencode/native.test.ts": [],
     "packages/agent-hooks/test/common/commit-storage-recovery.test.ts": [
       "packages/git-span/src/**",
@@ -104,18 +104,6 @@
       "packages/git-span/.cargo/**"
     ],
     "packages/agent-hooks/test/claude/delivery-memo-reproduction.test.ts": [
-      "packages/agent-hooks/src/**",
-      "packages/git-span/src/**",
-      "packages/git-span-core/src/**",
-      "packages/git-span/Cargo.toml",
-      "packages/git-span/Cargo.lock",
-      "packages/git-span-core/Cargo.toml",
-      "packages/git-span/build.rs",
-      "packages/git-span/package.json",
-      "packages/git-span/scripts/**",
-      "packages/git-span/.cargo/**"
-    ],
-    "packages/agent-hooks/test/common/claude-stop-note-additions.test.ts": [
       "packages/agent-hooks/src/**",
       "packages/git-span/src/**",
       "packages/git-span-core/src/**",

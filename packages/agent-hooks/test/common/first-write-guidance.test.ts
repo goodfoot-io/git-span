@@ -20,14 +20,14 @@ git span why <name> <why>
 </git-span>`;
 
 describe('first successful write guidance contract', () => {
-  it.skip('does not claim guidance for reads or failed writes', () => {
+  it('does not claim guidance for reads or failed writes', () => {
     const memo = createDiskMemoStore(logger, temp.layout);
     expect(firstWriteGuidance('deferred', memo, false)).toBeNull();
     expect(firstWriteGuidance('deferred', memo, false)).toBeNull();
     expect(firstWriteGuidance('deferred', memo, true)).toBe(expected);
   });
 
-  it.skip('returns the exact message once across stores and cleanup, independently per session', () => {
+  it('returns the exact message once across stores and cleanup, independently per session', () => {
     const memo = createDiskMemoStore(logger, temp.layout);
     expect(firstWriteGuidance('once', memo, true)).toBe(expected);
     cleanupSessionState(temp.layout, 'once');
@@ -36,14 +36,14 @@ describe('first successful write guidance contract', () => {
     expect(firstWriteGuidance('independent', next, true)).toBe(expected);
   });
 
-  it.skip('does not consume retrieval guidance families', () => {
+  it('does not consume retrieval guidance families', () => {
     const memo = createDiskMemoStore(logger, temp.layout);
     expect(firstWriteGuidance('families', memo, true)).toBe(expected);
     expect(memo.claimGuidance('families', 'list')).toBe(true);
     expect(memo.claimGuidance('families', 'drift')).toBe(true);
   });
 
-  it.skip('does not create a claim without a usable session identity', () => {
+  it('does not create a claim without a usable session identity', () => {
     expect(firstWriteGuidance('', createDiskMemoStore(logger, temp.layout), true)).toBeNull();
   });
 });

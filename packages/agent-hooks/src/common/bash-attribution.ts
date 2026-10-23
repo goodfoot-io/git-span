@@ -14,7 +14,13 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { relativeToRepo, resolveRepoRoot, type SessionLayout, toPosix } from './agent-hooks-common.js';
-import { type BashTouchMatch, bashResponseExitCode, bashResponseInterrupted, runBashTouches } from './bash-touch.js';
+import {
+  type BashTouchMatch,
+  bashResponseExitCode,
+  bashResponseInterrupted,
+  observedBashTouches,
+  runBashTouches
+} from './bash-touch.js';
 import { type CommitInspectionContextExecutor, runCommitInspectionContext } from './commit-inspection-context.js';
 import { resolveCommitInspection } from './commit-inspection-selection.js';
 import { flushFailOpen } from './fail-open.js';
@@ -181,10 +187,15 @@ export function planBashTouches(
     candidates.map((value) => ({ absolutePath: value.span.absolutePath, value })),
     { cwd }
   );
+  const observationOnly = tracked.dropped
+    .filter(({ reason, candidate }) => reason === 'untracked-path' && candidate.value.span.operation !== 'read')
+    .map(({ candidate }) => candidate);
+  const retained = [...tracked.eligible, ...observationOnly];
+  const observationOnlySet = new Set(observationOnly.map(({ value }) => value));
   // The pre-plan never reaches the touch core's flush; record span-root
   // failures absorbed during eligibility here instead.
   flushFailOpen(logger);
-  if (tracked.eligible.length === 0) {
+  if (retained.length === 0) {
     logger.info?.('git-span static attribution pre-plan', {
       resolved: parsed.resolved.length,
       unresolved: parsed.unresolved.length,
@@ -204,7 +215,7 @@ export function planBashTouches(
   if (repoRoot === null) return;
 
   const groups = new Map<string, LayeredResolvedMatch[]>();
-  for (const { value } of tracked.eligible) {
+  for (const { value } of retained) {
     const key = planGroupKey(value.span);
     const group = groups.get(key) ?? [];
     group.push(value);
@@ -216,7 +227,8 @@ export function planBashTouches(
     if (primary === undefined) continue;
     const { span } = primary;
     const requirements = requested.get(key) ?? new Set<string>();
-    const evidence = planEvidence(matches, requirements);
+    const observationOnly = observationOnlySet.has(primary);
+    const evidence = observationOnly && span.operation === 'delete' ? undefined : planEvidence(matches, requirements);
     touches.push({
       repoRelativePath: toPosix(relativeToRepo(repoRoot, span.absolutePath)),
       operation: span.operation,
@@ -224,7 +236,8 @@ export function planBashTouches(
         item.lineStart === undefined ? [] : [{ start: item.lineStart, end: item.lineEnd ?? item.lineStart }]
       ),
       simpleCommandIndex: span.simpleCommandIndex,
-      ...(evidence === undefined ? {} : { evidence })
+      ...(evidence === undefined ? {} : { evidence }),
+      ...(observationOnly ? { contextEligible: false } : {})
     });
   }
   store.put({ version: 1, sessionId, toolUseId, repoRoot, createdAtMs: Date.now(), touches });
@@ -403,7 +416,7 @@ export async function runLayeredBashTouches(
   memo: MemoStore,
   logger: CoreLogger,
   store: PlannedTouchStore,
-  inspection?: { successful: boolean; executor?: CommitInspectionContextExecutor }
+  inspection?: { successful: boolean; executor?: CommitInspectionContextExecutor; onWrite?: () => string | null }
 ): Promise<string[]> {
   const parserStarted = performance.now();
   const claimed = toolUseId === undefined ? { status: 'missing' as const } : store.take(sessionId, toolUseId);
@@ -505,76 +518,107 @@ export async function runLayeredBashTouches(
     }),
     ...guards
   ];
-  const preTrackedDeletes = new Set<string>();
-  const preTrackedPaths = new Set<string>();
-  if (record !== null) {
-    for (const { repoRelativePath, operation, evidence } of record.touches) {
-      const absolutePath = nodePath.join(record.repoRoot, repoRelativePath);
-      preTrackedPaths.add(absolutePath);
-      if (operation === 'delete' && evidence?.kind === 'tracked') preTrackedDeletes.add(absolutePath);
+  const guidance =
+    inspection?.successful &&
+    inspection.onWrite !== undefined &&
+    observedBashTouches(combined, sessionId, cwd, toolResponse, false, (message, context) =>
+      logger.warn(message, context)
+    ).touches.some((touch) => touch.kind === 'write')
+      ? inspection.onWrite()
+      : null;
+  try {
+    const preTrackedDeletes = new Set<string>();
+    const preTrackedPaths = new Set<string>();
+    if (record !== null) {
+      for (const { repoRelativePath, operation, evidence, contextEligible } of record.touches) {
+        if (contextEligible === false) continue;
+        const absolutePath = nodePath.join(record.repoRoot, repoRelativePath);
+        preTrackedPaths.add(absolutePath);
+        if (operation === 'delete' && evidence?.kind === 'tracked') preTrackedDeletes.add(absolutePath);
+      }
     }
+    const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
+    const responseSpans =
+      response === null || suppressCommitReads || pending.kind === 'unsupported'
+        ? []
+        : parseResponse({ command, cwd, ...response });
+    const observationOnlyKeys = new Set(
+      (record?.touches ?? [])
+        .filter((touch) => touch.contextEligible === false)
+        .map(
+          (touch) =>
+            `${nodePath.join(record?.repoRoot ?? '', touch.repoRelativePath)}\0${touch.operation}\0${touch.simpleCommandIndex}`
+        )
+    );
+    const contextMatches = combined.filter(
+      (match) => match.status !== 'resolved' || !observationOnlyKeys.has(planGroupKey(match.span))
+    );
+    const filtered = filterPostTracked(contextMatches, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
+    const parserLatencyMs = performance.now() - parserStarted;
+    const touchStarted = performance.now();
+    let executionGateDrops = 0;
+    let commandDiagnostics: Partial<TouchBatchDiagnostics> = {};
+    const invocationId = toolUseId === undefined ? null : `${sessionId}:${toolUseId}`;
+    const commandBlocks = await runBashTouches(
+      filtered.matches,
+      sessionId,
+      cwd,
+      toolResponse,
+      executors,
+      memo,
+      (message, context) => logger.warn(message, context),
+      true,
+      (diagnostics) => {
+        executionGateDrops = diagnostics.executionGateDrops;
+        commandDiagnostics = diagnostics;
+      },
+      invocationId
+    );
+    const responseBatch = await runResponseReadTouches(
+      filtered.responseSpans,
+      cwd,
+      sessionId,
+      executors,
+      memo,
+      `${sessionId}:${toolUseId ?? createHash('sha256').update(command).digest('hex')}:response`,
+      logger
+    );
+    const blocks = [
+      ...commandBlocks,
+      ...responseBatch.blocks,
+      ...(commitNotice === null ? [] : [commitNotice]),
+      ...(guidance === null ? [] : [guidance])
+    ];
+    logger.info?.('git-span static attribution post', {
+      resolvedReads: filtered.matches.filter((match) => match.status === 'resolved' && match.span.operation === 'read')
+        .length,
+      resolvedWrites: filtered.matches.filter((match) => match.status === 'resolved' && match.span.operation !== 'read')
+        .length,
+      unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
+      unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
+      scopeDrops: filtered.scopeDrops,
+      trackedDrops: filtered.trackedDrops,
+      executionGateDrops,
+      parserLatencyMs,
+      touchLatencyMs: performance.now() - touchStarted,
+      ignoreQueryCount: filtered.ignoreQueryCount,
+      trackedQueryCount: filtered.trackedQueryCount,
+      eligibilityErrors: filtered.eligibilityErrors,
+      contextQueryCount: (commandDiagnostics.queryCount ?? 0) + responseBatch.diagnostics.queryCount,
+      contextScopeCount: (commandDiagnostics.scopeCount ?? 0) + responseBatch.diagnostics.scopeCount,
+      contextSelectedResultCount:
+        (commandDiagnostics.selectedResultCount ?? 0) + responseBatch.diagnostics.selectedResultCount,
+      contextElapsedMs: (commandDiagnostics.elapsedMs ?? 0) + responseBatch.diagnostics.elapsedMs,
+      contextMutation: commandDiagnostics.mutation ?? 'unchanged',
+      contextFailure: commandDiagnostics.failure ?? responseBatch.diagnostics.failure,
+      dependencyContextSurfaced: blocks.length > 0
+    });
+    return blocks;
+  } catch (err) {
+    if (guidance === null) throw err;
+    logger.warn('git-span context delivery failed after a successful write', { err });
+    return [guidance];
   }
-  const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
-  const responseSpans =
-    response === null || suppressCommitReads || pending.kind === 'unsupported'
-      ? []
-      : parseResponse({ command, cwd, ...response });
-  const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
-  const parserLatencyMs = performance.now() - parserStarted;
-  const touchStarted = performance.now();
-  let executionGateDrops = 0;
-  let commandDiagnostics: Partial<TouchBatchDiagnostics> = {};
-  const invocationId = toolUseId === undefined ? null : `${sessionId}:${toolUseId}`;
-  const commandBlocks = await runBashTouches(
-    filtered.matches,
-    sessionId,
-    cwd,
-    toolResponse,
-    executors,
-    memo,
-    (message, context) => logger.warn(message, context),
-    true,
-    (diagnostics) => {
-      executionGateDrops = diagnostics.executionGateDrops;
-      commandDiagnostics = diagnostics;
-    },
-    invocationId
-  );
-  const responseBatch = await runResponseReadTouches(
-    filtered.responseSpans,
-    cwd,
-    sessionId,
-    executors,
-    memo,
-    `${sessionId}:${toolUseId ?? createHash('sha256').update(command).digest('hex')}:response`,
-    logger
-  );
-  const blocks = [...commandBlocks, ...responseBatch.blocks, ...(commitNotice === null ? [] : [commitNotice])];
-  logger.info?.('git-span static attribution post', {
-    resolvedReads: filtered.matches.filter((match) => match.status === 'resolved' && match.span.operation === 'read')
-      .length,
-    resolvedWrites: filtered.matches.filter((match) => match.status === 'resolved' && match.span.operation !== 'read')
-      .length,
-    unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
-    unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
-    scopeDrops: filtered.scopeDrops,
-    trackedDrops: filtered.trackedDrops,
-    executionGateDrops,
-    parserLatencyMs,
-    touchLatencyMs: performance.now() - touchStarted,
-    ignoreQueryCount: filtered.ignoreQueryCount,
-    trackedQueryCount: filtered.trackedQueryCount,
-    eligibilityErrors: filtered.eligibilityErrors,
-    contextQueryCount: (commandDiagnostics.queryCount ?? 0) + responseBatch.diagnostics.queryCount,
-    contextScopeCount: (commandDiagnostics.scopeCount ?? 0) + responseBatch.diagnostics.scopeCount,
-    contextSelectedResultCount:
-      (commandDiagnostics.selectedResultCount ?? 0) + responseBatch.diagnostics.selectedResultCount,
-    contextElapsedMs: (commandDiagnostics.elapsedMs ?? 0) + responseBatch.diagnostics.elapsedMs,
-    contextMutation: commandDiagnostics.mutation ?? 'unchanged',
-    contextFailure: commandDiagnostics.failure ?? responseBatch.diagnostics.failure,
-    dependencyContextSurfaced: blocks.length > 0
-  });
-  return blocks;
 }
 
 /** Filter one structured producer against the post-command index. */

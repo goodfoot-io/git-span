@@ -6738,6 +6738,8 @@ function normalizePlannedTouchRecord(record2, budgets) {
     if (!safeInteger(touch.simpleCommandIndex, 0)) {
       throw new Error("invalid planned-touch command index");
     }
+    if (touch.contextEligible !== void 0 && typeof touch.contextEligible !== "boolean")
+      throw new Error("invalid planned-touch context eligibility");
     const evidence = normalizeEvidence(touch.evidence);
     if (evidence !== void 0) evidenceBytes += Buffer.byteLength(JSON.stringify(evidence));
     return {
@@ -6745,7 +6747,8 @@ function normalizePlannedTouchRecord(record2, budgets) {
       operation: touch.operation,
       ranges,
       simpleCommandIndex: touch.simpleCommandIndex,
-      ...evidence === void 0 ? {} : { evidence }
+      ...evidence === void 0 ? {} : { evidence },
+      ...touch.contextEligible === void 0 ? {} : { contextEligible: touch.contextEligible }
     };
   });
   if (evidenceBytes > budgets.maxEvidenceBytes) throw new Error("planned-touch record exceeds evidence budget");
@@ -8379,12 +8382,11 @@ function selectSurvivors(order, evals, skipped, exitCode) {
   }
   return touches;
 }
-async function runBashTouches(matches, sessionId2, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0, invocationId = null) {
+function observedBashTouches(matches, sessionId2, cwd, toolResponse, scopeAlreadyResolved = false, warn = console.warn) {
   const prelude = bashGatePrelude(matches, toolResponse);
   if (prelude.kind === "stop") {
     if (prelude.warn !== void 0) warn(prelude.warn);
-    reportDiagnostics({ executionGateDrops: prelude.drops });
-    return [];
+    return { touches: [], probeCache: void 0, executionGateDrops: prelude.drops };
   }
   const { resolved, exitCode } = prelude;
   const guards = matches.filter((m) => m.status === "builtin-guard");
@@ -8397,12 +8399,27 @@ async function runBashTouches(matches, sessionId2, cwd, toolResponse, executors,
   const computed = computeVerdicts(commandOrder, evals, guardByIndex);
   const { skipped } = applyJoinFilter(commandOrder, groups, guardByIndex, computed);
   const touches = selectSurvivors(commandOrder, evals, skipped, exitCode);
+  return { touches, probeCache, executionGateDrops: resolved.length - touches.length };
+}
+async function runBashTouches(matches, sessionId2, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0, invocationId = null) {
+  const { touches, probeCache, executionGateDrops } = observedBashTouches(
+    matches,
+    sessionId2,
+    cwd,
+    toolResponse,
+    scopeAlreadyResolved,
+    warn
+  );
+  if (probeCache === void 0) {
+    reportDiagnostics({ executionGateDrops });
+    return [];
+  }
   const invocationExecutors = executors.forInvocation?.() ?? executors;
   const batch = await runTouchHooks(touches, invocationExecutors, memo, invocationId, probeCache, { warn });
   const blocks = batch.outputs.flatMap(
     (output) => output.additionalContext === null ? [] : [output.additionalContext]
   );
-  reportDiagnostics({ executionGateDrops: resolved.length - touches.length, ...batch.diagnostics });
+  reportDiagnostics({ executionGateDrops, ...batch.diagnostics });
   return blocks;
 }
 
@@ -9909,70 +9926,98 @@ Git span commit context unavailable: ${reason.replace(new RegExp("\\p{Cc}", "gu"
     }),
     ...guards
   ];
-  const preTrackedDeletes = /* @__PURE__ */ new Set();
-  const preTrackedPaths = /* @__PURE__ */ new Set();
-  if (record2 !== null) {
-    for (const { repoRelativePath, operation, evidence } of record2.touches) {
-      const absolutePath = nodePath5.join(record2.repoRoot, repoRelativePath);
-      preTrackedPaths.add(absolutePath);
-      if (operation === "delete" && evidence?.kind === "tracked") preTrackedDeletes.add(absolutePath);
-    }
-  }
-  const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
-  const responseSpans = response === null || suppressCommitReads || pending2.kind === "unsupported" ? [] : parseResponse({ command, cwd, ...response });
-  const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
-  const parserLatencyMs = performance.now() - parserStarted;
-  const touchStarted = performance.now();
-  let executionGateDrops = 0;
-  let commandDiagnostics = {};
-  const invocationId = toolUseId === void 0 ? null : `${sessionId2}:${toolUseId}`;
-  const commandBlocks = await runBashTouches(
-    filtered.matches,
+  const guidance = inspection?.successful && inspection.onWrite !== void 0 && observedBashTouches(
+    combined,
     sessionId2,
     cwd,
     toolResponse,
-    executors,
-    memo,
-    (message, context) => logger2.warn(message, context),
-    true,
-    (diagnostics) => {
-      executionGateDrops = diagnostics.executionGateDrops;
-      commandDiagnostics = diagnostics;
-    },
-    invocationId
-  );
-  const responseBatch = await runResponseReadTouches(
-    filtered.responseSpans,
-    cwd,
-    sessionId2,
-    executors,
-    memo,
-    `${sessionId2}:${toolUseId ?? createHash3("sha256").update(command).digest("hex")}:response`,
-    logger2
-  );
-  const blocks = [...commandBlocks, ...responseBatch.blocks, ...commitNotice === null ? [] : [commitNotice]];
-  logger2.info?.("git-span static attribution post", {
-    resolvedReads: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation === "read").length,
-    resolvedWrites: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation !== "read").length,
-    unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
-    unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
-    scopeDrops: filtered.scopeDrops,
-    trackedDrops: filtered.trackedDrops,
-    executionGateDrops,
-    parserLatencyMs,
-    touchLatencyMs: performance.now() - touchStarted,
-    ignoreQueryCount: filtered.ignoreQueryCount,
-    trackedQueryCount: filtered.trackedQueryCount,
-    eligibilityErrors: filtered.eligibilityErrors,
-    contextQueryCount: (commandDiagnostics.queryCount ?? 0) + responseBatch.diagnostics.queryCount,
-    contextScopeCount: (commandDiagnostics.scopeCount ?? 0) + responseBatch.diagnostics.scopeCount,
-    contextSelectedResultCount: (commandDiagnostics.selectedResultCount ?? 0) + responseBatch.diagnostics.selectedResultCount,
-    contextElapsedMs: (commandDiagnostics.elapsedMs ?? 0) + responseBatch.diagnostics.elapsedMs,
-    contextMutation: commandDiagnostics.mutation ?? "unchanged",
-    contextFailure: commandDiagnostics.failure ?? responseBatch.diagnostics.failure,
-    dependencyContextSurfaced: blocks.length > 0
-  });
-  return blocks;
+    false,
+    (message, context) => logger2.warn(message, context)
+  ).touches.some((touch) => touch.kind === "write") ? inspection.onWrite() : null;
+  try {
+    const preTrackedDeletes = /* @__PURE__ */ new Set();
+    const preTrackedPaths = /* @__PURE__ */ new Set();
+    if (record2 !== null) {
+      for (const { repoRelativePath, operation, evidence, contextEligible } of record2.touches) {
+        if (contextEligible === false) continue;
+        const absolutePath = nodePath5.join(record2.repoRoot, repoRelativePath);
+        preTrackedPaths.add(absolutePath);
+        if (operation === "delete" && evidence?.kind === "tracked") preTrackedDeletes.add(absolutePath);
+      }
+    }
+    const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
+    const responseSpans = response === null || suppressCommitReads || pending2.kind === "unsupported" ? [] : parseResponse({ command, cwd, ...response });
+    const observationOnlyKeys = new Set(
+      (record2?.touches ?? []).filter((touch) => touch.contextEligible === false).map(
+        (touch) => `${nodePath5.join(record2?.repoRoot ?? "", touch.repoRelativePath)}\0${touch.operation}\0${touch.simpleCommandIndex}`
+      )
+    );
+    const contextMatches = combined.filter(
+      (match) => match.status !== "resolved" || !observationOnlyKeys.has(planGroupKey(match.span))
+    );
+    const filtered = filterPostTracked(contextMatches, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
+    const parserLatencyMs = performance.now() - parserStarted;
+    const touchStarted = performance.now();
+    let executionGateDrops = 0;
+    let commandDiagnostics = {};
+    const invocationId = toolUseId === void 0 ? null : `${sessionId2}:${toolUseId}`;
+    const commandBlocks = await runBashTouches(
+      filtered.matches,
+      sessionId2,
+      cwd,
+      toolResponse,
+      executors,
+      memo,
+      (message, context) => logger2.warn(message, context),
+      true,
+      (diagnostics) => {
+        executionGateDrops = diagnostics.executionGateDrops;
+        commandDiagnostics = diagnostics;
+      },
+      invocationId
+    );
+    const responseBatch = await runResponseReadTouches(
+      filtered.responseSpans,
+      cwd,
+      sessionId2,
+      executors,
+      memo,
+      `${sessionId2}:${toolUseId ?? createHash3("sha256").update(command).digest("hex")}:response`,
+      logger2
+    );
+    const blocks = [
+      ...commandBlocks,
+      ...responseBatch.blocks,
+      ...commitNotice === null ? [] : [commitNotice],
+      ...guidance === null ? [] : [guidance]
+    ];
+    logger2.info?.("git-span static attribution post", {
+      resolvedReads: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation === "read").length,
+      resolvedWrites: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation !== "read").length,
+      unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
+      unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
+      scopeDrops: filtered.scopeDrops,
+      trackedDrops: filtered.trackedDrops,
+      executionGateDrops,
+      parserLatencyMs,
+      touchLatencyMs: performance.now() - touchStarted,
+      ignoreQueryCount: filtered.ignoreQueryCount,
+      trackedQueryCount: filtered.trackedQueryCount,
+      eligibilityErrors: filtered.eligibilityErrors,
+      contextQueryCount: (commandDiagnostics.queryCount ?? 0) + responseBatch.diagnostics.queryCount,
+      contextScopeCount: (commandDiagnostics.scopeCount ?? 0) + responseBatch.diagnostics.scopeCount,
+      contextSelectedResultCount: (commandDiagnostics.selectedResultCount ?? 0) + responseBatch.diagnostics.selectedResultCount,
+      contextElapsedMs: (commandDiagnostics.elapsedMs ?? 0) + responseBatch.diagnostics.elapsedMs,
+      contextMutation: commandDiagnostics.mutation ?? "unchanged",
+      contextFailure: commandDiagnostics.failure ?? responseBatch.diagnostics.failure,
+      dependencyContextSurfaced: blocks.length > 0
+    });
+    return blocks;
+  } catch (err) {
+    if (guidance === null) throw err;
+    logger2.warn("git-span context delivery failed after a successful write", { err });
+    return [guidance];
+  }
 }
 
 // packages/agent-hooks/src/common/update-check-env.ts
@@ -10226,7 +10271,7 @@ import { dirname as dirname9, join as join12, resolve as resolvePath3 } from "no
 
 // packages/agent-hooks/src/common/apply-patch-touch.ts
 var noRangeRecovery = () => null;
-async function runApplyPatchTouches(patchText, cwd, sessionId2, planned, executors, memo, invocationId, logger2) {
+async function runApplyPatchTouches(patchText, cwd, sessionId2, planned, executors, memo, invocationId, logger2, onWrite) {
   const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
   const fallback = parseApplyPatch(patchText, noRangeRecovery).map(
     (anchor) => ({
@@ -10237,32 +10282,44 @@ async function runApplyPatchTouches(patchText, cwd, sessionId2, planned, executo
     })
   ).filter(({ absolutePath }) => !plannedPaths.has(absolutePath));
   const candidates = [...planned, ...fallback];
-  const tracked = filterTrackedEligibility(
-    candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
-    { cwd }
-  );
-  const eligible = new Set(tracked.eligible.map(({ value }) => value));
-  for (const candidate2 of candidates) if (candidate2.preTrackedDelete) eligible.add(candidate2);
-  const touches = [];
-  for (const candidate2 of candidates) {
-    if (!eligible.has(candidate2)) continue;
-    const ranges = candidate2.ranges.length === 0 ? [void 0] : candidate2.ranges;
-    for (const range of ranges) {
-      touches.push({
-        kind: "write",
-        sessionId: sessionId2,
-        cwd,
-        filePath: candidate2.absolutePath,
-        ...invocationId === null ? {} : { invocationId },
-        written: "",
-        range,
-        targetState: candidate2.operation === "delete" ? "absent" : "exists",
-        ...candidate2.operation === "delete" ? { postState: { realDelete: true } } : {}
-      });
+  const guidance = candidates.some(
+    (candidate2) => resolveTouchScope(cwd, candidate2.absolutePath) !== null && (candidate2.operation === "delete" ? !fileExists(candidate2.absolutePath) : fileExists(candidate2.absolutePath))
+  ) ? onWrite?.() ?? null : null;
+  try {
+    const tracked = filterTrackedEligibility(
+      candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
+      { cwd }
+    );
+    const eligible = new Set(tracked.eligible.map(({ value }) => value));
+    for (const candidate2 of candidates) if (candidate2.preTrackedDelete) eligible.add(candidate2);
+    const touches = [];
+    for (const candidate2 of candidates) {
+      if (!eligible.has(candidate2)) continue;
+      const ranges = candidate2.ranges.length === 0 ? [void 0] : candidate2.ranges;
+      for (const range of ranges) {
+        touches.push({
+          kind: "write",
+          sessionId: sessionId2,
+          cwd,
+          filePath: candidate2.absolutePath,
+          ...invocationId === null ? {} : { invocationId },
+          written: "",
+          range,
+          targetState: candidate2.operation === "delete" ? "absent" : "exists",
+          ...candidate2.operation === "delete" ? { postState: { realDelete: true } } : {}
+        });
+      }
     }
+    const batch = await runTouchHooks(touches, executors, memo, invocationId, void 0, logger2);
+    return [
+      ...batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]),
+      ...guidance === null ? [] : [guidance]
+    ];
+  } catch (err) {
+    if (guidance === null) throw err;
+    logger2.warn("git-span patch context delivery failed after a successful write", { err });
+    return [guidance];
   }
-  const batch = await runTouchHooks(touches, executors, memo, invocationId, void 0, logger2);
-  return batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]);
 }
 
 // packages/agent-hooks/src/common/commit-runtime.ts
@@ -11011,6 +11068,22 @@ async function invokeNotes(enrollment, receipt, options, args, stdin, started) {
       result.timedOut ? "notes CLI timed out; receipt retained" : "notes CLI unavailable or failed; receipt retained"
     );
   return result.stdout;
+}
+
+// packages/agent-hooks/src/common/first-write-guidance.ts
+var FIRST_WRITE_GUIDANCE = `<git-span>
+Use \`git-span\` to preserve rules or relationships that a future edit could accidentally break. Anchor content that carries the rule or could violate it.
+
+\`\`\`bash
+git span add <name> <path>#L<start>-L<end> [<path>#L<start>-L<end ...]
+git span why <name> <why>
+\`\`\`
+
+<name>: Semantic slug, example: \`api/auth/handlers\`.
+<why>: One sentence explaining what must remain true and why, including relevant scope or uncertainty.
+</git-span>`;
+function firstWriteGuidance(sessionId2, memo, writeObserved) {
+  return writeObserved && sessionId2.length > 0 && memo.claimGuidance(sessionId2, "first-write") ? FIRST_WRITE_GUIDANCE : null;
 }
 
 // packages/agent-hooks/src/codex/commit-exec.ts
@@ -16896,13 +16969,15 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
   const options = { stateRoot: join12(dirname9(layout.base), "commit-receipts"), ...runtimeOptions };
   return async (input, ctx) => {
     let original = null;
-    const shellTool = ["Bash", "shell", "local_shell", "exec_command", "exec"].includes(input.tool_name);
+    let shellTool = ["Bash", "shell", "local_shell", "exec_command", "exec"].includes(input.tool_name);
     const poll = input.tool_name === "write_stdin";
+    let invocationToolId = input.tool_use_id;
     if ((shellTool || poll) && input.session_id && input.tool_use_id) {
       try {
         const executionId = poll ? polledExecution(input.tool_input) : null;
         const identity = poll ? executionId === null ? null : findExecution(input.session_id, executionId, options) : { host: "codex", sessionId: input.session_id, toolUseId: input.tool_use_id };
         if (identity !== null) {
+          invocationToolId = identity.toolUseId;
           const running = yieldedExecution(input.tool_response);
           if (running !== null) {
             if (!poll && narrowShellExecutions(input.tool_input).executions.length > 1) {
@@ -16921,7 +16996,10 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
         ctx.logger.warn("git-span terminal commit attribution failed", { err });
       }
     }
-    if (poll) return void 0;
+    if (poll) {
+      if (original === null) return void 0;
+      shellTool = true;
+    }
     if (original === null && input.tool_name === "Bash" && isRecord(input.tool_input) && typeof input.tool_input.command === "string" && typeof input.tool_input.workdir !== "string" && typeof input.tool_input.cwd !== "string") {
       ctx.logger.warn("git-span canonical Bash execution directory unknown; suppressing session-directory attribution");
       return void 0;
@@ -16948,7 +17026,7 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
             execution2.command,
             effectiveCwd,
             sessionId2,
-            recovered.executions.length === 1 ? input.tool_use_id : void 0,
+            recovered.executions.length === 1 ? invocationToolId : void 0,
             input.tool_response,
             executors,
             memo,
@@ -16956,7 +17034,8 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
             createDefaultPlannedTouchStore(layout),
             {
               successful: recovered.executions.length === 1 && recovered.executions[0]?.background === false && bashResponseExitCode(input.tool_response) === 0,
-              executor: inspectionExecutor
+              executor: inspectionExecutor,
+              onWrite: () => firstWriteGuidance(sessionId2, memo, true)
             }
           )
         );
@@ -16985,7 +17064,8 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
       executors,
       memo,
       input.tool_use_id === void 0 ? null : `${sessionId2}:${input.tool_use_id}`,
-      ctx.logger
+      ctx.logger,
+      () => firstWriteGuidance(sessionId2, memo, true)
     );
     if (blocks.length === 0) return void 0;
     const combined = blocks.join("");

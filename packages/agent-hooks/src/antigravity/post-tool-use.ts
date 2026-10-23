@@ -28,6 +28,7 @@ import {
   failureBashResponse,
   runLayeredBashTouches
 } from '../common/bash-attribution.js';
+import { firstWriteGuidance } from '../common/first-write-guidance.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
@@ -45,6 +46,7 @@ export function createHandler(
       if (stashed === null) return undefined;
       const call = narrowRunCommand(stashed);
       if (call === null) return undefined;
+      const memo = memoFactory(ctx.logger, layout);
       const blocks = await runLayeredBashTouches(
         call.command,
         resolveCallCwd(call, input.workspacePaths),
@@ -55,9 +57,10 @@ export function createHandler(
         // the accepted degraded parity documented in the module header.
         input.error === undefined ? undefined : failureBashResponse({ tool_response: undefined }),
         executors,
-        memoFactory(ctx.logger, layout),
+        memo,
         ctx.logger,
-        createDefaultPlannedTouchStore(layout)
+        createDefaultPlannedTouchStore(layout),
+        { successful: input.error === undefined, onWrite: () => firstWriteGuidance(input.conversationId, memo, true) }
       );
       for (const block of blocks) {
         appendPendingInjection(layout, input.conversationId, block);

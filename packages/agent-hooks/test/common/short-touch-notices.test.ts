@@ -93,10 +93,7 @@ describe('short touch notice contract', () => {
         (await runTouchHooks([{ ...input, sessionId }], executors, createDiskMemoStore(logger, temp.layout), null))
           .outputs[0]?.additionalContext;
       expect(await run()).toBe(anchored + drift);
-      await codexStop(temp.layout, {}, async () => ({ kind: 'empty' }))(
-        { session_id: 's', cwd: repo.root } as never,
-        { logger } as never
-      );
+      await codexStop(temp.layout)({ session_id: 's', cwd: repo.root } as never, { logger } as never);
       expect(await run()).toBe(
         anchored.replace('\n\nUse `git span list clean` for more information', '') +
           drift.replace('\n\nUse `git span drift debt` for more information', '')

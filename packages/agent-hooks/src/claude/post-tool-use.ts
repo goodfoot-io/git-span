@@ -19,12 +19,14 @@ import { createDefaultPlannedTouchStore, postTrackedValue, runLayeredBashTouches
 import { bashResponseExitCode, bashResponseInterrupted } from '../common/bash-touch.js';
 import type { CommitInspectionContextExecutor } from '../common/commit-inspection-context.js';
 import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
+import { firstWriteGuidance } from '../common/first-write-guidance.js';
 import { isRecord } from '../common/guards.js';
 import { claudeReadExposure } from '../common/read-exposure.js';
-import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
+import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
 import {
   createDefaultTouchExecutors,
   DEFAULT_READ_LIMIT,
+  fileExists,
   runTouchHook,
   type TouchExecutors,
   type TouchInput
@@ -129,7 +131,8 @@ export function createHandler(
         {
           successful:
             !bashResponseInterrupted(input.tool_response) && (bashResponseExitCode(input.tool_response) ?? 0) === 0,
-          executor: inspectionExecutor
+          executor: inspectionExecutor,
+          onWrite: () => firstWriteGuidance(sessionId, memo, true)
         }
       );
       if (blocks.length === 0) return null;
@@ -154,15 +157,42 @@ export function createHandler(
       input.tool_response,
       input.transcript_path
     );
-    if (touch === null || postTrackedValue(absolutePath, touch, cwd) === null) return null;
+    if (touch === null) return null;
+    const rawWritten = input.tool_name === 'Edit' ? toolInput.new_string : toolInput.content;
+    const guidance = firstWriteGuidance(
+      sessionId,
+      memo,
+      touch.kind === 'write' &&
+        typeof rawWritten === 'string' &&
+        fileExists(absolutePath) &&
+        resolveTouchScope(cwd, absolutePath) !== null &&
+        !(
+          isRecord(input.tool_response) &&
+          (input.tool_response.is_error === true || input.tool_response.error !== undefined)
+        )
+    );
+    if (postTrackedValue(absolutePath, touch, cwd) === null)
+      return guidance === null
+        ? null
+        : postToolUseOutput({
+            hookSpecificOutput: { additionalContext: guidance },
+            systemMessage: guidance
+          });
     // ctx.logger doubles as the core logger: render defects warn inside the
     // core, and a non-null diagnostics failure (the structured path's only
     // record of a degraded context query) is surfaced on the hook log.
-    const output = await runTouchHook(touch, executors, memo, undefined, ctx.logger);
-    if (!output.additionalContext) return null;
+    let context: string | null = null;
+    try {
+      context = (await runTouchHook(touch, executors, memo, undefined, ctx.logger)).additionalContext;
+    } catch (err) {
+      if (guidance === null) throw err;
+      ctx.logger.warn('git-span structured context delivery failed after a successful write', { err });
+    }
+    const combined = [context, guidance].filter((part): part is string => part !== null).join('\n');
+    if (!combined) return null;
     return postToolUseOutput({
-      hookSpecificOutput: { additionalContext: output.additionalContext },
-      systemMessage: output.additionalContext
+      hookSpecificOutput: { additionalContext: combined },
+      systemMessage: combined
     });
   };
 }

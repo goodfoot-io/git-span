@@ -53,8 +53,9 @@ vi.mock('../../src/common/touch-core.js', async (importOriginal) => {
 
 function inMemoryMemoFactory() {
   const store = new Map<string, Set<string>>();
+  const claimGuidance = guidanceClaims();
   return () => ({
-    claimGuidance: guidanceClaims(),
+    claimGuidance,
     getSurfaced: (sid: string) => new Set(store.get(sid) ?? []),
     addSurfaced: (sid: string, names: string[], known: ReadonlySet<string>) => {
       store.set(sid, new Set([...known, ...names]));

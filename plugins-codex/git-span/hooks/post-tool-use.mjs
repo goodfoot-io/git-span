@@ -1296,22 +1296,316 @@ function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
   return anchors;
 }
 
-// packages/agent-hooks/src/common/static-attribution.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
+// packages/agent-hooks/src/common/span-surface.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import * as fs4 from "node:fs";
+import * as nodePath3 from "node:path";
+
+// packages/agent-hooks/src/common/git-span-command.ts
+import { dirname as dirname3, resolve as resolve3 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-native-io.ts
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  accessSync,
+  closeSync as closeSync2,
+  constants,
+  existsSync as existsSync3,
+  fstatSync,
+  openSync as openSync2,
+  readSync,
+  realpathSync as realpathSync2,
+  statSync as statSync2
+} from "node:fs";
+import { delimiter, isAbsolute, join as join2, resolve as resolve2 } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+function executableOnPath(name, cwd = process.cwd()) {
+  const candidates = isAbsolute(name) ? [name] : (process.env.PATH ?? "").split(delimiter).map((directory) => resolve2(cwd, directory, name));
+  for (const candidate2 of candidates) {
+    try {
+      accessSync(candidate2, constants.X_OK);
+      if (statSync2(candidate2).isFile()) return realpathSync2(candidate2);
+    } catch {
+    }
+  }
+  throw new Error(`${name} executable is unavailable`);
+}
+function probe(executable, argv, cwd) {
+  const result = spawnSync(executable, [...argv], {
+    cwd,
+    encoding: "utf8",
+    timeout: 1e3,
+    maxBuffer: 65536,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (result.error || result.status !== 0) throw new Error("Git repository probe failed");
+  return result.stdout.trimEnd();
+}
+function prefixDigest(descriptor, length) {
+  const bytes = Buffer.alloc(Math.min(length, 4096));
+  let offset2 = 0;
+  while (offset2 < bytes.length) {
+    const count = readSync(descriptor, bytes, offset2, bytes.length - offset2, length - bytes.length + offset2);
+    if (count === 0) throw new Error("reflog prefix truncated");
+    offset2 += count;
+  }
+  return createHash("sha256").update(bytes).digest("hex");
+}
+function readCommitReflogAppend(path, checkpoint, maxBytes) {
+  if (!existsSync3(path)) return null;
+  const descriptor = openSync2(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error("HEAD reflog is not a file");
+    if (checkpoint.existed && prefixDigest(descriptor, checkpoint.offset) !== checkpoint.prefixDigest)
+      throw new Error("observed reflog prefix changed");
+    const length = stat.size - checkpoint.offset;
+    const exceededBudget = length > maxBytes;
+    const bytes = Buffer.alloc(Math.max(0, Math.min(length, maxBytes)));
+    let offset2 = 0;
+    while (offset2 < bytes.length) {
+      const count = readSync(descriptor, bytes, offset2, bytes.length - offset2, checkpoint.offset + offset2);
+      if (count === 0) break;
+      offset2 += count;
+    }
+    return {
+      device: String(stat.dev),
+      inode: String(stat.ino),
+      fileSize: stat.size,
+      bytes: bytes.subarray(0, offset2),
+      exceededBudget
+    };
+  } finally {
+    closeSync2(descriptor);
+  }
+}
+function verifyCommitObject(executable, repository, sha) {
+  try {
+    const format = probe(
+      executable,
+      ["--git-dir", repository.gitDirectory, "rev-parse", "--show-object-format"],
+      repository.commonDirectory
+    );
+    const type = probe(
+      executable,
+      ["--git-dir", repository.gitDirectory, "cat-file", "-t", sha],
+      repository.commonDirectory
+    );
+    return format === repository.objectFormat && type === "commit" ? { ok: true, value: sha } : { ok: false, reason: "witness is not a commit object in the actual object format" };
+  } catch {
+    return { ok: false, reason: "commit object verification failed" };
+  }
+}
+async function executeCommitNotes(executable, command) {
+  return new Promise((resolveResult) => {
+    let stdout = "";
+    let stderr = "";
+    let bytes = 0;
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    let timedOut = false;
+    let outputExceeded = false;
+    let finished = false;
+    const grouped = process.platform !== "win32";
+    const child = spawn(executable, [...command.argv], {
+      cwd: command.cwd,
+      detached: grouped,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    const finish = (exitCode, signal) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolveResult({ exitCode, signal, stdout, stderr, timedOut, outputExceeded });
+    };
+    const terminate = () => {
+      try {
+        if (grouped && child.pid !== void 0) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        return finish(null, "SIGKILL");
+      }
+      finish(null, "SIGKILL");
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, command.timeoutMs);
+    const append = (kind, chunk) => {
+      bytes += chunk.length;
+      if (bytes > command.maxOutputBytes) {
+        outputExceeded = true;
+        terminate();
+        return;
+      }
+      if (kind === "stdout") stdout += stdoutDecoder.write(chunk);
+      else stderr += stderrDecoder.write(chunk);
+    };
+    child.stdout.on("data", (chunk) => append("stdout", chunk));
+    child.stderr.on("data", (chunk) => append("stderr", chunk));
+    child.stdin.on("error", () => {
+    });
+    child.stdin.end(command.stdin ?? "");
+    child.once("error", () => finish(127, null));
+    child.once("close", (exitCode, signal) => finish(exitCode, signal));
+  });
+}
+
+// packages/agent-hooks/src/common/git-span-command.ts
+function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git", platform = process.platform) {
+  if (platform === "win32") {
+    const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    for (const directory of (process.env.PATH ?? "").split(";")) {
+      for (const extension of extensions) {
+        const candidate2 = resolve3(cwd, directory, `git-span${extension.toLowerCase()}`);
+        try {
+          const executable = executableOnPath(candidate2, cwd);
+          if (extension.toLowerCase() === ".exe" || extension.toLowerCase() === ".com")
+            return { executable, argv: [...argv] };
+          return { executable: gitExecutable, argv: [`--exec-path=${dirname3(candidate2)}`, "span", ...argv] };
+        } catch {
+        }
+      }
+    }
+    return { executable: gitExecutable, argv: ["span", ...argv] };
+  }
+  try {
+    return {
+      executable: executableOnPath("git-span", cwd),
+      argv: [...argv]
+    };
+  } catch {
+    return { executable: gitExecutable, argv: ["span", ...argv] };
+  }
+}
+
+// packages/agent-hooks/src/common/span-ignore.ts
 import * as fs3 from "node:fs";
 import * as nodePath2 from "node:path";
+var HOOK_IGNORE_REL = nodePath2.join(".span", ".hookignore");
+
+// packages/agent-hooks/src/common/span-surface.ts
+function exposureDestination(layout, sessionId2) {
+  const base = layout.memoFile(sessionId2);
+  let epoch;
+  try {
+    epoch = fs4.readFileSync(`${base}.epoch`, "utf8");
+  } catch (err) {
+    if (errnoCode(err) === "ENOENT") return base;
+    throw err;
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(epoch))
+    throw new Error("invalid exposure epoch");
+  return `${base}.${epoch}`;
+}
+function createDiskMemoStore(logger2, layout) {
+  const destinations = /* @__PURE__ */ new WeakMap();
+  return {
+    claimGuidance(sessionId2, family) {
+      const directory = layout.guidanceDir(sessionId2);
+      try {
+        fs4.mkdirSync(directory, { recursive: true, mode: 448 });
+        const now = /* @__PURE__ */ new Date();
+        fs4.utimesSync(directory, now, now);
+        try {
+          const descriptor = fs4.openSync(nodePath3.join(directory, family), "wx", 384);
+          fs4.closeSync(descriptor);
+          return true;
+        } catch (err) {
+          if (errnoCode(err) === "EEXIST") return false;
+          throw err;
+        }
+      } catch (err) {
+        logger2.warn("git-span retrieval guidance claim failed", { err });
+        throw err;
+      }
+    },
+    getSurfaced(sessionId2) {
+      try {
+        const now = /* @__PURE__ */ new Date();
+        fs4.utimesSync(layout.guidanceDir(sessionId2), now, now);
+      } catch (err) {
+        if (errnoCode(err) !== "ENOENT") logger2.warn("git-span guidance keepalive failed", { err });
+      }
+      pruneStaleSessionsThrottled(layout);
+      const empty2 = /* @__PURE__ */ new Set();
+      try {
+        const destination = exposureDestination(layout, sessionId2);
+        destinations.set(empty2, destination);
+        const raw = fs4.readFileSync(destination, "utf8");
+        const parsed = JSON.parse(raw);
+        const surfaced = isRecord(parsed) ? parsed.surfaced : void 0;
+        if (Array.isArray(surfaced) && surfaced.every((name) => typeof name === "string")) {
+          const result = new Set(surfaced);
+          destinations.set(result, destination);
+          return result;
+        }
+        throw new Error("memo file is not a { surfaced: string[] } document");
+      } catch (err) {
+        logger2.warn("memo read failed (treating as empty)", { err });
+      }
+      return empty2;
+    },
+    addSurfaced(sessionId2, names, known) {
+      const existing = new Set(known);
+      for (const n of names) existing.add(n);
+      let tmpPath;
+      try {
+        const memoPath = destinations.get(known) ?? exposureDestination(layout, sessionId2);
+        tmpPath = `${memoPath}.${randomUUID()}.tmp`;
+        fs4.mkdirSync(layout.dir(sessionId2), { recursive: true, mode: 448 });
+        fs4.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), { encoding: "utf8", mode: 384 });
+        fs4.renameSync(tmpPath, memoPath);
+      } catch (err) {
+        logger2.warn("memo write failed", { err });
+      } finally {
+        if (tmpPath !== void 0) {
+          try {
+            fs4.rmSync(tmpPath, { force: true });
+          } catch {
+          }
+        }
+      }
+    }
+  };
+}
+function resolveTouchScope(cwd, absPath) {
+  const cwdRepoRoot = cwd ? resolveRepoRoot(cwd) : null;
+  if (!cwdRepoRoot) return null;
+  const absDir = toPosix(nodePath3.dirname(absPath));
+  const fileRepoRoot = resolveRepoRoot(absDir);
+  if (fileRepoRoot !== cwdRepoRoot) return null;
+  const repoRoot = cwdRepoRoot;
+  const repoRelPath = relativeToRepo(repoRoot, absPath);
+  if (isGitIgnored(repoRoot, repoRelPath)) return null;
+  const spanRoot = resolveSpanRoot(repoRoot);
+  if (isInsideSpanRoot(repoRelPath, spanRoot)) return null;
+  return { repoRoot, repoRelPath };
+}
+
+// packages/agent-hooks/src/common/static-attribution.ts
+import { execFileSync as execFileSync4 } from "node:child_process";
+import * as fs5 from "node:fs";
+import * as nodePath4 from "node:path";
 
 // packages/agent-hooks/src/common/parse-command.ts
-import { readFileSync as readFileSync3, statSync as statSync3 } from "node:fs";
-import { basename as basename2, isAbsolute, join as joinPath, resolve as resolvePath } from "node:path";
+import { readFileSync as readFileSync5, statSync as statSync4 } from "node:fs";
+import { basename as basename3, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
 // packages/agent-hooks/src/common/command-resolve.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
-import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
+import { execFileSync as execFileSync3 } from "node:child_process";
+import { readFileSync as readFileSync4, statSync as statSync3 } from "node:fs";
 function countFileLines(absolutePath) {
   try {
-    if (!statSync2(absolutePath).isFile()) return null;
-    const content = readFileSync2(absolutePath, "utf8");
+    if (!statSync3(absolutePath).isFile()) return null;
+    const content = readFileSync4(absolutePath, "utf8");
     if (content.length === 0) return 0;
     const withoutTrailingNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
     return withoutTrailingNewline.split("\n").length;
@@ -1321,7 +1615,7 @@ function countFileLines(absolutePath) {
 }
 function countGitBlobLines(cwd, rev, path) {
   try {
-    const out = execFileSync2("git", ["show", `${rev}:${path}`], {
+    const out = execFileSync3("git", ["show", `${rev}:${path}`], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -2926,7 +3220,7 @@ function pushUnresolved(results, idiom, fileArg, reason) {
 }
 function isExistingDirectory(absolutePath) {
   try {
-    return statSync3(absolutePath).isDirectory();
+    return statSync4(absolutePath).isDirectory();
   } catch {
     return false;
   }
@@ -3095,7 +3389,7 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join13,
       return;
     }
     const targetAbs = resolvePath(dir, parts.targetDir);
-    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename2(p)));
+    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename3(p)));
   } else {
     const dest = parts.operands.at(-1);
     if (dest === void 0) return;
@@ -3109,7 +3403,7 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join13,
       pushUnresolved(results, spec.idiom, dest, "a multi-source copy/move needs a directory destination");
       return;
     }
-    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename2(p))) : [destAbs];
+    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename3(p))) : [destAbs];
   }
   for (const sourcePath of sourcePaths) {
     emitSourceSpan(results, spec, sourcePath, simpleCommandIndex, join13);
@@ -3601,7 +3895,7 @@ function patchApplyParts(args, isGitApply) {
 }
 function readPatchFile(absolutePath) {
   try {
-    return readFileSync3(absolutePath, "utf8");
+    return readFileSync5(absolutePath, "utf8");
   } catch {
     return null;
   }
@@ -4067,7 +4361,7 @@ function parseCommandDetailed(command, opts = {}) {
   };
   const gitDirOf = (c, frame) => {
     if (c.dirOverride === void 0) return frame.certain ? frame.dir : void 0;
-    if (isAbsolute(c.dirOverride)) return c.dirOverride;
+    if (isAbsolute2(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
   const emitCandidate = (c, frame, simpleCommandIndex, join13) => {
@@ -4082,7 +4376,7 @@ function parseCommandDetailed(command, opts = {}) {
     }
     let resolutionDir;
     if (c.resolverKind === "fs") {
-      if (!frame.certain && !isAbsolute(c.fileArg)) {
+      if (!frame.certain && !isAbsolute2(c.fileArg)) {
         results.push({
           status: "unresolved",
           idiom: c.idiom,
@@ -4091,7 +4385,7 @@ function parseCommandDetailed(command, opts = {}) {
         });
         return;
       }
-      resolutionDir = c.dirOverride === void 0 ? frame.dir : isAbsolute(c.dirOverride) ? c.dirOverride : resolvePath(frame.dir, c.dirOverride);
+      resolutionDir = c.dirOverride === void 0 ? frame.dir : isAbsolute2(c.dirOverride) ? c.dirOverride : resolvePath(frame.dir, c.dirOverride);
     } else {
       const gitDir = gitDirOf(c, frame);
       if (gitDir === void 0) {
@@ -4627,7 +4921,7 @@ function expectedPythonReplacement(content, transformation, occurrences) {
 }
 function emitPythonReplace(ctx, absolutePath, transformation) {
   const read = ctx.texts.get(transformation.source);
-  if (read === void 0 || nodePath2.resolve(ctx.cwd, read.path) !== absolutePath) {
+  if (read === void 0 || nodePath4.resolve(ctx.cwd, read.path) !== absolutePath) {
     return rejectPython("unsupported-dataflow", "Python read and write paths are not provably identical", absolutePath);
   }
   const content = readPythonPreState(ctx, absolutePath, pythonReplacementRequirements(transformation));
@@ -4994,7 +5288,7 @@ function consumePythonStatement(statement, ctx) {
     if (binding === void 0) return rejectPython("dynamic-path", "Python append target is not literal");
     if (mode !== "a" || written === null)
       return rejectPython("unsupported-expression", "only literal text append mode is supported");
-    const absolutePath = nodePath2.resolve(ctx.cwd, binding.path);
+    const absolutePath = nodePath4.resolve(ctx.cwd, binding.path);
     requestPythonPreState(ctx, absolutePath, "append", "pre-command-eof");
     const content = ctx.options.readPreState?.(absolutePath) ?? null;
     if (content === null)
@@ -5033,7 +5327,7 @@ function consumePythonStatement(statement, ctx) {
     const [pathName, expression] = writeTarget;
     const binding = ctx.paths.get(pathName);
     if (binding === void 0) return rejectPython("dynamic-path", "Python write target is not literal");
-    const absolutePath = nodePath2.resolve(ctx.cwd, binding.path);
+    const absolutePath = nodePath4.resolve(ctx.cwd, binding.path);
     return resolvePythonWriteSink(ctx, expression.trim(), absolutePath);
   }
   return "unmatched";
@@ -5291,7 +5585,7 @@ function emitPythonAnchorSlice(ctx, expression, absolutePath) {
   const anchor = ctx.anchors.get(anchorName);
   const read = ctx.texts.get(source);
   const replacementText = decodePythonString(replacementLiteral);
-  if (anchor === void 0 || read === void 0 || anchor.source !== source || replacementText === null || Number.parseInt(anchorLengthText, 10) !== anchor.literal.length || nodePath2.resolve(ctx.cwd, read.path) !== absolutePath) {
+  if (anchor === void 0 || read === void 0 || anchor.source !== source || replacementText === null || Number.parseInt(anchorLengthText, 10) !== anchor.literal.length || nodePath4.resolve(ctx.cwd, read.path) !== absolutePath) {
     return rejectPython(
       "unsupported-dataflow",
       "Python slice reconstruction is not tied to one literal anchor",
@@ -5334,7 +5628,7 @@ function emitPythonLineJoin(ctx, expression, absolutePath) {
   if (delimiter2 !== "\n" || array === void 0 || suffix === null || suffix !== "" && suffix !== "\n") {
     return rejectPython("unsupported-expression", "line-array writes require a literal newline join", absolutePath);
   }
-  if (nodePath2.resolve(ctx.cwd, array.path) !== absolutePath || array.edits.size === 0) {
+  if (nodePath4.resolve(ctx.cwd, array.path) !== absolutePath || array.edits.size === 0) {
     return rejectPython(
       "unsupported-dataflow",
       "line-array read and write paths are not provably identical",
@@ -5385,7 +5679,7 @@ function emitPythonStructuredDump(ctx, expression, absolutePath) {
   const [dumper, , valueName] = structuredSink;
   const value = ctx.structured.get(valueName);
   const sinkFormat = dumper === "json" ? "json" : dumper === "yaml" ? "yaml" : "toml";
-  if (value === void 0 || value.format !== sinkFormat || nodePath2.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
+  if (value === void 0 || value.format !== sinkFormat || nodePath4.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
     return rejectPython(
       "unsupported-dataflow",
       "structured read, literal-key mutation, and write are not linked",
@@ -5538,7 +5832,7 @@ function nodeParseCall(ctx, expression) {
 }
 function emitNodeReplacement(ctx, absolutePath, replacement) {
   const read = ctx.texts.get(replacement.source);
-  if (read === void 0 || nodePath2.resolve(ctx.cwd, read.path) !== absolutePath) {
+  if (read === void 0 || nodePath4.resolve(ctx.cwd, read.path) !== absolutePath) {
     return rejectNode(
       "unsupported-dataflow",
       "Node replacement read and write paths are not provably identical",
@@ -5722,7 +6016,7 @@ function consumeNodeStatement(statement, ctx) {
     }
     if (call.args.length < 2 || call.args.length > 3)
       return rejectNode("unsupported-syntax", "Node appendFileSync call has unsupported arguments", binding.path);
-    const absolutePath = nodePath2.resolve(ctx.cwd, binding.path);
+    const absolutePath = nodePath4.resolve(ctx.cwd, binding.path);
     const content = readNodePreState(ctx, absolutePath, "append", ["pre-command-eof"]);
     if (typeof content !== "string") return content;
     const line = pythonLineAtOffset(content, content.length);
@@ -5752,7 +6046,7 @@ function consumeNodeStatement(statement, ctx) {
     if (encoding !== "utf8" && encoding !== "utf-8") {
       return rejectNode("unsupported-encoding", "Node write requires default or UTF-8 encoding", binding.path);
     }
-    const absolutePath = nodePath2.resolve(ctx.cwd, binding.path);
+    const absolutePath = nodePath4.resolve(ctx.cwd, binding.path);
     return resolveNodeWriteSink(ctx, writtenExpression, absolutePath);
   }
   return "unmatched";
@@ -5871,7 +6165,7 @@ function emitNodeStructuredDump(ctx, expression, absolutePath) {
   const serialized = matchGroups(expression, NODE_JSON_STRINGIFY_PATTERN, 1);
   if (serialized === null) return "unmatched";
   const value = ctx.structured.get(serialized[0]);
-  if (value === void 0 || nodePath2.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
+  if (value === void 0 || nodePath4.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
     return rejectNode(
       "unsupported-dataflow",
       "JSON read, literal-key mutation, and write are not linked",
@@ -5923,7 +6217,7 @@ function numericSedForFile(patternCommand, substitution, start, end, file, optio
     unresolvedMatches.push(unresolved("shell", "sed-inplace", reason, "target path is dynamic", file));
     return;
   }
-  const absolutePath = nodePath2.resolve(cwd, file);
+  const absolutePath = nodePath4.resolve(cwd, file);
   const content = options.readPreState?.(absolutePath) ?? null;
   const expectedContent = content === null || content.includes("\0") ? void 0 : content.split(/(?<=\n)/).map(
     (line, index) => index + 1 >= start && index + 1 <= end ? replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global) : line
@@ -5956,7 +6250,7 @@ function numericSedForFile(patternCommand, substitution, start, end, file, optio
       idiom: "sed-inplace",
       span: {
         operation: "create-overwrite",
-        absolutePath: `${nodePath2.resolve(cwd, file)}${patternCommand.backupSuffix}`,
+        absolutePath: `${nodePath4.resolve(cwd, file)}${patternCommand.backupSuffix}`,
         simpleCommandIndex: patternCommand.simpleCommandIndex
       }
     });
@@ -6087,7 +6381,7 @@ function substituteOneFile(patternCommand, idiom, addressLiteral, substitution, 
     unresolvedMatches.push(unresolved("pattern-substitution", idiom, reason, "target path is dynamic", file));
     return;
   }
-  const absolutePath = nodePath2.resolve(cwd, file);
+  const absolutePath = nodePath4.resolve(cwd, file);
   preStateRequests.push({
     absolutePath,
     operation: "modify",
@@ -6504,14 +6798,14 @@ function createPlannedTouchStore(layout, budgets) {
     };
   };
   const makeRestrictiveDir = (dir) => {
-    fs3.mkdirSync(dir, { recursive: true, mode: 448 });
-    fs3.chmodSync(layout.base, 448);
-    fs3.chmodSync(nodePath2.dirname(dir), 448);
-    fs3.chmodSync(dir, 448);
+    fs5.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs5.chmodSync(layout.base, 448);
+    fs5.chmodSync(nodePath4.dirname(dir), 448);
+    fs5.chmodSync(dir, 448);
   };
   const claim = (consumed) => {
     try {
-      fs3.writeFileSync(consumed, "", { encoding: "utf8", flag: "wx", mode: 384 });
+      fs5.writeFileSync(consumed, "", { encoding: "utf8", flag: "wx", mode: 384 });
       return true;
     } catch (error) {
       if (errnoCode(error) === "EEXIST") return false;
@@ -6525,12 +6819,12 @@ function createPlannedTouchStore(layout, budgets) {
     if (!claim(paths.consumed)) return { status: "consumed" };
     let raw;
     try {
-      raw = fs3.readFileSync(paths.record, "utf8");
+      raw = fs5.readFileSync(paths.record, "utf8");
     } catch (error) {
       if (errnoCode(error) === "ENOENT") return { status: "missing" };
       throw error;
     } finally {
-      fs3.rmSync(paths.record, { force: true });
+      fs5.rmSync(paths.record, { force: true });
     }
     try {
       const parsed = JSON.parse(raw);
@@ -6546,20 +6840,20 @@ function createPlannedTouchStore(layout, budgets) {
       const normalized = normalizePlannedTouchRecord(record2, budgets);
       const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
       makeRestrictiveDir(paths.dir);
-      if (fs3.existsSync(paths.consumed)) {
+      if (fs5.existsSync(paths.consumed)) {
         throw new Error("planned-touch record has already been consumed or discarded");
       }
       const encoded = JSON.stringify(normalized);
-      const tmp = nodePath2.join(
+      const tmp = nodePath4.join(
         paths.dir,
-        `.${nodePath2.basename(paths.record)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
+        `.${nodePath4.basename(paths.record)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
       );
       try {
-        fs3.writeFileSync(tmp, encoded, { encoding: "utf8", mode: 384 });
-        fs3.chmodSync(tmp, 384);
-        fs3.renameSync(tmp, paths.record);
+        fs5.writeFileSync(tmp, encoded, { encoding: "utf8", mode: 384 });
+        fs5.chmodSync(tmp, 384);
+        fs5.renameSync(tmp, paths.record);
       } catch (error) {
-        fs3.rmSync(tmp, { force: true });
+        fs5.rmSync(tmp, { force: true });
         throw error;
       }
     },
@@ -6573,7 +6867,7 @@ function createPlannedTouchStore(layout, budgets) {
       const paths = recordPaths(sessionId2, toolUseId);
       makeRestrictiveDir(paths.dir);
       claim(paths.consumed);
-      fs3.rmSync(paths.record, { force: true });
+      fs5.rmSync(paths.record, { force: true });
     }
   };
 }
@@ -6656,7 +6950,7 @@ function normalizePlannedTouchRecord(record2, budgets) {
     throw new Error("invalid planned-touch record");
   }
   const repoRoot = toPosix(record2.repoRoot);
-  if (!nodePath2.isAbsolute(record2.repoRoot) && !/^[A-Za-z]:\//.test(repoRoot)) {
+  if (!nodePath4.isAbsolute(record2.repoRoot) && !/^[A-Za-z]:\//.test(repoRoot)) {
     throw new Error("planned-touch repository root must be absolute");
   }
   if (record2.touches.length > budgets.maxTouchesPerRecord) {
@@ -6677,6 +6971,8 @@ function normalizePlannedTouchRecord(record2, budgets) {
     if (!safeInteger(touch.simpleCommandIndex, 0)) {
       throw new Error("invalid planned-touch command index");
     }
+    if (touch.contextEligible !== void 0 && typeof touch.contextEligible !== "boolean")
+      throw new Error("invalid planned-touch context eligibility");
     const evidence = normalizeEvidence(touch.evidence);
     if (evidence !== void 0) evidenceBytes += Buffer.byteLength(JSON.stringify(evidence));
     return {
@@ -6684,7 +6980,8 @@ function normalizePlannedTouchRecord(record2, budgets) {
       operation: touch.operation,
       ranges,
       simpleCommandIndex: touch.simpleCommandIndex,
-      ...evidence === void 0 ? {} : { evidence }
+      ...evidence === void 0 ? {} : { evidence },
+      ...touch.contextEligible === void 0 ? {} : { contextEligible: touch.contextEligible }
     };
   });
   if (evidenceBytes > budgets.maxEvidenceBytes) throw new Error("planned-touch record exceeds evidence budget");
@@ -6703,7 +7000,7 @@ function normalizePlannedTouchRecord(record2, budgets) {
 }
 var queryTrackedFiles = (repoRoot, repoRelativePaths) => {
   if (repoRelativePaths.length === 0) return /* @__PURE__ */ new Set();
-  const stdout = execFileSync3("git", ["-C", repoRoot, "ls-files", "-z", "--cached", "--", ...repoRelativePaths], {
+  const stdout = execFileSync4("git", ["-C", repoRoot, "ls-files", "-z", "--cached", "--", ...repoRelativePaths], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"]
   });
@@ -6716,7 +7013,7 @@ var queryIgnoredFiles = (repoRoot, repoRelativePaths) => {
   const input = `${repoRelativePaths.join("\0")}\0`;
   let stdout;
   try {
-    stdout = execFileSync3("git", ["-C", repoRoot, "check-ignore", "--no-index", "-z", "--stdin"], {
+    stdout = execFileSync4("git", ["-C", repoRoot, "check-ignore", "--no-index", "-z", "--stdin"], {
       input,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "ignore"]
@@ -6749,8 +7046,8 @@ function filterTrackedEligibility(candidates, options) {
   const spanRoot = resolveSpanRoot(cwdRepoRoot);
   for (const candidate2 of candidates) {
     const canonicalPath = canonicalizePath(candidate2.absolutePath);
-    const relativePath = nodePath2.relative(cwdRepoRoot, canonicalPath);
-    if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${nodePath2.sep}`) || nodePath2.isAbsolute(relativePath)) {
+    const relativePath = nodePath4.relative(cwdRepoRoot, canonicalPath);
+    if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${nodePath4.sep}`) || nodePath4.isAbsolute(relativePath)) {
       dropped.push({ candidate: candidate2, reason: "outside-repository" });
       continue;
     }
@@ -6823,10 +7120,10 @@ function filterTrackedEligibility(candidates, options) {
 }
 
 // packages/agent-hooks/src/common/touch-core.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import { createHash as createHash2 } from "node:crypto";
-import * as fs4 from "node:fs";
-import { dirname as dirname5, join as join4 } from "node:path";
+import * as fs6 from "node:fs";
+import { dirname as dirname6, join as join6 } from "node:path";
 
 // packages/agent-hooks/src/common/delivery-presentation.ts
 var BROAD_READ_BYTES = 1536;
@@ -6918,192 +7215,8 @@ function recordSnapshots(surfaced, updates) {
   }
 }
 
-// packages/agent-hooks/src/common/git-span-command.ts
-import { dirname as dirname4, resolve as resolve4 } from "node:path";
-
-// packages/agent-hooks/src/common/commit-native-io.ts
-import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-  accessSync,
-  closeSync as closeSync2,
-  constants,
-  existsSync as existsSync4,
-  fstatSync,
-  openSync as openSync2,
-  readSync,
-  realpathSync as realpathSync2,
-  statSync as statSync4
-} from "node:fs";
-import { delimiter, isAbsolute as isAbsolute3, join as join3, resolve as resolve3 } from "node:path";
-import { StringDecoder } from "node:string_decoder";
-function executableOnPath(name, cwd = process.cwd()) {
-  const candidates = isAbsolute3(name) ? [name] : (process.env.PATH ?? "").split(delimiter).map((directory) => resolve3(cwd, directory, name));
-  for (const candidate2 of candidates) {
-    try {
-      accessSync(candidate2, constants.X_OK);
-      if (statSync4(candidate2).isFile()) return realpathSync2(candidate2);
-    } catch {
-    }
-  }
-  throw new Error(`${name} executable is unavailable`);
-}
-function probe(executable, argv, cwd) {
-  const result = spawnSync(executable, [...argv], {
-    cwd,
-    encoding: "utf8",
-    timeout: 1e3,
-    maxBuffer: 65536,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  if (result.error || result.status !== 0) throw new Error("Git repository probe failed");
-  return result.stdout.trimEnd();
-}
-function prefixDigest(descriptor, length) {
-  const bytes = Buffer.alloc(Math.min(length, 4096));
-  let offset2 = 0;
-  while (offset2 < bytes.length) {
-    const count = readSync(descriptor, bytes, offset2, bytes.length - offset2, length - bytes.length + offset2);
-    if (count === 0) throw new Error("reflog prefix truncated");
-    offset2 += count;
-  }
-  return createHash("sha256").update(bytes).digest("hex");
-}
-function readCommitReflogAppend(path, checkpoint, maxBytes) {
-  if (!existsSync4(path)) return null;
-  const descriptor = openSync2(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = fstatSync(descriptor);
-    if (!stat.isFile()) throw new Error("HEAD reflog is not a file");
-    if (checkpoint.existed && prefixDigest(descriptor, checkpoint.offset) !== checkpoint.prefixDigest)
-      throw new Error("observed reflog prefix changed");
-    const length = stat.size - checkpoint.offset;
-    const exceededBudget = length > maxBytes;
-    const bytes = Buffer.alloc(Math.max(0, Math.min(length, maxBytes)));
-    let offset2 = 0;
-    while (offset2 < bytes.length) {
-      const count = readSync(descriptor, bytes, offset2, bytes.length - offset2, checkpoint.offset + offset2);
-      if (count === 0) break;
-      offset2 += count;
-    }
-    return {
-      device: String(stat.dev),
-      inode: String(stat.ino),
-      fileSize: stat.size,
-      bytes: bytes.subarray(0, offset2),
-      exceededBudget
-    };
-  } finally {
-    closeSync2(descriptor);
-  }
-}
-function verifyCommitObject(executable, repository, sha) {
-  try {
-    const format = probe(
-      executable,
-      ["--git-dir", repository.gitDirectory, "rev-parse", "--show-object-format"],
-      repository.commonDirectory
-    );
-    const type = probe(
-      executable,
-      ["--git-dir", repository.gitDirectory, "cat-file", "-t", sha],
-      repository.commonDirectory
-    );
-    return format === repository.objectFormat && type === "commit" ? { ok: true, value: sha } : { ok: false, reason: "witness is not a commit object in the actual object format" };
-  } catch {
-    return { ok: false, reason: "commit object verification failed" };
-  }
-}
-async function executeCommitNotes(executable, command) {
-  return new Promise((resolveResult) => {
-    let stdout = "";
-    let stderr = "";
-    let bytes = 0;
-    const stdoutDecoder = new StringDecoder("utf8");
-    const stderrDecoder = new StringDecoder("utf8");
-    let timedOut = false;
-    let outputExceeded = false;
-    let finished = false;
-    const grouped = process.platform !== "win32";
-    const child = spawn(executable, [...command.argv], {
-      cwd: command.cwd,
-      detached: grouped,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    const finish = (exitCode, signal) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      stdout += stdoutDecoder.end();
-      stderr += stderrDecoder.end();
-      child.stdin.destroy();
-      child.stdout.destroy();
-      child.stderr.destroy();
-      resolveResult({ exitCode, signal, stdout, stderr, timedOut, outputExceeded });
-    };
-    const terminate = () => {
-      try {
-        if (grouped && child.pid !== void 0) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
-      } catch {
-        return finish(null, "SIGKILL");
-      }
-      finish(null, "SIGKILL");
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      terminate();
-    }, command.timeoutMs);
-    const append = (kind, chunk) => {
-      bytes += chunk.length;
-      if (bytes > command.maxOutputBytes) {
-        outputExceeded = true;
-        terminate();
-        return;
-      }
-      if (kind === "stdout") stdout += stdoutDecoder.write(chunk);
-      else stderr += stderrDecoder.write(chunk);
-    };
-    child.stdout.on("data", (chunk) => append("stdout", chunk));
-    child.stderr.on("data", (chunk) => append("stderr", chunk));
-    child.stdin.on("error", () => {
-    });
-    child.stdin.end(command.stdin ?? "");
-    child.once("error", () => finish(127, null));
-    child.once("close", (exitCode, signal) => finish(exitCode, signal));
-  });
-}
-
-// packages/agent-hooks/src/common/git-span-command.ts
-function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git", platform = process.platform) {
-  if (platform === "win32") {
-    const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-    for (const directory of (process.env.PATH ?? "").split(";")) {
-      for (const extension of extensions) {
-        const candidate2 = resolve4(cwd, directory, `git-span${extension.toLowerCase()}`);
-        try {
-          const executable = executableOnPath(candidate2, cwd);
-          if (extension.toLowerCase() === ".exe" || extension.toLowerCase() === ".com")
-            return { executable, argv: [...argv] };
-          return { executable: gitExecutable, argv: [`--exec-path=${dirname4(candidate2)}`, "span", ...argv] };
-        } catch {
-        }
-      }
-    }
-    return { executable: gitExecutable, argv: ["span", ...argv] };
-  }
-  try {
-    return {
-      executable: executableOnPath("git-span", cwd),
-      argv: [...argv]
-    };
-  } catch {
-    return { executable: gitExecutable, argv: ["span", ...argv] };
-  }
-}
-
 // packages/agent-hooks/src/common/pending-context.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
+import { execFileSync as execFileSync5 } from "node:child_process";
 import { realpathSync as realpathSync3 } from "node:fs";
 import { isAbsolute as isAbsolute4, sep as sep2 } from "node:path";
 
@@ -7431,7 +7544,7 @@ function createDefaultPendingContextExecutor(timeoutMs = 3e4) {
         ["pending-context", inspection.command, "--", ...inspection.args],
         inspection.cwd
       );
-      const stdout = execFileSync4(command.executable, command.argv, {
+      const stdout = execFileSync5(command.executable, command.argv, {
         cwd: inspection.cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -7493,7 +7606,7 @@ function createRealityProbeCache(paths, changedCandidates = []) {
 }
 function fileExists(absPath) {
   try {
-    fs4.statSync(absPath);
+    fs6.statSync(absPath);
     return true;
   } catch {
     return false;
@@ -7501,21 +7614,21 @@ function fileExists(absPath) {
 }
 function isFileOnDisk(absPath) {
   try {
-    return fs4.statSync(absPath).isFile();
+    return fs6.statSync(absPath).isFile();
   } catch {
     return false;
   }
 }
 function contentMatches(post, filePath) {
   try {
-    if ("exact" in post) return fs4.readFileSync(filePath, "utf8") === post.exact;
+    if ("exact" in post) return fs6.readFileSync(filePath, "utf8") === post.exact;
     if ("suffix" in post) {
-      const content = fs4.readFileSync(filePath, "utf8");
+      const content = fs6.readFileSync(filePath, "utf8");
       return content.endsWith(post.suffix) || content.endsWith(`${post.suffix}
 `);
     }
-    if ("empty" in post) return fs4.statSync(filePath).size === 0;
-    return fs4.statSync(filePath).size === post.size;
+    if ("empty" in post) return fs6.statSync(filePath).size === 0;
+    return fs6.statSync(filePath).size === post.size;
   } catch {
     return false;
   }
@@ -7530,7 +7643,7 @@ function realPaths(cache, cwd) {
       const capture = (args) => {
         try {
           const command = args[0] === "span" ? resolveGitSpanCommand(args.slice(1), repoRoot) : { executable: "git", argv: args };
-          return execFileSync5(command.executable, command.argv, {
+          return execFileSync6(command.executable, command.argv, {
             cwd: repoRoot,
             encoding: "utf8",
             stdio: ["ignore", "pipe", "pipe"],
@@ -7545,12 +7658,12 @@ function realPaths(cache, cwd) {
       if (lsFiles !== null) {
         for (const line of lsFiles.split("\n")) {
           const rel = line.trim();
-          if (rel.length > 0) real.add(join4(repoRoot, rel));
+          if (rel.length > 0) real.add(join6(repoRoot, rel));
         }
       }
       const spanList = capture(["span", "list", "--porcelain", ...rels]);
       if (spanList !== null) {
-        for (const row of parsePorcelain(spanList)) real.add(join4(repoRoot, row.path));
+        for (const row of parsePorcelain(spanList)) real.add(join6(repoRoot, row.path));
       }
     }
   }
@@ -7565,7 +7678,7 @@ function changedOnDisk(cache, cwd) {
     if (repoRoot !== null) {
       const rels = cache.changedCandidates.map((p) => relativeToRepo(repoRoot, p));
       try {
-        const out = execFileSync5("git", ["status", "--porcelain", "-z", "--untracked-files=no", "--", ...rels], {
+        const out = execFileSync6("git", ["status", "--porcelain", "-z", "--untracked-files=no", "--", ...rels], {
           cwd: repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -7579,7 +7692,7 @@ function changedOnDisk(cache, cwd) {
           if (indexStatus === "?" || indexStatus === "!" || worktreeStatus === "?" || worktreeStatus === "!") {
             continue;
           }
-          changed.add(join4(repoRoot, entry.slice(3)));
+          changed.add(join6(repoRoot, entry.slice(3)));
         }
       } catch (err) {
         void err;
@@ -7608,8 +7721,8 @@ function evaluateWriteGate(input, probeCache) {
       let src;
       let dst;
       try {
-        src = fs4.readFileSync(input.sourcePath, "utf8");
-        dst = fs4.readFileSync(input.filePath, "utf8");
+        src = fs6.readFileSync(input.sourcePath, "utf8");
+        dst = fs6.readFileSync(input.filePath, "utf8");
       } catch {
         return "decisiveFail";
       }
@@ -7843,7 +7956,7 @@ function recoverRangeFromDisk(written, filePath) {
   if (written.length === 0) return "whole-file";
   let content;
   try {
-    content = fs4.readFileSync(filePath, "utf8");
+    content = fs6.readFileSync(filePath, "utf8");
   } catch {
     return "whole-file";
   }
@@ -7855,7 +7968,7 @@ function recoverReadRange(offset2, limit, filePath) {
   const start = offset2 ?? 1;
   let lineCount2;
   try {
-    const content = fs4.readFileSync(filePath, "utf8");
+    const content = fs6.readFileSync(filePath, "utf8");
     lineCount2 = content.length === 0 ? 0 : content.split("\n").length;
   } catch {
     return "whole-file";
@@ -8027,7 +8140,7 @@ async function runTouchHooks(inputs, executors, memo, invocationId, probeCache, 
       const outcome = evaluateWriteGate(input, probe2);
       if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") continue;
     }
-    const repoRoot = resolveRepoRoot(dirname5(input.filePath));
+    const repoRoot = resolveRepoRoot(dirname6(input.filePath));
     if (repoRoot === null) continue;
     prepared.push({
       input,
@@ -8138,7 +8251,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
       let stdout;
       try {
         const command = resolveGitSpanCommand(args, request.repoRoot);
-        stdout = execFileSync5(command.executable, command.argv, {
+        stdout = execFileSync6(command.executable, command.argv, {
           cwd: request.repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -8176,7 +8289,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
 
 // packages/agent-hooks/src/common/apply-patch-touch.ts
 var noRangeRecovery = () => null;
-async function runApplyPatchTouches(patchText, cwd, sessionId2, planned, executors, memo, invocationId, logger2) {
+async function runApplyPatchTouches(patchText, cwd, sessionId2, planned, executors, memo, invocationId, logger2, onWrite) {
   const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
   const fallback = parseApplyPatch(patchText, noRangeRecovery).map(
     (anchor) => ({
@@ -8187,148 +8300,50 @@ async function runApplyPatchTouches(patchText, cwd, sessionId2, planned, executo
     })
   ).filter(({ absolutePath }) => !plannedPaths.has(absolutePath));
   const candidates = [...planned, ...fallback];
-  const tracked = filterTrackedEligibility(
-    candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
-    { cwd }
-  );
-  const eligible = new Set(tracked.eligible.map(({ value }) => value));
-  for (const candidate2 of candidates) if (candidate2.preTrackedDelete) eligible.add(candidate2);
-  const touches = [];
-  for (const candidate2 of candidates) {
-    if (!eligible.has(candidate2)) continue;
-    const ranges = candidate2.ranges.length === 0 ? [void 0] : candidate2.ranges;
-    for (const range of ranges) {
-      touches.push({
-        kind: "write",
-        sessionId: sessionId2,
-        cwd,
-        filePath: candidate2.absolutePath,
-        ...invocationId === null ? {} : { invocationId },
-        written: "",
-        range,
-        targetState: candidate2.operation === "delete" ? "absent" : "exists",
-        ...candidate2.operation === "delete" ? { postState: { realDelete: true } } : {}
-      });
+  const guidance = candidates.some(
+    (candidate2) => resolveTouchScope(cwd, candidate2.absolutePath) !== null && (candidate2.operation === "delete" ? !fileExists(candidate2.absolutePath) : fileExists(candidate2.absolutePath))
+  ) ? onWrite?.() ?? null : null;
+  try {
+    const tracked = filterTrackedEligibility(
+      candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
+      { cwd }
+    );
+    const eligible = new Set(tracked.eligible.map(({ value }) => value));
+    for (const candidate2 of candidates) if (candidate2.preTrackedDelete) eligible.add(candidate2);
+    const touches = [];
+    for (const candidate2 of candidates) {
+      if (!eligible.has(candidate2)) continue;
+      const ranges = candidate2.ranges.length === 0 ? [void 0] : candidate2.ranges;
+      for (const range of ranges) {
+        touches.push({
+          kind: "write",
+          sessionId: sessionId2,
+          cwd,
+          filePath: candidate2.absolutePath,
+          ...invocationId === null ? {} : { invocationId },
+          written: "",
+          range,
+          targetState: candidate2.operation === "delete" ? "absent" : "exists",
+          ...candidate2.operation === "delete" ? { postState: { realDelete: true } } : {}
+        });
+      }
     }
+    const batch = await runTouchHooks(touches, executors, memo, invocationId, void 0, logger2);
+    return [
+      ...batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]),
+      ...guidance === null ? [] : [guidance]
+    ];
+  } catch (err) {
+    if (guidance === null) throw err;
+    logger2.warn("git-span patch context delivery failed after a successful write", { err });
+    return [guidance];
   }
-  const batch = await runTouchHooks(touches, executors, memo, invocationId, void 0, logger2);
-  return batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]);
 }
 
 // packages/agent-hooks/src/common/bash-attribution.ts
 import { createHash as createHash3 } from "node:crypto";
 import * as fs7 from "node:fs";
 import * as nodePath5 from "node:path";
-
-// packages/agent-hooks/src/common/span-surface.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import * as fs6 from "node:fs";
-import * as nodePath4 from "node:path";
-
-// packages/agent-hooks/src/common/span-ignore.ts
-import * as fs5 from "node:fs";
-import * as nodePath3 from "node:path";
-var HOOK_IGNORE_REL = nodePath3.join(".span", ".hookignore");
-
-// packages/agent-hooks/src/common/span-surface.ts
-function exposureDestination(layout, sessionId2) {
-  const base = layout.memoFile(sessionId2);
-  let epoch;
-  try {
-    epoch = fs6.readFileSync(`${base}.epoch`, "utf8");
-  } catch (err) {
-    if (errnoCode(err) === "ENOENT") return base;
-    throw err;
-  }
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(epoch))
-    throw new Error("invalid exposure epoch");
-  return `${base}.${epoch}`;
-}
-function createDiskMemoStore(logger2, layout) {
-  const destinations = /* @__PURE__ */ new WeakMap();
-  return {
-    claimGuidance(sessionId2, family) {
-      const directory = layout.guidanceDir(sessionId2);
-      try {
-        fs6.mkdirSync(directory, { recursive: true, mode: 448 });
-        const now = /* @__PURE__ */ new Date();
-        fs6.utimesSync(directory, now, now);
-        try {
-          const descriptor = fs6.openSync(nodePath4.join(directory, family), "wx", 384);
-          fs6.closeSync(descriptor);
-          return true;
-        } catch (err) {
-          if (errnoCode(err) === "EEXIST") return false;
-          throw err;
-        }
-      } catch (err) {
-        logger2.warn("git-span retrieval guidance claim failed", { err });
-        throw err;
-      }
-    },
-    getSurfaced(sessionId2) {
-      try {
-        const now = /* @__PURE__ */ new Date();
-        fs6.utimesSync(layout.guidanceDir(sessionId2), now, now);
-      } catch (err) {
-        if (errnoCode(err) !== "ENOENT") logger2.warn("git-span guidance keepalive failed", { err });
-      }
-      pruneStaleSessionsThrottled(layout);
-      const empty2 = /* @__PURE__ */ new Set();
-      try {
-        const destination = exposureDestination(layout, sessionId2);
-        destinations.set(empty2, destination);
-        const raw = fs6.readFileSync(destination, "utf8");
-        const parsed = JSON.parse(raw);
-        const surfaced = isRecord(parsed) ? parsed.surfaced : void 0;
-        if (Array.isArray(surfaced) && surfaced.every((name) => typeof name === "string")) {
-          const result = new Set(surfaced);
-          destinations.set(result, destination);
-          return result;
-        }
-        throw new Error("memo file is not a { surfaced: string[] } document");
-      } catch (err) {
-        logger2.warn("memo read failed (treating as empty)", { err });
-      }
-      return empty2;
-    },
-    addSurfaced(sessionId2, names, known) {
-      const existing = new Set(known);
-      for (const n of names) existing.add(n);
-      let tmpPath;
-      try {
-        const memoPath = destinations.get(known) ?? exposureDestination(layout, sessionId2);
-        tmpPath = `${memoPath}.${randomUUID()}.tmp`;
-        fs6.mkdirSync(layout.dir(sessionId2), { recursive: true, mode: 448 });
-        fs6.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), { encoding: "utf8", mode: 384 });
-        fs6.renameSync(tmpPath, memoPath);
-      } catch (err) {
-        logger2.warn("memo write failed", { err });
-      } finally {
-        if (tmpPath !== void 0) {
-          try {
-            fs6.rmSync(tmpPath, { force: true });
-          } catch {
-          }
-        }
-      }
-    }
-  };
-}
-function resolveTouchScope(cwd, absPath) {
-  const cwdRepoRoot = cwd ? resolveRepoRoot(cwd) : null;
-  if (!cwdRepoRoot) return null;
-  const absDir = toPosix(nodePath4.dirname(absPath));
-  const fileRepoRoot = resolveRepoRoot(absDir);
-  if (fileRepoRoot !== cwdRepoRoot) return null;
-  const repoRoot = cwdRepoRoot;
-  const repoRelPath = relativeToRepo(repoRoot, absPath);
-  if (isGitIgnored(repoRoot, repoRelPath)) return null;
-  const spanRoot = resolveSpanRoot(repoRoot);
-  if (isInsideSpanRoot(repoRelPath, spanRoot)) return null;
-  return { repoRoot, repoRelPath };
-}
 
 // packages/agent-hooks/src/common/bash-touch.ts
 function bashSpanToTouch(span, sessionId2, cwd, scopeAlreadyResolved = false) {
@@ -8658,12 +8673,11 @@ function selectSurvivors(order, evals, skipped, exitCode) {
   }
   return touches;
 }
-async function runBashTouches(matches, sessionId2, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0, invocationId = null) {
+function observedBashTouches(matches, sessionId2, cwd, toolResponse, scopeAlreadyResolved = false, warn = console.warn) {
   const prelude = bashGatePrelude(matches, toolResponse);
   if (prelude.kind === "stop") {
     if (prelude.warn !== void 0) warn(prelude.warn);
-    reportDiagnostics({ executionGateDrops: prelude.drops });
-    return [];
+    return { touches: [], probeCache: void 0, executionGateDrops: prelude.drops };
   }
   const { resolved, exitCode } = prelude;
   const guards = matches.filter((m) => m.status === "builtin-guard");
@@ -8676,12 +8690,27 @@ async function runBashTouches(matches, sessionId2, cwd, toolResponse, executors,
   const computed = computeVerdicts(commandOrder, evals, guardByIndex);
   const { skipped } = applyJoinFilter(commandOrder, groups, guardByIndex, computed);
   const touches = selectSurvivors(commandOrder, evals, skipped, exitCode);
+  return { touches, probeCache, executionGateDrops: resolved.length - touches.length };
+}
+async function runBashTouches(matches, sessionId2, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0, invocationId = null) {
+  const { touches, probeCache, executionGateDrops } = observedBashTouches(
+    matches,
+    sessionId2,
+    cwd,
+    toolResponse,
+    scopeAlreadyResolved,
+    warn
+  );
+  if (probeCache === void 0) {
+    reportDiagnostics({ executionGateDrops });
+    return [];
+  }
   const invocationExecutors = executors.forInvocation?.() ?? executors;
   const batch = await runTouchHooks(touches, invocationExecutors, memo, invocationId, probeCache, { warn });
   const blocks = batch.outputs.flatMap(
     (output) => output.additionalContext === null ? [] : [output.additionalContext]
   );
-  reportDiagnostics({ executionGateDrops: resolved.length - touches.length, ...batch.diagnostics });
+  reportDiagnostics({ executionGateDrops, ...batch.diagnostics });
   return blocks;
 }
 
@@ -10188,70 +10217,98 @@ Git span commit context unavailable: ${reason.replace(new RegExp("\\p{Cc}", "gu"
     }),
     ...guards
   ];
-  const preTrackedDeletes = /* @__PURE__ */ new Set();
-  const preTrackedPaths = /* @__PURE__ */ new Set();
-  if (record2 !== null) {
-    for (const { repoRelativePath, operation, evidence } of record2.touches) {
-      const absolutePath = nodePath5.join(record2.repoRoot, repoRelativePath);
-      preTrackedPaths.add(absolutePath);
-      if (operation === "delete" && evidence?.kind === "tracked") preTrackedDeletes.add(absolutePath);
-    }
-  }
-  const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
-  const responseSpans = response === null || suppressCommitReads || pending2.kind === "unsupported" ? [] : parseResponse({ command, cwd, ...response });
-  const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
-  const parserLatencyMs = performance.now() - parserStarted;
-  const touchStarted = performance.now();
-  let executionGateDrops = 0;
-  let commandDiagnostics = {};
-  const invocationId = toolUseId === void 0 ? null : `${sessionId2}:${toolUseId}`;
-  const commandBlocks = await runBashTouches(
-    filtered.matches,
+  const guidance = inspection?.successful && inspection.onWrite !== void 0 && observedBashTouches(
+    combined,
     sessionId2,
     cwd,
     toolResponse,
-    executors,
-    memo,
-    (message, context) => logger2.warn(message, context),
-    true,
-    (diagnostics) => {
-      executionGateDrops = diagnostics.executionGateDrops;
-      commandDiagnostics = diagnostics;
-    },
-    invocationId
-  );
-  const responseBatch = await runResponseReadTouches(
-    filtered.responseSpans,
-    cwd,
-    sessionId2,
-    executors,
-    memo,
-    `${sessionId2}:${toolUseId ?? createHash3("sha256").update(command).digest("hex")}:response`,
-    logger2
-  );
-  const blocks = [...commandBlocks, ...responseBatch.blocks, ...commitNotice === null ? [] : [commitNotice]];
-  logger2.info?.("git-span static attribution post", {
-    resolvedReads: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation === "read").length,
-    resolvedWrites: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation !== "read").length,
-    unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
-    unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
-    scopeDrops: filtered.scopeDrops,
-    trackedDrops: filtered.trackedDrops,
-    executionGateDrops,
-    parserLatencyMs,
-    touchLatencyMs: performance.now() - touchStarted,
-    ignoreQueryCount: filtered.ignoreQueryCount,
-    trackedQueryCount: filtered.trackedQueryCount,
-    eligibilityErrors: filtered.eligibilityErrors,
-    contextQueryCount: (commandDiagnostics.queryCount ?? 0) + responseBatch.diagnostics.queryCount,
-    contextScopeCount: (commandDiagnostics.scopeCount ?? 0) + responseBatch.diagnostics.scopeCount,
-    contextSelectedResultCount: (commandDiagnostics.selectedResultCount ?? 0) + responseBatch.diagnostics.selectedResultCount,
-    contextElapsedMs: (commandDiagnostics.elapsedMs ?? 0) + responseBatch.diagnostics.elapsedMs,
-    contextMutation: commandDiagnostics.mutation ?? "unchanged",
-    contextFailure: commandDiagnostics.failure ?? responseBatch.diagnostics.failure,
-    dependencyContextSurfaced: blocks.length > 0
-  });
-  return blocks;
+    false,
+    (message, context) => logger2.warn(message, context)
+  ).touches.some((touch) => touch.kind === "write") ? inspection.onWrite() : null;
+  try {
+    const preTrackedDeletes = /* @__PURE__ */ new Set();
+    const preTrackedPaths = /* @__PURE__ */ new Set();
+    if (record2 !== null) {
+      for (const { repoRelativePath, operation, evidence, contextEligible } of record2.touches) {
+        if (contextEligible === false) continue;
+        const absolutePath = nodePath5.join(record2.repoRoot, repoRelativePath);
+        preTrackedPaths.add(absolutePath);
+        if (operation === "delete" && evidence?.kind === "tracked") preTrackedDeletes.add(absolutePath);
+      }
+    }
+    const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
+    const responseSpans = response === null || suppressCommitReads || pending2.kind === "unsupported" ? [] : parseResponse({ command, cwd, ...response });
+    const observationOnlyKeys = new Set(
+      (record2?.touches ?? []).filter((touch) => touch.contextEligible === false).map(
+        (touch) => `${nodePath5.join(record2?.repoRoot ?? "", touch.repoRelativePath)}\0${touch.operation}\0${touch.simpleCommandIndex}`
+      )
+    );
+    const contextMatches = combined.filter(
+      (match) => match.status !== "resolved" || !observationOnlyKeys.has(planGroupKey(match.span))
+    );
+    const filtered = filterPostTracked(contextMatches, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
+    const parserLatencyMs = performance.now() - parserStarted;
+    const touchStarted = performance.now();
+    let executionGateDrops = 0;
+    let commandDiagnostics = {};
+    const invocationId = toolUseId === void 0 ? null : `${sessionId2}:${toolUseId}`;
+    const commandBlocks = await runBashTouches(
+      filtered.matches,
+      sessionId2,
+      cwd,
+      toolResponse,
+      executors,
+      memo,
+      (message, context) => logger2.warn(message, context),
+      true,
+      (diagnostics) => {
+        executionGateDrops = diagnostics.executionGateDrops;
+        commandDiagnostics = diagnostics;
+      },
+      invocationId
+    );
+    const responseBatch = await runResponseReadTouches(
+      filtered.responseSpans,
+      cwd,
+      sessionId2,
+      executors,
+      memo,
+      `${sessionId2}:${toolUseId ?? createHash3("sha256").update(command).digest("hex")}:response`,
+      logger2
+    );
+    const blocks = [
+      ...commandBlocks,
+      ...responseBatch.blocks,
+      ...commitNotice === null ? [] : [commitNotice],
+      ...guidance === null ? [] : [guidance]
+    ];
+    logger2.info?.("git-span static attribution post", {
+      resolvedReads: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation === "read").length,
+      resolvedWrites: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation !== "read").length,
+      unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
+      unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
+      scopeDrops: filtered.scopeDrops,
+      trackedDrops: filtered.trackedDrops,
+      executionGateDrops,
+      parserLatencyMs,
+      touchLatencyMs: performance.now() - touchStarted,
+      ignoreQueryCount: filtered.ignoreQueryCount,
+      trackedQueryCount: filtered.trackedQueryCount,
+      eligibilityErrors: filtered.eligibilityErrors,
+      contextQueryCount: (commandDiagnostics.queryCount ?? 0) + responseBatch.diagnostics.queryCount,
+      contextScopeCount: (commandDiagnostics.scopeCount ?? 0) + responseBatch.diagnostics.scopeCount,
+      contextSelectedResultCount: (commandDiagnostics.selectedResultCount ?? 0) + responseBatch.diagnostics.selectedResultCount,
+      contextElapsedMs: (commandDiagnostics.elapsedMs ?? 0) + responseBatch.diagnostics.elapsedMs,
+      contextMutation: commandDiagnostics.mutation ?? "unchanged",
+      contextFailure: commandDiagnostics.failure ?? responseBatch.diagnostics.failure,
+      dependencyContextSurfaced: blocks.length > 0
+    });
+    return blocks;
+  } catch (err) {
+    if (guidance === null) throw err;
+    logger2.warn("git-span context delivery failed after a successful write", { err });
+    return [guidance];
+  }
 }
 
 // packages/agent-hooks/src/common/commit-runtime.ts
@@ -11000,6 +11057,22 @@ async function invokeNotes(enrollment, receipt, options, args, stdin, started) {
       result.timedOut ? "notes CLI timed out; receipt retained" : "notes CLI unavailable or failed; receipt retained"
     );
   return result.stdout;
+}
+
+// packages/agent-hooks/src/common/first-write-guidance.ts
+var FIRST_WRITE_GUIDANCE = `<git-span>
+Use \`git-span\` to preserve rules or relationships that a future edit could accidentally break. Anchor content that carries the rule or could violate it.
+
+\`\`\`bash
+git span add <name> <path>#L<start>-L<end> [<path>#L<start>-L<end ...]
+git span why <name> <why>
+\`\`\`
+
+<name>: Semantic slug, example: \`api/auth/handlers\`.
+<why>: One sentence explaining what must remain true and why, including relevant scope or uncertainty.
+</git-span>`;
+function firstWriteGuidance(sessionId2, memo, writeObserved) {
+  return writeObserved && sessionId2.length > 0 && memo.claimGuidance(sessionId2, "first-write") ? FIRST_WRITE_GUIDANCE : null;
 }
 
 // packages/agent-hooks/src/common/update-check-env.ts
@@ -16890,13 +16963,15 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
   const options = { stateRoot: join12(dirname9(layout.base), "commit-receipts"), ...runtimeOptions };
   return async (input, ctx) => {
     let original = null;
-    const shellTool = ["Bash", "shell", "local_shell", "exec_command", "exec"].includes(input.tool_name);
+    let shellTool = ["Bash", "shell", "local_shell", "exec_command", "exec"].includes(input.tool_name);
     const poll = input.tool_name === "write_stdin";
+    let invocationToolId = input.tool_use_id;
     if ((shellTool || poll) && input.session_id && input.tool_use_id) {
       try {
         const executionId = poll ? polledExecution(input.tool_input) : null;
         const identity = poll ? executionId === null ? null : findExecution(input.session_id, executionId, options) : { host: "codex", sessionId: input.session_id, toolUseId: input.tool_use_id };
         if (identity !== null) {
+          invocationToolId = identity.toolUseId;
           const running = yieldedExecution(input.tool_response);
           if (running !== null) {
             if (!poll && narrowShellExecutions(input.tool_input).executions.length > 1) {
@@ -16915,7 +16990,10 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
         ctx.logger.warn("git-span terminal commit attribution failed", { err });
       }
     }
-    if (poll) return void 0;
+    if (poll) {
+      if (original === null) return void 0;
+      shellTool = true;
+    }
     if (original === null && input.tool_name === "Bash" && isRecord(input.tool_input) && typeof input.tool_input.command === "string" && typeof input.tool_input.workdir !== "string" && typeof input.tool_input.cwd !== "string") {
       ctx.logger.warn("git-span canonical Bash execution directory unknown; suppressing session-directory attribution");
       return void 0;
@@ -16942,7 +17020,7 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
             execution2.command,
             effectiveCwd,
             sessionId2,
-            recovered.executions.length === 1 ? input.tool_use_id : void 0,
+            recovered.executions.length === 1 ? invocationToolId : void 0,
             input.tool_response,
             executors,
             memo,
@@ -16950,7 +17028,8 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
             createDefaultPlannedTouchStore(layout),
             {
               successful: recovered.executions.length === 1 && recovered.executions[0]?.background === false && bashResponseExitCode(input.tool_response) === 0,
-              executor: inspectionExecutor
+              executor: inspectionExecutor,
+              onWrite: () => firstWriteGuidance(sessionId2, memo, true)
             }
           )
         );
@@ -16979,7 +17058,8 @@ function createHandler(executors = createDefaultTouchExecutors(), memoFactory = 
       executors,
       memo,
       input.tool_use_id === void 0 ? null : `${sessionId2}:${input.tool_use_id}`,
-      ctx.logger
+      ctx.logger,
+      () => firstWriteGuidance(sessionId2, memo, true)
     );
     if (blocks.length === 0) return void 0;
     const combined = blocks.join("");

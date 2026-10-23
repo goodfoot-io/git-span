@@ -16,6 +16,8 @@ The integrations use the same scriptable `git span` CLI available in a terminal 
 
 The touch pipeline observes supported file-affecting tools: Claude Code covers `Read`, `Edit`, `Write`, and `Bash`; Codex covers `apply_patch` and its shell/exec family; OpenCode covers `bash`, `read`, `edit`, `write`, and `apply_patch`; Antigravity covers `run_command`.
 
+After the first successful supported write, the plugin delivers span-authoring guidance once per session: preserve rules or relationships that a future edit could accidentally break, and anchor content that carries the rule or could violate it. The reminder includes `git span add` and `git span why` examples. Reads, failed attempts and duplicate events do not consume or repeat it. It also applies to new untracked files and repositories with no spans or commit notes. Antigravity delivers it through its queued PostInvocation channel; Codex waits for yielded shell commands to finish.
+
 When a supported range intersects an existing anchor, the hook repairs verified exact-content relocations and emits a short notice wrapped in `<git-span>` tags. Initial clean touches identify the touched path and relevant spans; reads encountering drift identify the drifting anchors, reasons and span names. Writes use “Change introduced drift from” with the same evidence. Whole-file anchors remain bare paths. Whitespace edits and fuzzy candidates remain review obligations; matching anchors, hash refreshes and zero drift do not establish correctness.
 
 Clean notices and write-drift notices recommend `git span list <names>`; read-drift notices recommend `git span drift <names>`. Each command's guidance appears once per session across paths, spans, repositories and recipients. Later notices retain their wrapper and substantive line. Broad reads use the same short notices and record delivery. Output omits trees, explanations, read-extent qualifications, incomplete-details messages and instructional footers.
@@ -27,7 +29,7 @@ Claude and Codex `SessionStart` reset exposure, including explicit compact/resum
 Shell attribution uses bounded literal command intent and post-state evidence. Static planning captures only the pre-state needed for supported operations. Unproven dynamic paths, unsupported syntax, and inconclusive failed writes stay silent. Failed commands can surface a write only when the supported parser provides decisive post-state evidence; interrupted calls suppress attribution.
 
 <Callout type="info">
-A missing `git span` binary, timeout, failed scan, or unexpected CLI result injects nothing and does not block the tool.
+A missing `git span` binary, timeout, failed scan, or unexpected CLI result omits span context and does not block the tool. Independently observed successful writes can still deliver authoring guidance.
 
 Human edits, unsupported tools, and inactive hooks can bypass this coverage. Run explicit `git span drift` checks or use CI to verify existing spans across the repository.
 </Callout>
@@ -64,15 +66,9 @@ Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive
 
 Claude Code and Codex shell hooks record observed Git commits as session notes. Editing a file alone creates no commit note. Install the CLI and plugin from the same release; receipt coordination uses a native CLI lock helper.
 
-All four hosts inspect a bounded, versioned notes response in the current repository and supplied workspace roots. Claude Code and Codex select recognized notes for their host/session; OpenCode and Antigravity retain repository-wide selection. Empty selection is normal. A lookup failure reports that commit notes could not be read.
+Invoke `review-notes` manually to list notes, inspect commits, maintain spans and report concrete shared-assumption concerns. The skill removes notes after validation or recorded evidence that no change was needed. Session completion does not request a review or dispatch a reviewer.
 
-On Claude Code and Codex, an ordinary Stop with matching notes asks for a forked subagent using `review-notes`. Stop continuations skip another request to avoid recursive blocking. Codex retires touch state on an empty stop or continuation and preserves it while span creation is requested or its lookup fails; Claude retires it at session end.
-
-The hook prompt asks the subagent to extend existing spans or create missing coverage, validate anchors and whys against the current tree, remove only successfully processed notes, and leave edits unstaged. The parent must summarize validation, retained notes and incomplete scope. The `review-notes` skill lists notes, inspects commits, maintains spans and reports concrete shared-assumption concerns. It removes notes after validation or recorded evidence that no change was needed; it does not specify session selection or receipt matching.
-
-Antigravity requests span creation once per conversation at an idle, successful model stop with repository notes. Its existing session guard survives call-scoped cleanup. Error and step-limit stops do not request span creation. Lookup failures report the notes read error without forcing repeated continuation.
-
-OpenCode sends one synthetic root-session prompt per observed user turn through `session.synthetic` with `resume: true`. Synthetic prompts and child sessions do not recurse. Lookup failures produce a notes read error notice once for that turn; failed dispatch is logged without an automatic retry loop.
+Lifecycle cleanup remains active: Claude retires session touch state at SessionEnd, Codex cleans it up at Stop, and OpenCode and Antigravity retain their host-specific call and session cleanup. The once-per-session guidance claim survives ordinary cleanup and exposure resets.
 
 ## The enforcement backstop
 

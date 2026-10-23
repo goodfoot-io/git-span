@@ -18,9 +18,9 @@
 
 import { parseApplyPatch } from '../codex/apply-patch.js';
 import { abspathAgainst } from './agent-hooks-common.js';
-import type { CoreLogger, MemoFactory } from './span-surface.js';
+import { type CoreLogger, type MemoFactory, resolveTouchScope } from './span-surface.js';
 import { filterTrackedEligibility } from './static-attribution.js';
-import { runTouchHooks, type TouchExecutors, type TouchInput } from './touch-core.js';
+import { fileExists, runTouchHooks, type TouchExecutors, type TouchInput } from './touch-core.js';
 
 /** One file a patch plans to change, in the touch pipeline's vocabulary. */
 export interface PatchCandidate {
@@ -48,7 +48,8 @@ export async function runApplyPatchTouches(
   executors: TouchExecutors,
   memo: ReturnType<MemoFactory>,
   invocationId: string | null,
-  logger: CoreLogger
+  logger: CoreLogger,
+  onWrite?: () => string | null
 ): Promise<string[]> {
   const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
   const fallback: PatchCandidate[] = parseApplyPatch(patchText, noRangeRecovery)
@@ -62,31 +63,47 @@ export async function runApplyPatchTouches(
     )
     .filter(({ absolutePath }) => !plannedPaths.has(absolutePath));
   const candidates = [...planned, ...fallback];
-  const tracked = filterTrackedEligibility(
-    candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
-    { cwd }
-  );
-  const eligible = new Set(tracked.eligible.map(({ value }) => value));
-  for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
+  const guidance = candidates.some(
+    (candidate) =>
+      resolveTouchScope(cwd, candidate.absolutePath) !== null &&
+      (candidate.operation === 'delete' ? !fileExists(candidate.absolutePath) : fileExists(candidate.absolutePath))
+  )
+    ? (onWrite?.() ?? null)
+    : null;
+  try {
+    const tracked = filterTrackedEligibility(
+      candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
+      { cwd }
+    );
+    const eligible = new Set(tracked.eligible.map(({ value }) => value));
+    for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
 
-  const touches: TouchInput[] = [];
-  for (const candidate of candidates) {
-    if (!eligible.has(candidate)) continue;
-    const ranges = candidate.ranges.length === 0 ? [undefined] : candidate.ranges;
-    for (const range of ranges) {
-      touches.push({
-        kind: 'write',
-        sessionId,
-        cwd,
-        filePath: candidate.absolutePath,
-        ...(invocationId === null ? {} : { invocationId }),
-        written: '',
-        range,
-        targetState: candidate.operation === 'delete' ? 'absent' : 'exists',
-        ...(candidate.operation === 'delete' ? { postState: { realDelete: true } } : {})
-      });
+    const touches: TouchInput[] = [];
+    for (const candidate of candidates) {
+      if (!eligible.has(candidate)) continue;
+      const ranges = candidate.ranges.length === 0 ? [undefined] : candidate.ranges;
+      for (const range of ranges) {
+        touches.push({
+          kind: 'write',
+          sessionId,
+          cwd,
+          filePath: candidate.absolutePath,
+          ...(invocationId === null ? {} : { invocationId }),
+          written: '',
+          range,
+          targetState: candidate.operation === 'delete' ? 'absent' : 'exists',
+          ...(candidate.operation === 'delete' ? { postState: { realDelete: true } } : {})
+        });
+      }
     }
+    const batch = await runTouchHooks(touches, executors, memo, invocationId, undefined, logger);
+    return [
+      ...batch.outputs.flatMap((output) => (output.additionalContext === null ? [] : [output.additionalContext])),
+      ...(guidance === null ? [] : [guidance])
+    ];
+  } catch (err) {
+    if (guidance === null) throw err;
+    logger.warn('git-span patch context delivery failed after a successful write', { err });
+    return [guidance];
   }
-  const batch = await runTouchHooks(touches, executors, memo, invocationId, undefined, logger);
-  return batch.outputs.flatMap((output) => (output.additionalContext === null ? [] : [output.additionalContext]));
 }

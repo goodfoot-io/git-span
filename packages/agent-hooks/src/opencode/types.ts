@@ -2,21 +2,6 @@
  * Native V2 domain hooks are translated into these envelopes by index.ts.
  */
 
-/** OpenCode V2 session operations used by the review continuation. */
-export interface OpencodeReviewClient {
-  session: {
-    get(input: { sessionID: string }, options?: { signal: AbortSignal }): Promise<unknown>;
-    synthetic(
-      input: { sessionID: string; text: string; resume: true },
-      options?: { signal: AbortSignal }
-    ): Promise<unknown>;
-  };
-}
-
-export interface OpencodeChatInput {
-  sessionID?: string;
-}
-
 /** Shared `input` envelope of the tool hooks. */
 export interface OpencodeToolInput {
   tool?: string;
@@ -68,7 +53,6 @@ export interface OpencodeEvent {
 export interface GitSpanOpencodeHooks {
   dispose?: () => Promise<void> | void;
   event?: (context: { event: OpencodeEvent }) => Promise<void>;
-  'chat.message'?: (input: OpencodeChatInput, output: { parts?: unknown }) => Promise<void>;
   'tool.execute.before'?: (input: OpencodeToolInput, output: OpencodeBeforeOutput) => Promise<void>;
   'tool.execute.after'?: (input: OpencodeToolInput, output: OpencodeAfterOutput) => Promise<void>;
   'shell.env'?: (input: OpencodeShellEnvInput, output: OpencodeShellEnvOutput) => Promise<void>;

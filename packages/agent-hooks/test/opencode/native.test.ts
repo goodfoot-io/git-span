@@ -2,11 +2,6 @@ import type { PluginInput } from '@goodfoot/agent-hooks/opencode';
 import { describe, expect, it, vi } from 'vitest';
 import plugin from '../../src/opencode/index.js';
 
-vi.mock('../../src/common/review-lookup.js', async (original) => ({
-  ...(await original<typeof import('../../src/common/review-lookup.js')>()),
-  hasReviewNotes: vi.fn(async () => ({ kind: 'matching', repositories: [] }))
-}));
-
 vi.mock('../../src/common/context-warmup.js', () => ({ startContextWarmup: vi.fn() }));
 vi.mock('../../src/opencode/post-tool-use.js', () => ({
   createAfterHandler: () => async (_input: unknown, output: { output: string }) => {
@@ -103,42 +98,21 @@ describe('OpenCode V2 native adapter', () => {
     } finally {
       await f.cleanup();
     }
-    expect(f.disposals).toHaveLength(3);
+    expect(f.disposals).toHaveLength(2);
     for (const dispose of f.disposals) expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it('resumes a root session once on idle through the native session API', async () => {
+  it('does not register a prompt hook or resume an idle session', async () => {
     const f = await start();
     try {
-      await invoke(f, 'prompt', { sessionID: 'native-review', prompt: { text: 'work' } });
+      expect(f.callbacks.has('prompt')).toBe(false);
       f.emit('session.status', { sessionID: 'native-review', status: { type: 'idle' } });
-      f.emit('session.status', { sessionID: 'native-review', status: { type: 'idle' } });
-      await vi.waitFor(() => expect(f.synthetic).toHaveBeenCalledOnce());
-      expect(f.synthetic).toHaveBeenCalledWith(
-        { sessionID: 'native-review', text: expect.stringContaining('Load the review-notes skill'), resume: true },
-        { signal: expect.any(AbortSignal) }
-      );
+      f.emit('session.status', { sessionID: 'barrier', status: { type: 'idle' } });
+      await vi.waitFor(() => expect(f.consumed).toHaveBeenCalledTimes(2));
+      expect(f.get).not.toHaveBeenCalled();
+      expect(f.synthetic).not.toHaveBeenCalled();
     } finally {
       await f.cleanup();
     }
   });
-
-  it.each(['session.execution.failed', 'session.execution.interrupted', 'session.deleted'])(
-    'cancels review on %s',
-    async (type) => {
-      const f = await start();
-      try {
-        await invoke(f, 'prompt', { sessionID: 'native-review', prompt: { text: 'work' } });
-        f.emit(type, { sessionID: 'native-review' });
-        f.emit('session.status', { sessionID: 'native-review', status: { type: 'idle' } });
-        // An unrelated barrier event shows both preceding events were consumed.
-        f.emit('session.status', { sessionID: 'barrier', status: { type: 'idle' } });
-        await vi.waitFor(() => expect(f.consumed).toHaveBeenCalledTimes(3));
-        expect(f.get).not.toHaveBeenCalled();
-        expect(f.synthetic).not.toHaveBeenCalled();
-      } finally {
-        await f.cleanup();
-      }
-    }
-  );
 });

@@ -1,8 +1,4 @@
 #!/usr/bin/env -S node --enable-source-maps
-// packages/agent-hooks/src/antigravity/stop.ts
-import { mkdirSync as mkdirSync4, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join4 } from "node:path";
-
 // node_modules/@goodfoot/agent-hooks/dist/agents/antigravity/events.js
 var HOOK_EVENT_NAMES = [
   "PreToolUse",
@@ -436,14 +432,14 @@ var logger = new Logger({
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve2, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve4(chunks.join(""));
+      resolve2(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject(error);
@@ -505,12 +501,12 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve2, reject) => {
     stream.write(content, (error) => {
       if (error)
         reject(error);
       else
-        resolve4();
+        resolve2();
     });
   });
 }
@@ -612,18 +608,6 @@ var AntigravityBlockError = class extends HookBlockError {
     this.reason = reason;
   }
 };
-function omitUndefined(value) {
-  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== void 0));
-}
-function buildOutput(type, stdout) {
-  return {
-    _type: type,
-    stdout: omitUndefined(stdout)
-  };
-}
-function stopOutput(options = {}) {
-  return buildOutput("Stop", { decision: options.decision, reason: options.reason });
-}
 
 // node_modules/@goodfoot/agent-hooks/dist/agents/antigravity/transport.js
 function formatErrorText(error) {
@@ -667,9 +651,6 @@ import * as os from "node:os";
 import * as nodePath from "node:path";
 
 // packages/agent-hooks/src/common/guards.ts
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function isErrnoException(error) {
   return error instanceof Error && (!("code" in error) || error.code === void 0 || typeof error.code === "string");
 }
@@ -678,40 +659,6 @@ function errnoCode(error) {
 }
 
 // packages/agent-hooks/src/common/agent-hooks-common.ts
-function toPosix(p) {
-  return p.replace(/\\/g, "/");
-}
-var repoRootCache = /* @__PURE__ */ new Map();
-function resolveRepoRoot(dir) {
-  if (!dir) return null;
-  const cached = repoRootCache.get(dir);
-  if (cached !== void 0) return cached;
-  const resolved = resolveRepoRootUncached(dir);
-  repoRootCache.set(dir, resolved);
-  return resolved;
-}
-function resolveRepoRootUncached(dir) {
-  try {
-    let current = fs.realpathSync.native(dir);
-    for (; ; ) {
-      if (fs.existsSync(nodePath.join(current, ".git"))) return toPosix(current);
-      const parent = nodePath.dirname(current);
-      if (parent === current) break;
-      current = parent;
-    }
-  } catch {
-  }
-  try {
-    const out = execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8"
-    });
-    const trimmed = out.trim();
-    return trimmed.length > 0 ? toPosix(trimmed) : null;
-  } catch {
-    return null;
-  }
-}
 var PORCELAIN_STATUSES = [
   "FRESH",
   "RESOLVED_PENDING_COMMIT",
@@ -755,194 +702,6 @@ var THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
 var SESSION_TRASH_MARKER = ".trash-session-";
 var lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
 
-// packages/agent-hooks/src/common/commit-native-io.ts
-import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-  accessSync,
-  closeSync as closeSync2,
-  constants,
-  existsSync as existsSync3,
-  fstatSync,
-  openSync as openSync2,
-  readSync,
-  realpathSync as realpathSync2,
-  statSync as statSync2
-} from "node:fs";
-import { delimiter, isAbsolute, join as join2, resolve as resolve2 } from "node:path";
-import { StringDecoder } from "node:string_decoder";
-function executableOnPath(name, cwd = process.cwd()) {
-  const candidates = isAbsolute(name) ? [name] : (process.env.PATH ?? "").split(delimiter).map((directory) => resolve2(cwd, directory, name));
-  for (const candidate of candidates) {
-    try {
-      accessSync(candidate, constants.X_OK);
-      if (statSync2(candidate).isFile()) return realpathSync2(candidate);
-    } catch {
-    }
-  }
-  throw new Error(`${name} executable is unavailable`);
-}
-async function executeCommitNotes(executable, command) {
-  return new Promise((resolveResult) => {
-    let stdout = "";
-    let stderr = "";
-    let bytes = 0;
-    const stdoutDecoder = new StringDecoder("utf8");
-    const stderrDecoder = new StringDecoder("utf8");
-    let timedOut = false;
-    let outputExceeded = false;
-    let finished = false;
-    const grouped = process.platform !== "win32";
-    const child = spawn(executable, [...command.argv], {
-      cwd: command.cwd,
-      detached: grouped,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    const finish = (exitCode, signal) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      stdout += stdoutDecoder.end();
-      stderr += stderrDecoder.end();
-      child.stdin.destroy();
-      child.stdout.destroy();
-      child.stderr.destroy();
-      resolveResult({ exitCode, signal, stdout, stderr, timedOut, outputExceeded });
-    };
-    const terminate = () => {
-      try {
-        if (grouped && child.pid !== void 0) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
-      } catch {
-        return finish(null, "SIGKILL");
-      }
-      finish(null, "SIGKILL");
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      terminate();
-    }, command.timeoutMs);
-    const append = (kind, chunk) => {
-      bytes += chunk.length;
-      if (bytes > command.maxOutputBytes) {
-        outputExceeded = true;
-        terminate();
-        return;
-      }
-      if (kind === "stdout") stdout += stdoutDecoder.write(chunk);
-      else stderr += stderrDecoder.write(chunk);
-    };
-    child.stdout.on("data", (chunk) => append("stdout", chunk));
-    child.stderr.on("data", (chunk) => append("stderr", chunk));
-    child.stdin.on("error", () => {
-    });
-    child.stdin.end(command.stdin ?? "");
-    child.once("error", () => finish(127, null));
-    child.once("close", (exitCode, signal) => finish(exitCode, signal));
-  });
-}
-
-// packages/agent-hooks/src/common/git-span-command.ts
-import { dirname as dirname3, resolve as resolve3 } from "node:path";
-function resolveGitSpanCommand(argv, cwd = process.cwd(), gitExecutable = "git", platform = process.platform) {
-  if (platform === "win32") {
-    const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-    for (const directory of (process.env.PATH ?? "").split(";")) {
-      for (const extension of extensions) {
-        const candidate = resolve3(cwd, directory, `git-span${extension.toLowerCase()}`);
-        try {
-          const executable = executableOnPath(candidate, cwd);
-          if (extension.toLowerCase() === ".exe" || extension.toLowerCase() === ".com")
-            return { executable, argv: [...argv] };
-          return { executable: gitExecutable, argv: [`--exec-path=${dirname3(candidate)}`, "span", ...argv] };
-        } catch {
-        }
-      }
-    }
-    return { executable: gitExecutable, argv: ["span", ...argv] };
-  }
-  try {
-    return {
-      executable: executableOnPath("git-span", cwd),
-      argv: [...argv]
-    };
-  } catch {
-    return { executable: gitExecutable, argv: ["span", ...argv] };
-  }
-}
-
-// packages/agent-hooks/src/common/review-lookup.ts
-function reviewError(err) {
-  return (err instanceof Error ? err.message : "could not read commit notes").slice(0, 512);
-}
-function decodeReviewNotes(envelope) {
-  if (!isRecord(envelope) || envelope.schema_version !== 1 || envelope.operation !== "list" || Object.keys(envelope).some((key) => !["schema_version", "operation", "notes"].includes(key)))
-    throw new Error("invalid versioned notes list envelope");
-  return decodeReviewNoteArray(envelope.notes);
-}
-function decodeReviewNoteArray(value) {
-  if (!Array.isArray(value)) throw new Error("invalid captured notes");
-  const ids = /* @__PURE__ */ new Set();
-  return value.map((note) => {
-    if (!isRecord(note) || Object.keys(note).length !== 3 || !Number.isSafeInteger(note.id) || typeof note.id !== "number" || note.id <= 0 || typeof note.commit_sha !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(note.commit_sha) || !Object.hasOwn(note, "document") || ids.has(note.id))
-      throw new Error("invalid captured note tuple");
-    ids.add(note.id);
-    return { id: note.id, commit_sha: note.commit_sha, document: note.document };
-  });
-}
-function noteBelongsToSession(note, scope) {
-  if (scope.host === "antigravity" || scope.host === "opencode") return true;
-  if (!isRecord(note.document)) return false;
-  const doc = note.document;
-  return doc.schemaVersion === 1 && doc.host === scope.host && doc.sessionId === scope.sessionId || doc.kind === "git-span/uncovered-commit" && doc.schema_version === 1 && doc.session_id === scope.sessionId && (doc.host === void 0 || doc.host === scope.host);
-}
-function reviewRepositories(scope) {
-  const repositories = /* @__PURE__ */ new Set();
-  for (const directory of /* @__PURE__ */ new Set([scope.cwd, ...scope.workspacePaths ?? []])) {
-    if (!directory) continue;
-    const root = resolveRepoRoot(directory);
-    if (root) repositories.add(root);
-    if (repositories.size > 32) throw new Error("review repository budget exceeded");
-  }
-  return [...repositories];
-}
-async function hasReviewNotes(scope, logger2, io) {
-  const deadline = performance.now() + 5e3;
-  try {
-    const repositories = [];
-    for (const cwd of reviewRepositories(scope)) {
-      if (performance.now() >= deadline) throw new Error("note lookup deadline exhausted");
-      const resolved = resolveGitSpanCommand(["notes", "list", "--format", "json"], cwd);
-      const command = {
-        cwd,
-        argv: resolved.argv,
-        timeoutMs: Math.max(1, Math.floor(deadline - performance.now())),
-        maxOutputBytes: 1048576
-      };
-      const result = await (io?.execute(command) ?? executeCommitNotes(resolved.executable, command));
-      if (result.exitCode !== 0 || result.signal !== null || result.timedOut || result.outputExceeded)
-        throw new Error("notes CLI unavailable, failed, or exceeded lookup bounds");
-      const notes = decodeReviewNotes(JSON.parse(result.stdout)).filter((note) => noteBelongsToSession(note, scope));
-      if (notes.length) repositories.push({ cwd, notes });
-    }
-    return repositories.length ? { kind: "matching", repositories } : { kind: "empty" };
-  } catch (err) {
-    logger2.warn("git-span could not read commit notes", { err });
-    return { kind: "failure", reason: reviewError(err) };
-  }
-}
-
-// packages/agent-hooks/src/common/review-notes-stop.ts
-function reviewNotesPrompt(scope) {
-  const skill = scope.host === "claude" || scope.host === "codex" ? "git-span:review-notes" : "review-notes";
-  const worker = `Load the ${skill} skill. Use commit notes to identify decision-changing contracts, implicit couplings and useful reminders. Extend existing spans where applicable; create new spans where coverage is missing. Validate anchors and whys against the current tree, and remove only successfully processed notes. Leave edits unstaged.`;
-  return [
-    "Dispatch a forked subagent with this prompt:",
-    JSON.stringify(worker),
-    "Wait for the subagent. Summarize spans created or updated, validation results, retained notes and incomplete scope in your final response."
-  ].join("\n");
-}
-
 // packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
@@ -980,38 +739,11 @@ function cleanupCallScopedState(layout, conversationId, now = Date.now()) {
 }
 
 // packages/agent-hooks/src/antigravity/stop.ts
-function createHandler(layout = DEFAULT_SESSION_LAYOUT, check = hasReviewNotes) {
+function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
-    const scope = {
-      host: "antigravity",
-      sessionId: input.conversationId,
-      cwd: input.workspacePaths[0] ?? "",
-      workspacePaths: input.workspacePaths
-    };
-    let failure;
-    const outcome = input.terminationReason === "model_stop" && !input.error && input.fullyIdle ? await check(scope, ctx.logger).catch((err) => ({
-      kind: "failure",
-      reason: err instanceof Error ? err.message.slice(0, 512) : "lookup unavailable"
-    })) : { kind: "empty" };
-    if (outcome.kind === "failure") failure = `git-span could not read commit notes: ${outcome.reason}`;
-    if (outcome.kind === "matching") {
-      try {
-        mkdirSync4(layout.dir(input.conversationId), { recursive: true, mode: 448 });
-        writeFileSync2(join4(layout.dir(input.conversationId), "antigravity-note-review-requested"), "", {
-          flag: "wx",
-          mode: 384
-        });
-        return stopOutput({
-          decision: "continue",
-          reason: reviewNotesPrompt(scope)
-        });
-      } catch (err) {
-        if (errnoCode(err) !== "EEXIST") ctx.logger.warn("git-span note-review guard failed", { err });
-      }
-    }
     try {
       cleanupCallScopedState(layout, input.conversationId);
-      return failure ? stopOutput({ reason: failure }) : void 0;
+      return void 0;
     } catch (err) {
       ctx.logger.warn("git-span stop cleanup failed open on an uncaught error", { err });
       return void 0;

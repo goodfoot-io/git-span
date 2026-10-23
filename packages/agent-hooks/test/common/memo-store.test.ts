@@ -250,50 +250,53 @@ describe('session retrieval guidance claims', () => {
     expect(first.claimGuidance('s', 'list')).toBe(false);
   });
 
-  it('allows exactly one winner among independent process claims', async () => {
-    fs.mkdirSync(layout.base, { recursive: true });
-    const bundle = nodePath.join(layout.base, 'guidance-worker.mjs');
-    const buildOptions = {
-      stdin: {
-        resolveDir: process.cwd(),
-        contents: `
+  it.each(['list', 'first-write'] as const)(
+    'allows exactly one winner among independent process claims for %s',
+    async (family) => {
+      fs.mkdirSync(layout.base, { recursive: true });
+      const bundle = nodePath.join(layout.base, 'guidance-worker.mjs');
+      const buildOptions = {
+        stdin: {
+          resolveDir: process.cwd(),
+          contents: `
         import { createDiskMemoStore } from ${JSON.stringify(fileURLToPath(new URL('../../src/common/span-surface.ts', import.meta.url)))};
         import { createSessionLayout } from ${JSON.stringify(fileURLToPath(new URL('../../src/common/agent-hooks-common.ts', import.meta.url)))};
         process.stdin.once('data', () => {
           const store = createDiskMemoStore({ warn: () => {} }, createSessionLayout(process.argv[2]));
-          console.log(JSON.stringify(store.claimGuidance('s', 'list')));
+          console.log(JSON.stringify(store.claimGuidance('s', ${JSON.stringify(family)})));
         });
       `
-      },
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      outfile: bundle
-    };
-    execFileSync(process.execPath, ['-e', `require('esbuild').buildSync(${JSON.stringify(buildOptions)})`], {
-      stdio: 'pipe'
-    });
-    const workers = Array.from({ length: 8 }, () =>
-      spawn(process.execPath, [bundle, layout.base], { stdio: ['pipe', 'pipe', 'pipe'] })
-    );
-    const results = workers.map(
-      (worker) =>
-        new Promise<boolean>((resolve, reject) => {
-          let stdout = '';
-          let stderr = '';
-          worker.stdout.on('data', (chunk) => {
-            stdout += chunk;
-          });
-          worker.stderr.on('data', (chunk) => {
-            stderr += chunk;
-          });
-          worker.once('error', reject);
-          worker.once('close', (code) => (code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))));
-        })
-    );
-    for (const worker of workers) worker.stdin.end('claim');
-    expect((await Promise.all(results)).filter(Boolean)).toHaveLength(1);
-  });
+        },
+        bundle: true,
+        platform: 'node',
+        format: 'esm',
+        outfile: bundle
+      };
+      execFileSync(process.execPath, ['-e', `require('esbuild').buildSync(${JSON.stringify(buildOptions)})`], {
+        stdio: 'pipe'
+      });
+      const workers = Array.from({ length: 8 }, () =>
+        spawn(process.execPath, [bundle, layout.base], { stdio: ['pipe', 'pipe', 'pipe'] })
+      );
+      const results = workers.map(
+        (worker) =>
+          new Promise<boolean>((resolve, reject) => {
+            let stdout = '';
+            let stderr = '';
+            worker.stdout.on('data', (chunk) => {
+              stdout += chunk;
+            });
+            worker.stderr.on('data', (chunk) => {
+              stderr += chunk;
+            });
+            worker.once('error', reject);
+            worker.once('close', (code) => (code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))));
+          })
+      );
+      for (const worker of workers) worker.stdin.end('claim');
+      expect((await Promise.all(results)).filter(Boolean)).toHaveLength(1);
+    }
+  );
 
   it('logs an I/O failure without claiming guidance and permits retry', () => {
     const warnings: unknown[] = [];

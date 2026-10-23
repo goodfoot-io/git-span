@@ -635,34 +635,20 @@ export function selectSurvivors(
   return touches;
 }
 
-/**
- * Shared Bash driver (plan §3 step 2): owns the per-command verdict thread —
- * pass A `evaluateWriteGate` sweep (every span, before any join decision),
- * the explanation map, per-command verdicts, the join filter with chained
- * skips, and pass B per-surviving-span `runTouchHook` — plus the whole-command
- * `interrupted` and exit-code gates (plan §4) and the span-less-guard
- * commands (`false`/`true`/`:` join verdicts with no spans of their own).
- * Returns the non-null `additionalContext` blocks for the adapter to join;
- * the session memo dedups repeated targets.
- */
-export async function runBashTouches(
+/** Select executed touches without running context queries or consulting tracked membership. */
+export function observedBashTouches(
   matches: readonly BashTouchMatch[],
   sessionId: string,
   cwd: string,
   toolResponse: unknown,
-  executors: TouchExecutors,
-  memo: MemoStore,
-  warn: CoreLogger['warn'] = console.warn,
   scopeAlreadyResolved: boolean = false,
-  reportDiagnostics: (diagnostics: BashTouchDiagnostics) => void = () => undefined,
-  invocationId: string | null = null
-): Promise<string[]> {
+  warn: CoreLogger['warn'] = console.warn
+): { touches: TouchInput[]; probeCache: RealityProbeCache | undefined; executionGateDrops: number } {
   // Gate prelude (phases A+B): triage, interruption drop, candidate budget.
   const prelude = bashGatePrelude(matches, toolResponse);
   if (prelude.kind === 'stop') {
     if (prelude.warn !== undefined) warn(prelude.warn);
-    reportDiagnostics({ executionGateDrops: prelude.drops });
-    return [];
+    return { touches: [], probeCache: undefined, executionGateDrops: prelude.drops };
   }
   const { resolved, exitCode } = prelude;
   const guards = matches.filter((m): m is GuardMatch => m.status === 'builtin-guard');
@@ -687,6 +673,43 @@ export async function runBashTouches(
   const { skipped } = applyJoinFilter(commandOrder, groups, guardByIndex, computed);
   // Survivor selection (phase K), then pass B batch execution.
   const touches = selectSurvivors(commandOrder, evals, skipped, exitCode);
+  return { touches, probeCache, executionGateDrops: resolved.length - touches.length };
+}
+
+/**
+ * Shared Bash driver (plan §3 step 2): owns the per-command verdict thread —
+ * pass A `evaluateWriteGate` sweep (every span, before any join decision),
+ * the explanation map, per-command verdicts, the join filter with chained
+ * skips, and pass B per-surviving-span `runTouchHook` — plus the whole-command
+ * `interrupted` and exit-code gates (plan §4) and the span-less-guard
+ * commands (`false`/`true`/`:` join verdicts with no spans of their own).
+ * Returns the non-null `additionalContext` blocks for the adapter to join;
+ * the session memo dedups repeated targets.
+ */
+export async function runBashTouches(
+  matches: readonly BashTouchMatch[],
+  sessionId: string,
+  cwd: string,
+  toolResponse: unknown,
+  executors: TouchExecutors,
+  memo: MemoStore,
+  warn: CoreLogger['warn'] = console.warn,
+  scopeAlreadyResolved: boolean = false,
+  reportDiagnostics: (diagnostics: BashTouchDiagnostics) => void = () => undefined,
+  invocationId: string | null = null
+): Promise<string[]> {
+  const { touches, probeCache, executionGateDrops } = observedBashTouches(
+    matches,
+    sessionId,
+    cwd,
+    toolResponse,
+    scopeAlreadyResolved,
+    warn
+  );
+  if (probeCache === undefined) {
+    reportDiagnostics({ executionGateDrops });
+    return [];
+  }
   const invocationExecutors = executors.forInvocation?.() ?? executors;
   // The `warn` channel doubles as the touch core's logger: a render defect
   // warns there instead of vanishing into the per-touch swallow.
@@ -694,7 +717,7 @@ export async function runBashTouches(
   const blocks = batch.outputs.flatMap((output) =>
     output.additionalContext === null ? [] : [output.additionalContext]
   );
-  reportDiagnostics({ executionGateDrops: resolved.length - touches.length, ...batch.diagnostics });
+  reportDiagnostics({ executionGateDrops, ...batch.diagnostics });
   return blocks;
 }
 

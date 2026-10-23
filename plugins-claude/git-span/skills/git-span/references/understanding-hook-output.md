@@ -6,6 +6,13 @@ before supported shell calls to capture bounded pre-state when needed.
 `PostToolUse` observes `Read|Edit|Write|Bash` and injects bounded
 `additionalContext` after the tool completes.
 
+After the first successful supported write, span-authoring guidance appears once
+per session, including `git span add` and `git span why` examples. Preserve rules
+or relationships a future edit could break; anchor content carrying the rule or
+capable of violating it. Reads, failed attempts and duplicate events do not consume
+or repeat the reminder. It also applies to untracked new files without existing
+spans or commit notes; ordinary cleanup and exposure resets do not renew it.
+
 ## The touch hook: short notices
 
 Each retained notice is wrapped in `<git-span>` tags. Initial clean touches,
@@ -31,7 +38,7 @@ and substantive line. Exposure resets, compact/resume and snapshot eviction do
 not renew guidance; a new session identity does. Separate session-keyed
 `@guidance-*` directories survive eager session-state cleanup, including Codex
 stops between turns. Active claims refresh their modification time; TTL pruning
-retires abandoned guidance. No substantive output means no guidance or empty
+retires abandoned guidance. No substantive notice means no retrieval guidance or empty
 wrapper. Notices omit trees, explanations, read-extent qualifications,
 incomplete-details messages and instructional footers.
 
@@ -79,7 +86,7 @@ globs, command substitutions, arbitrary generators, history-changing Git
 operations, and other unproven dataflows produce logger-only unresolved reason
 codes and no touch.
 
-Every candidate is scoped to the effective working directory's repository and
+Every span-context candidate is scoped to the effective working directory's repository and
 filtered through one batched tracked-file query. Files outside the repository,
 ignored files, span metadata, and untracked files are dropped. A Codex
 `exec_command` or code-mode `exec` envelope's `workdir` is used for both
@@ -89,9 +96,10 @@ different repository is handled in that repository.
 Most commands need no persisted pre-state. When a delete, substitution range,
 or pre-command EOF cannot be reconstructed safely after execution,
 `static-plan.mjs` stores one content-minimal record under the session's
-`planned-touches/` directory. A record contains only tracked
+`planned-touches/` directory. A record contains scoped
 repository-relative paths, bounded ranges, operation/index metadata, and small
 verification evidence; it never contains a file body or repository tree.
+Untracked write evidence qualifies only for authoring guidance, not span context.
 `PostToolUse` atomically consumes the record once, verifies the evidence,
 reparses ordinary operations, and applies shell join and post-state gates before
 touching a span. Success, failure, interruption, and duplicate delivery cannot
@@ -101,11 +109,7 @@ same release: receipt coordination uses the CLI's native lock helper.
 A commit in a repository created or first entered in the same Bash call (`git init`
 then `git commit`, or a repository named only through a shell variable) gets no note,
 because enrollment observes only the hook's cwd and literal paths.
-When notes for the session exist, `Stop` asks the agent to dispatch a forked subagent to load
-`git-span:review-notes` for recognized notes belonging to the session.
-Empty selection proceeds silently; lookup failure reports that commit notes could not be read.
-Stop continuations skip another request to avoid recursive blocking. `SessionEnd` on Claude and empty stops or continuations on Codex
-retire session state; a requested review or failed lookup preserves it;
+`SessionEnd` on Claude and `Stop` on Codex retire session state;
 opportunistic 30-day cleanup covers crashed sessions.
 
 A failed Bash command can still surface a write only when the supported family
@@ -114,12 +118,11 @@ Inconclusive writes and interrupted calls stay silent. Response-derived reads
 remain a separate pass and share only the session memo, so a later read can
 surface context without duplicating command-derived output.
 
-The hook prompt requests current-tree anchor and why validation, removal of only
-successfully processed notes, and unstaged edits. The skill reports concrete shared-
-assumption concerns and removes notes after validation or evidence that no change
-was needed; it does not specify session selection or receipt matching. Check the
-selected notes and unresolved concerns before accepting completion. Zero drift
-does not establish semantic approval.
+Session completion does not dispatch a reviewer. Invoke
+`git-span:review-notes` manually to inspect commit notes, maintain
+spans and report concrete shared-assumption concerns. It removes notes after
+validation or evidence that no change was needed. Zero drift does not establish
+semantic approval.
 
 The parser's candidate ceiling is 32 and is all-or-nothing: a bounded set is
 attributed completely or rejected before any touch. Planned records allow at
@@ -137,11 +140,12 @@ simply no attribution.
 
 ## Failure behavior
 
-The touch pipeline fails open: a missing `git span` binary, timeout, failed
-scan, or malformed CLI result injects nothing and does not block the tool.
-Unsupported intent, untracked paths, and writes outside the effective
-repository remain silent. The tool's working directory selects the repository
-for both planning and attribution.
+Span-context delivery fails open: a missing `git span` binary, timeout, failed
+scan, or malformed CLI result omits that context and does not block the tool.
+Independently observed successful writes can still deliver authoring guidance.
+Unsupported intent and writes outside the effective repository remain silent.
+Untracked paths do not produce span context. The tool's working directory selects
+the repository for both planning and attribution.
 
 
 Run explicit `git span drift` checks or use CI to verify edits outside the

@@ -1,4 +1,3 @@
-import type { NoteReviewCheck } from '../common/review-notes-stop.js';
 /** OpenCode V2 setup: register domain hooks and subscribe to session lifecycle events. */
 
 import type { PluginInput, PluginModule } from '@goodfoot/agent-hooks/opencode';
@@ -10,7 +9,6 @@ import type { TouchExecutors } from '../common/touch-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 import { createOpencodeLogger } from './logger.js';
 import { createAfterHandler } from './post-tool-use.js';
-import { createNoteReviewHandler } from './review-notes.js';
 import { createDisposeHandler, createEventHandler } from './session.js';
 import { createOpencodeCallState } from './stash.js';
 import { createStaticPlanHandler } from './static-plan.js';
@@ -19,7 +17,6 @@ import type {
   OpencodeAfterOutput,
   OpencodeBeforeOutput,
   OpencodeEvent,
-  OpencodeReviewClient,
   OpencodeShellEnvInput,
   OpencodeShellEnvOutput,
   OpencodeToolInput
@@ -32,12 +29,10 @@ export * from './types.js';
 /** Injected surfaces for {@link assemblePlugin} — every field optional. */
 export interface PluginDeps {
   directory?: string;
-  client?: OpencodeReviewClient;
   layout?: SessionLayout;
   logger?: MemoLogger;
   touchExecutors?: TouchExecutors;
   memoFactory?: MemoFactory;
-  check?: NoteReviewCheck;
 }
 
 /**
@@ -51,7 +46,6 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
   const logger = deps.logger ?? createOpencodeLogger();
   const sessions = new Set<string>();
   const callState = createOpencodeCallState();
-  const noteReview = createNoteReviewHandler({ directory, client: deps.client, logger, check: deps.check });
 
   const planHandler = createStaticPlanHandler({
     directory,
@@ -78,7 +72,6 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
     plannedCalls: (sessionId) => callState.plannedCalls(sessionId),
     forgetSession: (sessionId) => {
       callState.pruneSession(sessionId);
-      noteReview.forget(sessionId);
     }
   });
   const dispose = createDisposeHandler({
@@ -87,7 +80,6 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
     sessions,
     clearAll: () => {
       callState.clear();
-      noteReview.clear();
     }
   });
 
@@ -102,13 +94,6 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
       if (event?.type === 'session.created' && typeof event.properties?.info?.id === 'string')
         sessions.add(event.properties.info.id);
       await eventHandler({ event });
-      if (event?.type === 'session.error' && typeof event.properties?.sessionID === 'string')
-        noteReview.forget(event.properties.sessionID);
-      if (event?.type === 'session.idle' && typeof event.properties?.sessionID === 'string')
-        await noteReview.idle(event.properties.sessionID);
-    },
-    'chat.message': async (input, output) => {
-      noteReview.message(input?.sessionID, output?.parts);
     },
     'tool.execute.before': async (input: OpencodeToolInput, output: OpencodeBeforeOutput) => {
       if (typeof input?.sessionID === 'string' && input.sessionID.length > 0) sessions.add(input.sessionID);
@@ -143,7 +128,7 @@ export async function gitSpanOpencode(ctx: PluginInput) {
   const directory = ctx.location.directory;
   const logger = createOpencodeLogger();
   startContextWarmup(directory, (err) => logger.warn('git-span context warm-up failed', { err }));
-  const hooks = assemblePlugin({ directory, logger, client: { session: ctx.session } });
+  const hooks = assemblePlugin({ directory, logger });
   const registrations: { dispose(): Promise<void> }[] = [];
   registrations.push(
     await ctx.tool.hook('execute.before', async (event) => {
@@ -174,14 +159,6 @@ export async function gitSpanOpencode(ctx: PluginInput) {
           ...event.result,
           content: typeof content === 'string' ? output.output : [...(content ?? []), { type: 'text', text: suffix }]
         };
-    })
-  );
-  registrations.push(
-    await ctx.session.hook('prompt', async (event) => {
-      await hooks['chat.message']?.(
-        { sessionID: event.sessionID },
-        { parts: [{ type: 'text', text: event.prompt.text }] }
-      );
     })
   );
   const controller = new AbortController();

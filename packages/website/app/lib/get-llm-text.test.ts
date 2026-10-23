@@ -29,7 +29,7 @@ ${'-'.repeat(139)}
 
 /** Two-paragraph Callout shape from the processed-markdown capture. */
 const TWO_PARAGRAPH_CALLOUT = `<Callout type="info">
-  A missing \`git span\` binary, timeout, failed scan, or unexpected CLI result injects nothing and does not block the tool.
+  A missing \`git span\` binary, timeout, failed scan, or unexpected CLI result omits span context and does not block the tool. Independently observed successful writes can still deliver authoring guidance.
 
   Human edits, unsupported tools, and inactive hooks can bypass this coverage. Run explicit \`git span drift\` checks or use CI to verify existing spans across the repository.
 </Callout>`;
@@ -126,7 +126,7 @@ describe('getLLMText', () => {
     expect(blockquote.every((line) => line.startsWith('>'))).toBe(true);
     expect(blockquote[2]).toBe('>');
     expect(blockquote).toContain(
-      '> A missing `git span` binary, timeout, failed scan, or unexpected CLI result injects nothing and does not block the tool.'
+      '> A missing `git span` binary, timeout, failed scan, or unexpected CLI result omits span context and does not block the tool. Independently observed successful writes can still deliver authoring guidance.'
     );
     // The second paragraph's full line continues past the excerpt asserted
     // here, so check the prefix rather than element equality.

@@ -1,3 +1,4 @@
+import { FIRST_WRITE_GUIDANCE } from '../../src/common/first-write-guidance.js';
 import { guidanceClaims } from '../guidance-helpers.js';
 /**
  * Tests for the Codex PostToolUse touch hook
@@ -125,8 +126,9 @@ function makeExecutors(opts: FakeOpts = {}): {
 
 function inMemoryMemoFactory(): MemoFactory {
   const store = new Map<string, Set<string>>();
+  const claimGuidance = guidanceClaims();
   return (_logger: MemoLogger): MemoStore => ({
-    claimGuidance: guidanceClaims(),
+    claimGuidance,
     getSurfaced: (sid) => new Set(store.get(sid) ?? []),
     addSurfaced: (sid, names, known) => {
       store.set(sid, new Set([...known, ...names]));
@@ -388,14 +390,14 @@ describe('codex post-tool-use touch signal', () => {
     }
   });
 
-  it('fails open (empty output, no throw) when every executor rejects', async () => {
+  it('delivers guidance even when every context executor rejects', async () => {
     const repo = repoWithFoo();
     try {
       const { executors } = makeExecutors({ reject: true });
       const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const result = toResult(await handler(postInput(repo.root, updateEnvelope()) as never, { logger } as never));
-      expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
-      expect(result.stdout.systemMessage).toBeUndefined();
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toBe(FIRST_WRITE_GUIDANCE);
+      expect(result.stdout.systemMessage).toBe(FIRST_WRITE_GUIDANCE);
     } finally {
       repo.cleanup();
     }
@@ -430,8 +432,8 @@ describe('codex post-tool-use touch signal', () => {
       const result = toResult(await handler(postInput(repo.root, envelope) as never, { logger } as never));
       expect(fixPaths).toEqual([filePath]);
       // The delete fired the fix executor; with no covering spans the list
-      // returns nothing, so no block surfaces — but the executor ran.
-      expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+      // returns no span block; the first-write guidance still surfaces.
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toBe(FIRST_WRITE_GUIDANCE);
     } finally {
       repo.cleanup();
     }

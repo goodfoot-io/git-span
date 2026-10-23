@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { hasReviewNotes } from '../../src/common/review-lookup.js';
-import { reviewNotesStopStatus } from '../../src/common/review-notes-stop.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 const temp = makeTempLayout();
@@ -74,31 +73,5 @@ describe('review lookup outcomes', () => {
     } finally {
       outside.cleanup();
     }
-  });
-});
-
-describe('Stop lookup failure and continuation', () => {
-  const input = { stop_hook_active: false, session_id: 'session', cwd: temp.parent };
-  it('skips a recursive continuation', async () => {
-    const check = vi.fn(async () => ({ kind: 'failure' as const, reason: 'lookup timeout' }));
-    expect(await reviewNotesStopStatus({ ...input, stop_hook_active: true }, 'codex', logger, check)).toEqual({});
-    expect(check).not.toHaveBeenCalled();
-  });
-  it('bounds a thrown lookup error and leaves Stop non-blocking', async () => {
-    const check = vi.fn(async () => {
-      throw new Error('x'.repeat(10_000));
-    });
-    const status = await reviewNotesStopStatus(input, 'codex', logger, check);
-    expect(status.reason).toBeUndefined();
-    expect(status.message?.length).toBeLessThan(600);
-    expect(status.message).toContain('could not read commit notes');
-  });
-  it('exposes lookup failure without creating an infinite Stop block', async () => {
-    const check = vi.fn(async () => ({ kind: 'failure' as const, reason: 'timeout' }));
-    expect(await reviewNotesStopStatus(input, 'codex', logger, check)).toEqual({
-      message: expect.stringContaining('timeout')
-    });
-    expect(await reviewNotesStopStatus({ ...input, stop_hook_active: true }, 'codex', logger, check)).toEqual({});
-    expect(check).toHaveBeenCalledOnce();
   });
 });

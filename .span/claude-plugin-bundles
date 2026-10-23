@@ -1,9 +1,9 @@
 packages/agent-hooks/package.json#L11-L11 rk64:b5f162b99696318d
 packages/agent-hooks/src/claude/post-tool-use-failure.ts rk64:39aa11f18d03e8c7
-packages/agent-hooks/src/claude/post-tool-use.ts rk64:2e64516267d7b231
+packages/agent-hooks/src/claude/post-tool-use.ts rk64:753f5129f81e3d1c
 packages/agent-hooks/src/claude/session-end.ts rk64:d3f900fb4bf58bb9
 packages/agent-hooks/src/claude/session-start.ts rk64:7a72058a651c6d48
 packages/agent-hooks/src/claude/static-plan.ts rk64:b521a9d97b4c7426
-packages/agent-hooks/src/claude/stop.ts rk64:d72f32e0224da1bb
+packages/agent-hooks/src/claude/stop.ts rk64:be1f83e6d79060a7
 
 The claude plugin's hook set is compiled by build:hooks from these src/claude sources into hooks/bin, and the generated hooks.json references each bundle by stem; a rename or a change to the build:hooks glob or output path silently runs a stale bundle or drops the hook from the plugin without failing the build.

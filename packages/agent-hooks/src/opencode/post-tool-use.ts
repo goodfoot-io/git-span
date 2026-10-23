@@ -38,11 +38,13 @@ import {
 import { runApplyPatchTouches } from '../common/apply-patch-touch.js';
 import { createDefaultPlannedTouchStore, runLayeredBashTouches } from '../common/bash-attribution.js';
 import type { CommitInspectionContextExecutor } from '../common/commit-inspection-context.js';
+import { firstWriteGuidance } from '../common/first-write-guidance.js';
 import { isRecord } from '../common/guards.js';
-import { createDiskMemoStore, type MemoFactory, type MemoLogger } from '../common/span-surface.js';
+import { createDiskMemoStore, type MemoFactory, type MemoLogger, resolveTouchScope } from '../common/span-surface.js';
 import { filterTrackedEligibility } from '../common/static-attribution.js';
 import {
   createDefaultTouchExecutors,
+  fileExists,
   runTouchHook,
   type TouchExecutors,
   type TouchInput
@@ -86,6 +88,7 @@ export function createAfterHandler(
       const rawArgs = input?.args;
       const args: Record<string, unknown> = isRecord(rawArgs) ? rawArgs : {};
       let blocks: string[] = [];
+      const memo = memoFactory(logger, layout);
       // Degraded ids skip every touch pipeline symmetrically with the call
       // state's ingress guard: ''-keyed session/call lookups and the planned
       // store's empty-id take would otherwise throw,
@@ -106,10 +109,14 @@ export function createAfterHandler(
             callId.length > 0 ? callId : undefined,
             mapped,
             executors,
-            memoFactory(logger, layout),
+            memo,
             logger,
             createDefaultPlannedTouchStore(layout),
-            { successful: mapped.exitStatus === 0 && !mapped.interrupted, executor: deps.inspectionExecutor }
+            {
+              successful: mapped.exitStatus === 0 && !mapped.interrupted,
+              executor: deps.inspectionExecutor,
+              onWrite: () => firstWriteGuidance(sessionId, memo, true)
+            }
           );
         }
         deps.forgetCall(sessionId, callId);
@@ -118,7 +125,6 @@ export function createAfterHandler(
         if (narrowed !== null) {
           const cwd = deps.directory;
           const filePath = canonicalizePath(abspathAgainst(cwd, narrowed.filePath));
-          const memo = memoFactory(logger, layout);
           const touch: TouchInput = {
             kind: 'read',
             observedRange: null,
@@ -140,7 +146,6 @@ export function createAfterHandler(
         if (narrowed !== null) {
           const cwd = deps.directory;
           const filePath = canonicalizePath(abspathAgainst(cwd, narrowed.filePath));
-          const memo = memoFactory(logger, layout);
           const touch: TouchInput = {
             kind: 'write',
             sessionId,
@@ -150,10 +155,21 @@ export function createAfterHandler(
             written: narrowed.written,
             targetState: 'exists'
           };
-          if (postTracked(touch, cwd)) {
-            const result = await runTouchHook(touch, executors, memo, undefined, logger);
-            if (result.additionalContext !== null) blocks = [result.additionalContext];
+          const guidance = firstWriteGuidance(
+            sessionId,
+            memo,
+            fileExists(filePath) && resolveTouchScope(cwd, filePath) !== null
+          );
+          try {
+            if (postTracked(touch, cwd)) {
+              const result = await runTouchHook(touch, executors, memo, undefined, logger);
+              if (result.additionalContext !== null) blocks = [result.additionalContext];
+            }
+          } catch (err) {
+            if (guidance === null) throw err;
+            logger.warn('git-span structured context delivery failed after a successful write', { err });
           }
+          if (guidance !== null) blocks.push(guidance);
         }
       } else if (idsUsable && input?.tool === 'apply_patch') {
         const patchText = narrowApplyPatchText(args);
@@ -166,9 +182,10 @@ export function createAfterHandler(
             sessionId,
             stashed ?? [],
             executors,
-            memoFactory(logger, layout),
+            memo,
             callId.length > 0 ? `${sessionId}:${callId}` : null,
-            logger
+            logger,
+            () => firstWriteGuidance(sessionId, memo, true)
           );
         }
         deps.forgetCall(sessionId, callId);

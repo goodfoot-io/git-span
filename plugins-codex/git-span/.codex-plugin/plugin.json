@@ -24,7 +24,7 @@
     "capabilities": [
       "Plans supported shell and apply_patch touches before execution",
       "Surfaces coupled spans inline",
-      "Warms repository context at session start; requests session-note review at stop and clears touch state on continuation"
+      "Warms repository context at session start; delivers span guidance after the first successful write and clears touch state at stop"
     ],
     "defaultPrompt": [
       "Check `git span drift` for drifted spans and help me reconcile them."

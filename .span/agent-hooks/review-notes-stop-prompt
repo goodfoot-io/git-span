@@ -1,9 +1,0 @@
-packages/agent-hooks/src/common/review-notes-stop.ts#L13-L22 rk64:0047d8acec4df2e2
-packages/agent-hooks/test/common/review-notes-stop.test.ts#L143-L160 rk64:ff54f4460fc078ba
-packages/website/content/docs/agent-integration.mdx#L69-L71 rk64:634079864e4a94f2
-skills-src/git-span/reconcile/references/procedure.md.eta#L143-L152 rk64:522092e5614987ec
-skills-src/git-span/review-notes/SKILL.md.eta#L64-L78 rk64:54c7fd230bf5e867
-skills-src/git-span/review-notes/SKILL.md.eta#L81-L93 rk64:dbe86f9de7adf7d8
-skills-src/git-span/review-notes/SKILL.md.eta#L96-L120 rk64:fab2758888d1a80d
-
-The Stop prompt requests note-driven spans, current-tree anchor and why validation, removal of only successfully processed notes, and unstaged delivery; the integration guide describes that request separately from the invoked skill. The simplified review-notes skill inspects commits, maintains spans and reports concrete shared-assumption concerns, but does not specify session selection, ID/SHA/document receipt checks or unstaged delivery. Its authority guidance and reconciliation preserve disputed requirements rather than treating committed code as supersession. The real-hook test "emits a fork prompt and allows continuation without another prompt" asserts prompt creation and note-processing phrases for Claude and Codex; it does not establish that the invoked skill follows the prompt or cover OpenCode and Antigravity delivery.

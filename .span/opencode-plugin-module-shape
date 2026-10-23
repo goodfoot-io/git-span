@@ -1,4 +1,4 @@
-packages/agent-hooks/src/opencode/index.ts rk64:f3e4f8eb14a16662
+packages/agent-hooks/src/opencode/index.ts rk64:8f7163dbb00ec470
 packages/agent-hooks/test/opencode/module-shape.test.ts rk64:5f9f53b2d6080d6f
 
 OpenCode V2 loads a default module with an id and setup function; the module-shape tests verify both the source and compiled package expose that contract with the npm package's id.

@@ -2,6 +2,10 @@
   "files": {
     "packages/website/app/lib/content-negotiation.test.ts": [],
     "packages/website/app/lib/discovery-links.test.ts": [],
+    "packages/website/app/lib/get-llm-text.test.ts": [
+      "packages/website/app/lib/get-llm-text.ts",
+      "packages/website/app/lib/regex.ts"
+    ],
     "packages/website/app/lib/homepage-markdown.test.ts": [],
     "packages/website/app/lib/meta.test.ts": [],
     "packages/website/app/lib/sitemap.test.ts": [],

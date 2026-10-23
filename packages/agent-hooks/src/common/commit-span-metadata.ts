@@ -1,4 +1,4 @@
-/** Bounded commit classification shared by automatic note creation and Stop review. */
+/** Bounded commit classification for automatic note creation. */
 import { relative, resolve } from 'node:path';
 import { isInsideSpanRoot } from './agent-hooks-common.js';
 import { executeCommitNotes } from './commit-native-io.js';
