@@ -124,6 +124,7 @@
       "packages/git-span/package.json",
       "packages/git-span/scripts/**",
       "packages/git-span/.cargo/**"
-    ]
+    ],
+    "packages/agent-hooks/test/common/review-outcomes.test.ts": []
   }
 }

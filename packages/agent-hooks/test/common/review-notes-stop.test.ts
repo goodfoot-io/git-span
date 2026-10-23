@@ -1,16 +1,19 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger, type StopInput } from '@goodfoot/agent-hooks/codex';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHandler as createClaudeHandler } from '../../src/claude/stop.js';
 import { createHandler as createCodexHandler } from '../../src/codex/stop.js';
 import { resolveGitSpanCommand } from '../../src/common/git-span-command.js';
+import { hasReviewNotes } from '../../src/common/review-lookup.js';
 import { type BuiltRealHookBundles, buildRealHookBundles, invokeRealHook } from '../real-bundle-helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 const temp = makeTempLayout();
 execFileSync('git', ['init', '-q', temp.parent]);
+writeFileSync(join(temp.parent, 'source.ts'), 'export const value = 1;\n');
+execFileSync('git', ['-C', temp.parent, 'add', 'source.ts']);
 execFileSync('git', [
   '-C',
   temp.parent,
@@ -20,7 +23,6 @@ execFileSync('git', [
   'user.email=test@example.com',
   'commit',
   '-q',
-  '--allow-empty',
   '-m',
   'fixture'
 ]);
@@ -59,12 +61,46 @@ describe('session-note review at Stop', () => {
     expect((await handler({ ...input, turn_id: 'turn-2' }, context))?.stdout.decision).toBe('block');
   });
 
-  it('allows Claude continuations and requests review again on a later ordinary stop', async () => {
-    const handler = createClaudeHandler();
+  it('allows Claude continuations and suppresses unchanged notes on a later ordinary stop', async () => {
+    const handler = createClaudeHandler(undefined, temp.layout);
     expect((await handler(input, context))?.stdout.decision).toBe('block');
     expect(await handler({ ...input, stop_hook_active: true }, context)).toBeNull();
     expect(await handler({ ...input, stop_hook_active: true }, context)).toBeNull();
-    expect((await handler(input, context))?.stdout.decision).toBe('block');
+    expect(await handler(input, context)).toBeNull();
+  });
+});
+
+describe('Claude stop checkpoint failures', () => {
+  it('does not consume notes on lookup failure', async () => {
+    const isolated = makeTempLayout();
+    try {
+      const check = vi
+        .fn()
+        .mockResolvedValueOnce({ kind: 'failure', reason: 'lookup timeout' })
+        .mockImplementation(hasReviewNotes);
+      const handler = createClaudeHandler(check, isolated.layout);
+      expect((await handler(input, context))?.stdout.systemMessage).toContain('lookup timeout');
+      expect((await handler(input, context))?.stdout.decision).toBe('block');
+      expect(await handler(input, context)).toBeNull();
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  it('reports corrupt checkpoint state without silently consuming notes', async () => {
+    const isolated = makeTempLayout();
+    const checkpoint = join(isolated.layout.dir(input.session_id), 'review-notes-stop.json');
+    try {
+      mkdirSync(isolated.layout.dir(input.session_id), { recursive: true });
+      writeFileSync(checkpoint, '{broken');
+      const handler = createClaudeHandler(undefined, isolated.layout);
+      expect((await handler(input, context))?.stdout.systemMessage).toContain('could not read commit notes');
+      rmSync(checkpoint);
+      expect((await handler(input, context))?.stdout.decision).toBe('block');
+      expect(await handler(input, context)).toBeNull();
+    } finally {
+      isolated.cleanup();
+    }
   });
 });
 
@@ -121,6 +157,10 @@ describe('emitted Stop protocol', () => {
       expect(continuation.stderr).toBe('');
       expect(continuation.output?.decision).not.toBe('block');
       expect(continuation.output?.reason).toBeUndefined();
+
+      const nextStop = invokeRealHook(bundle, { ...input }, env);
+      expect(nextStop.stderr).toBe('');
+      expect(nextStop.output?.decision).toBe(host === 'claude' ? undefined : 'block');
     });
   }
 });

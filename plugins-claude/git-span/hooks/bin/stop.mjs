@@ -527,14 +527,14 @@ var stopOutput = /* @__PURE__ */ createDecisionOutputBuilder("Stop");
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve4(chunks.join(""));
+      resolve5(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject(error);
@@ -596,12 +596,12 @@ function classify(error, phase, policy, onUnexpectedError) {
   return { kind: "handlerError", error, phase };
 }
 function writeStream(stream, content) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     stream.write(content, (error) => {
       if (error)
         reject(error);
       else
-        resolve4();
+        resolve5();
     });
   });
 }
@@ -794,6 +794,12 @@ import * as nodePath from "node:path";
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function isErrnoException(error) {
+  return error instanceof Error && (!("code" in error) || error.code === void 0 || typeof error.code === "string");
+}
+function errnoCode(error) {
+  return isErrnoException(error) ? error.code : void 0;
+}
 
 // packages/agent-hooks/src/common/agent-hooks-common.ts
 function toPosix(p) {
@@ -829,6 +835,11 @@ function resolveRepoRootUncached(dir) {
   } catch {
     return null;
   }
+}
+var SPAN_ROOT = ".span";
+function isInsideSpanRoot(repoRelPath, spanRoot = SPAN_ROOT) {
+  const root = spanRoot.replace(/\/+$/, "");
+  return repoRelPath === root || repoRelPath.startsWith(`${root}/`);
 }
 var PORCELAIN_STATUSES = [
   "FRESH",
@@ -1078,14 +1089,107 @@ function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
+// packages/agent-hooks/src/claude/review-note-additions.ts
+import { randomUUID } from "node:crypto";
+import { mkdirSync as mkdirSync3, readFileSync, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync3, writeFileSync } from "node:fs";
+import { isAbsolute as isAbsolute2, join as join3, relative, resolve as resolve4 } from "node:path";
+var MAX_STATE_BYTES = 1048576;
+function readCheckpoint(path) {
+  let raw;
+  try {
+    if (statSync3(path).size > MAX_STATE_BYTES) throw new Error("note checkpoint exceeds size budget");
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    if (errnoCode(err) === "ENOENT") return /* @__PURE__ */ new Map();
+    throw err;
+  }
+  if (!isRecord(raw) || raw.schemaVersion !== 1 || Object.keys(raw).length !== 2 || !Array.isArray(raw.repositories))
+    throw new Error("invalid note checkpoint");
+  const checkpoint = /* @__PURE__ */ new Map();
+  for (const entry of raw.repositories) {
+    if (!isRecord(entry) || Object.keys(entry).length !== 2 || typeof entry.cwd !== "string" || !isAbsolute2(entry.cwd) || typeof entry.id !== "number" || !Number.isSafeInteger(entry.id) || entry.id < 1 || checkpoint.has(entry.cwd))
+      throw new Error("invalid note checkpoint repository");
+    checkpoint.set(entry.cwd, entry.id);
+  }
+  return checkpoint;
+}
+function writeCheckpoint(directory, path, checkpoint) {
+  const data = JSON.stringify({
+    schemaVersion: 1,
+    repositories: [...checkpoint].map(([cwd, id]) => ({ cwd, id }))
+  });
+  if (Buffer.byteLength(data) > MAX_STATE_BYTES) throw new Error("note checkpoint exceeds size budget");
+  mkdirSync3(directory, { recursive: true });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, data, { flag: "wx", mode: 384 });
+    renameSync2(temporary, path);
+  } finally {
+    rmSync2(temporary, { force: true });
+  }
+}
+function checkClaudeNoteAdditions(layout, check = hasReviewNotes) {
+  return async (scope, logger2) => {
+    const deadline = performance.now() + 8e3;
+    const outcome = await check(scope, logger2);
+    if (outcome.kind === "failure") return outcome;
+    const directory = layout.dir(scope.sessionId);
+    const path = join3(directory, "review-notes-stop.json");
+    const checkpoint = readCheckpoint(path);
+    if (outcome.kind === "empty") return outcome;
+    const git = async (cwd, argv, missingConfig = false) => {
+      const remaining = Math.floor(deadline - performance.now());
+      if (remaining <= 0) throw new Error("note commit inspection deadline exhausted");
+      const result = await executeCommitNotes("git", { cwd, argv, timeoutMs: remaining, maxOutputBytes: 1048576 });
+      if (result.signal !== null || result.timedOut || result.outputExceeded || result.exitCode !== 0 && !(missingConfig && result.exitCode === 1))
+        throw new Error("note commit inspection unavailable, failed, or exceeded bounds");
+      return result.stdout;
+    };
+    const repositories = [];
+    for (const repository of outcome.repositories) {
+      const previous = checkpoint.get(repository.cwd) ?? 0;
+      const added = repository.notes.filter((note) => note.id > previous);
+      if (!added.length) continue;
+      const configured = process.env.GIT_SPAN_DIR?.trim() || (await git(repository.cwd, ["config", "--get", "git-span.dir"], true)).trim() || ".span";
+      const root = relative(repository.cwd, resolve4(repository.cwd, configured)).split("\\").join("/");
+      const material = /* @__PURE__ */ new Set();
+      for (const sha of new Set(added.map((note) => note.commit_sha))) {
+        const output = await git(repository.cwd, [
+          "diff-tree",
+          "--no-commit-id",
+          "--name-only",
+          "-z",
+          "-r",
+          "--root",
+          "-m",
+          "--no-renames",
+          sha,
+          "--"
+        ]);
+        if (output && !output.endsWith("\0")) throw new Error("invalid note commit path output");
+        const paths = output.split("\0").filter(Boolean);
+        if (paths.some(
+          (changed) => ![".span", ".spans", root].some((metadata) => metadata === "" || isInsideSpanRoot(changed, metadata))
+        ))
+          material.add(sha);
+      }
+      const notes = added.filter((note) => material.has(note.commit_sha));
+      if (notes.length) repositories.push({ cwd: repository.cwd, notes });
+      checkpoint.set(repository.cwd, Math.max(previous, ...added.map((note) => note.id)));
+    }
+    writeCheckpoint(directory, path, checkpoint);
+    return repositories.length ? { kind: "matching", repositories } : { kind: "empty" };
+  };
+}
+
 // packages/agent-hooks/src/claude/stop.ts
-function createHandler(check) {
+function createHandler(check, layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
     const status = await reviewNotesStopStatus(
       { stop_hook_active: input.stop_hook_active, session_id: input.session_id, cwd: input.cwd },
       "claude",
       ctx.logger,
-      check
+      checkClaudeNoteAdditions(layout, check)
     );
     return status.reason ? stopOutput({ decision: "block", reason: status.reason }) : status.message ? stopOutput({ systemMessage: status.message }) : null;
   };
