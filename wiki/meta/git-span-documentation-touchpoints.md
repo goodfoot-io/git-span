@@ -2,7 +2,7 @@
 title: Git Span Documentation Touchpoints
 summary: Sources, mirrors, generated artifacts, and checks for git-span guidance changes.
 tags: [meta, git-span, tooling]
-links-reviewed: 5
+links-reviewed: 6
 ---
 
 # Git span documentation touchpoints
