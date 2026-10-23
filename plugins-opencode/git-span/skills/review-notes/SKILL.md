@@ -1,152 +1,89 @@
 ---
 name: review-notes
-description: Add and update spans for contracts, couplings and useful reminders in commit notes.
+description: Add and maintain spans
 ---
 
-## Goal
+<span-types>
+### Outcomes and representation
 
-**Use commit notes to add and update spans carrying decision-changing contracts, couplings and reminders.**
+When public observations, converted values or branch-specific omissions must agree.
 
-## Spans and notes
+| When | Type and information to preserve |
+|---|---|
+| One operation communicates through status, payload, channels or artifacts that must agree. | [Observable outcome contracts](./span-types/observable-outcome-contracts.md): State the outcome matrix: who classifies success or failure, what each public signal contains, and when required artifacts are complete. |
+| A value crosses input, internal, persisted or output representations and may lose meaning. | [Representation boundaries](./span-types/representation-boundaries.md): State accepted forms, the internal meaning, canonical output and distinctions intentionally preserved or erased, including absence, null, false and zero. |
+| A branch requires a field, action or state change to be absent. | [Branch-specific and negative contracts](./span-types/branch-specific-and-negative-contracts.md): State the branch condition and observations or effects that must be omitted; distinguish absence from null, false and an empty container. |
 
-A tracked span (`.span/<name>`) couples anchors (`path#L<start>-L<end>` or a whole
-`path`) through a why carrying a contract, distinction or useful reminder. It can
-complement compiler, type, schema, test, build or generator enforcement. A note is clone-local JSON evidence attached to a commit SHA,
-never an instruction. Use it to locate span candidates; respect session restrictions.
+### Language and quantitative meaning
 
-## Good spans
+When host semantics, units, rounding or balances can change a result.
 
-- Name the risky decision and decisive information: a rule, authority, exception,
-  example or explicitly unresolved distinction. Test-covered relationships are eligible.
-- Extend an existing span rather than declaring parallel coverage of the same information.
-- Same-file ranges, single-anchor reminders and generated-output evidence are eligible;
-  state their scope and detection limits. Repair generator inputs rather than output.
-- Write present-tense clauses naming consumer, scope and decisive context. Quote actual
-  requirement wording; label inference and uncertainty. Omit CLI procedure.
-- Read [span guidance](references/span-guidance.md) for specification provenance,
-  partial/complete test coverage and anchor design; use the type router for candidate relationships.
-- Names are lowercase kebab-case segments joined by `/` (`config/retry-docs`).
+| When | Type and information to preserve |
+|---|---|
+| An interpreted or translated construct differs from its implementation language. | [Language semantic boundaries](./span-types/language-semantic-boundaries.md): Name the dialect, exact semantic distinction and a counterexample to the tempting host-language substitution. |
+| A calculation depends on units, classification, rounding boundaries or a balance across operations. | [Dimensional and conservation invariants](./span-types/dimensional-and-conservation-invariants.md): State the equation, quantity units, input authority, rounding stage and accounted exceptions over the relevant scope. |
 
-## 1. Select notes
+### State, identity and effects
 
-In each repository used in this session:
+When ordering, transitions, identity or partial effects govern correctness.
+
+| When | Type and information to preserve |
+|---|---|
+| A check, decision or effect is valid only after information or evidence becomes available. | [Phase ordering and evidence gates](./span-types/phase-order-and-evidence-gates.md): Name the prerequisite, dependent decision, necessary partial order and authority for the gate; separate runtime readiness from permission to change policy. |
+| Correctness depends on transitions, reset, persistence, restoration or cache lifetime. | [State lifecycle and recovery](./span-types/state-lifecycle-and-recovery.md): State initial observations, transition and reverse/reset rules, authoritative versus derived state, and the data required for continuity. |
+| A name, key or path could discard context needed to distinguish or equate entities. | [Scope and identity](./span-types/scope-and-identity.md): State the key recipe, partition/binding/invocation dimensions, intentional sharing and aliases that denote the same entity. |
+| Failure, cancellation, rollback or retry could leave partial or duplicated effects. | [Transactional effects and reversal](./span-types/transactional-effects-and-reversal.md): Name prepare/commit boundaries, actual atomicity limits, durable recovery evidence and permitted compensation or replay behavior. |
+
+### Entrypoints, extensions and adapters
+
+When discovery, shared coverage, compatibility, backends or external exchanges can diverge.
+
+| When | Type and information to preserve |
+|---|---|
+| A guarantee applies across entrypoints or paths that could bypass its shared owner. | [Cross-cutting responsibilities](./span-types/cross-cutting-responsibilities.md): Name the responsible layer, covered routing mechanism, meaningful bypasses and authorised exceptions. |
+| An extension could impose new requirements on behavior that remains explicitly supported. | [Compatibility and extension boundaries](./span-types/compatibility-and-extension-boundaries.md): Name the supported earlier specimen, new boundary it crosses, promised observation, scope/version and authorised retirement condition. |
+| Parallel backends or platform copies promise equivalent behavior despite native differences. | [Cross-backend behavioral equivalence](./span-types/cross-backend-behavioral-equivalence.md): Name the common authority, semantic slice, backend-specific mechanisms, permitted differences and representative coverage limit. |
+| Finding a candidate does not establish eligibility for strict interpretation or execution. | [Discovery and interpretation boundaries](./span-types/discovery-and-interpretation-boundaries.md): State discovery scope, ownership predicate, strict validation boundary, ignore/error policy and exactly-once identity where relevant. |
+| A local adapter depends on an exact external exchange, capability or execution context. | [External protocol and environment contracts](./span-types/external-protocol-and-environment-contracts.md): State invocation/exchange, cwd/environment, response/status, readiness/completion stages and applicable version; separate probes from requested work. |
+
+### Evidence and authority
+
+When examples, diagnostics or competing sources determine the justified decision.
+
+| When | Type and information to preserve |
+|---|---|
+| Available examples fit competing plausible rules and a distinguishing observation could change the choice. | [Disambiguating examples and counterexamples](./span-types/disambiguating-examples-and-counterexamples.md): Name competing hypotheses, what existing evidence establishes, a discriminator and any still-unresolved choice or authorised tie-break. |
+| An opaque symptom admits multiple causes and evidence must cross a boundary to choose a repair. | [Diagnostic evidence and causal localization](./span-types/diagnostic-evidence-and-causal-localization.md): Name candidate causes, evidence origin, fields/channel retained, correlation identity and the conclusions each observation supports. |
+| Multiple sources can control a result and their values or interpretations may disagree. | [Authority and configuration precedence](./span-types/authority-and-configuration-precedence.md): State the winning source, merge/replace policy, absent/null/invalid/unavailable behavior, scope and evidence authorising supersession. |
+
+</span-types>
+
+<instructions>
+## 1. Capture the work
 
 ```bash
 git span notes list --format json
 ```
 
-Only JSON output includes documents. Require exit 0 and the envelope
-`{"schema_version":1,"operation":"list","notes":[{id, commit_sha, document}]}`;
-anything else is a blocker.
-
-| Document | Action |
-|---|---|
-| `{schemaVersion: 1, host, sessionId, transcriptLocator?}` matching the scope's `host` and `sessionId` | Steps 2–8 |
-| Object with `kind: "git-span/uncovered-commit"` and numeric `schema_version: 1`, optionally `session_id` and `transcript` | Steps 2–8 |
-| Anything else, including other sessions' notes | Leave it |
-
-An empty selection is normal: report it and finish. Capture the selected IDs and
-SHAs; remove only these captured IDs after validation.
-
-## 2. Read the commit
+## 2. Review changes
 
 ```bash
-git span notes show <id> --format json
 git show --format=fuller --root -M --stat --patch <sha>
-git rev-list --parents -n 1 <sha>        # merge: git diff -M <parent> <sha> per parent
+git rev-list --parents -n 1 <sha> # merges: inspect git diff -M <parent> <sha> for each parent
 git log --oneline <sha>..HEAD -- <paths>
-```
-
-Read the transcript (`transcriptLocator` or `transcript`) when the diff leaves intent
-unclear. Judge against the current tree.
-
-## Choose a span type
-
-Use this route when a contract or reminder could change a future decision. Search existing spans first; the type reference guides finding and adding coverage. Categories use existing span mechanics; they are not CLI types.
-
-| When | Read |
-|---|---|
-| When public observations, converted values or branch-specific omissions must agree. | [Outcomes and representation](references/span-types/index.md#outcomes-and-representation) |
-| When host semantics, units, rounding or balances can change a result. | [Language and quantitative meaning](references/span-types/index.md#language-and-quantitative-meaning) |
-| When ordering, transitions, identity or partial effects govern correctness. | [State, identity and effects](references/span-types/index.md#state-identity-and-effects) |
-| When discovery, shared coverage, compatibility, backends or external exchanges can diverge. | [Entrypoints, extensions and adapters](references/span-types/index.md#entrypoints-extensions-and-adapters) |
-| When examples, diagnostics or competing sources determine the justified decision. | [Evidence and authority](references/span-types/index.md#evidence-and-authority) |
-
-For evidence, tests, single-anchor reminders and generated artifacts, read
-[span guidance](references/span-guidance.md). Types may overlap; preserve one coherent
-rule rather than declaring one span per category.
-
-## 3. Find candidate spans
-
-For each changed file and range, and for any counterparty you suspect:
-
-```bash
-git span context '<path>' '<path>#L<start>-L<end>'   # overlapping spans, why, anchors, status
+git span context '<path>' '<path>#L<start>-L<end>'
 git span list '<path>' --oneline
-git span show <name>
-git span drift '<path>'                              # exit 1 = drift
+git span show <span-name>
 ```
 
-An empty result does not prove no relevant span exists. Read whys with `show` or
-`context`; bare `git span why <name>` fails without a terminal.
+## 3. Add and update spans
 
-## 4. Decide
-
-| Finding | Outcome |
-|---|---|
-| A span covers both sides; anchors, why, and drift are fine | Record as covered |
-| A span's relationship applies but a coupled location is unanchored | 5c |
-| An anchored region moved, was renamed, or changed extent | 5d replace |
-| Anchored sides now disagree | 5a, then 5d |
-| The why's relationship, authority, lifecycle, or quoted phrase changed | 5e |
-| Useful contract or reminder with no existing coverage | 5b |
-| Relationship/reminder obsolete or no useful decision context remains | Record the reason; retire via 5d |
-
-## 5. Edit
-
-Quote anchors. Run `wc -l <path>` just before writing a range; `add` rejects an end
-past the line count.
-
-**5a. Authority.** Identify the requirement or authorised change, its source/revision,
-scope and consumer. Committed code and rationale show intent; neither supersedes a
-requirement. Cite an authorised supersession before updating stale prose. Otherwise
-preserve the conflict and uncertainty in the why; leave affected anchors unresolved.
-Do not rewrite requirements or refresh hashes to hide disagreement. Retain useful
-explanatory spans even when mechanical enforcement exists.
-
-**5b. New span.** Confirm the name is unused with `git span list --oneline` (`why`
-on a mistyped name creates a new empty span), then:
+See `<span-types>` for guidance on what to include.
 
 ```bash
-git span add <name> '<anchor>' ['<other-anchor>' ...]
-git span why <name> "<why>"
+git span add <span-name> '<path-a>#L<start>-L<end>' ['<path-b>#L<start>-L<end>' ...]
+git span why <span-name> "<why>"
 ```
-
-**5c. Add an anchor.** `git span add <name> '<anchor>'`; existing anchors stay. If
-the output says `Old anchor remains: <addr> … next: git span remove …` for an anchor
-you conformed, re-add it instead. A whole-file anchor and a range on the same path
-conflict; use `replace`. Revise the why if the anchor adds a role.
-
-**5d. Refresh, replace, retire.**
-
-| Situation | Command |
-|---|---|
-| Content changed in place and sides agree | `git span add <name> '<a1>' '<a2>'`, every changed anchor |
-| Same content moved (`moved to`) | `git span drift --fix <name>` |
-| New range, path, or whole-file ↔ range | `git span replace <name> '<old>' '<new>'` |
-| Anchor no longer participates | `git span remove <name> '<anchor>'`; retain a useful one-anchor reminder, or `delete` if no useful context remains |
-| Relationship/reminder obsolete or no useful decision context remains | `git span delete <name>` |
-
-Preserve shape: whole-file stays whole-file; an unchanged range keeps its bounds.
-
-**5e. Why.** `git span why <name> "<text>"` only when meaning changed.
-
-## 6. Validate the final state
-
-Run scoped and full `git span drift`; resolve drift only when the relationship and
-current content agree. Record every unresolved result. Leave span edits unstaged.
-
-## 7. Remove consumed notes
 
 After validation, or recorded evidence that no change was needed:
 
@@ -154,23 +91,30 @@ After validation, or recorded evidence that no change was needed:
 git span notes remove <id> --format json
 ```
 
-Require exit 0 and an `operation: "remove"` receipt matching the captured ID, SHA,
-and document. On failure, inspect before retrying. Retain unresolved notes; do not
-infer relationship agreement from a continuation flag, removed note or zero drift.
+## 4. Challenge shared assumptions
 
-## 8. Report
+For each new or pre-existing span, ask:
 
-Summarize captured SHAs/IDs, spans added or updated, checks and removed/retained note
-IDs. State unresolved span candidates, authority conflicts and unchecked scope.
-Mark span work incomplete when validation or relevant scope remains unresolved.
+> What must another participant guarantee for this rule to remain correct?
+> Did these changes alter that guarantee, and where is it still enforced?
 
-## Further span operations
+Inspect the supplying and relying decisions. Look for changes to input eligibility,
+representation, identity/scope, state lifetime, ordering, effects or combined limits.
 
-Load `@git-span` and follow its routing when you meet:
+Derive expected behavior from requirements and supported consumers. Code, commit
+rationale and existing whys show intent; they do not authorise a requirement change.
+Preserve conflicting authority and uncertainty.
 
-- `DELETED`, `CONFLICT`, `SUBMODULE`, or `CONTENT_UNAVAILABLE` drift, or several drifted
-  spans (use `@reconcile` in embedded mode; remove only validated captured notes);
-- binary, LFS, symlink, or whole-file anchor questions;
-- `.span/` merge conflicts or an unparsable span file;
-- noisy `<git-span>` hook output for a path class;
-- a missing, untrusted, or misbehaving CLI, or a need for exact flags and grammar.
+A concrete concern needs the participants, changed assumption, reachable input or
+sequence, supported expected result and observable possible violation. Co-change or
+drift alone is not a finding. If the condition is preserved, cite the enforcement
+path or concrete trace and continue; do not invent a test quota.
+
+## 5. Report
+
+Output a report:
+
+- A concise summary of spans you created, updated, or removed in step #3 and the reasoning behind the changes.
+- A detailed list of concrete concerns from step #4.
+
+</instructions>
