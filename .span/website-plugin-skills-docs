@@ -2,7 +2,7 @@ packages/website/content/docs/agent-integration.mdx#L1-L15 rk64:9d95510d5b6dbe2d
 packages/website/content/docs/getting-started.mdx#L28-L46 rk64:cdb1656bb5b574e1
 plugins-claude/git-span/skills/git-span/SKILL.md rk64:6733641b2c089299
 plugins-claude/git-span/skills/reconcile/SKILL.md rk64:a072bee5b57076b0
-plugins-claude/git-span/skills/review-notes/SKILL.md rk64:5cd56eaf5c4ee623
-skills-src/git-span/review-notes/SKILL.md.eta rk64:5cd56eaf5c4ee623
+plugins-claude/git-span/skills/review-notes/SKILL.md rk64:fa6835d8e967d10b
+skills-src/git-span/review-notes/SKILL.md.eta rk64:fa6835d8e967d10b
 
 The plugin skill trees are rendered byte-identically from the shared template tree skills-src/git-span by scripts/build-agent-skills.mjs — the Claude tree is generated output, not a hand-authored inventory — and the website names every shipped skill and its role, so a skill added, removed, or repurposed in skills-src must land in the website docs in the same change.

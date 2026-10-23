@@ -3,6 +3,8 @@ name: review-notes
 description: Add and maintain spans
 ---
 
+Add and maintain spans. Identify when individually valid changes violate a shared assumption then report your concerns.
+
 <span-types>
 ### Outcomes and representation
 
