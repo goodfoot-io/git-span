@@ -14,6 +14,7 @@ pub mod cargo_target_test_lock;
 pub mod cli_commit_context;
 pub mod cli_config;
 pub mod cli_context;
+pub mod cli_pending_context;
 pub mod cli_drift_fix;
 pub mod cli_drift_fix_convergence;
 pub mod cli_drift_fix_equivalence;

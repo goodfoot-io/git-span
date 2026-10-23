@@ -1,5 +1,6 @@
 {
   "files": {
+    "packages/agent-hooks/test/common/pending-context.test.ts": [],
     "packages/agent-hooks/test/antigravity/lifecycle.test.ts": [
       "packages/agent-hooks/src/**",
       "packages/git-span/src/**",

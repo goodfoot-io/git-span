@@ -34,6 +34,7 @@ pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
 pub mod notes;
+pub mod pending_context;
 pub mod preflight;
 pub mod receipt_lock;
 pub(crate) mod recovery_domain;
@@ -242,6 +243,9 @@ pub enum Commands {
         long_about
     )]
     CommitContext(CommitContextArgs),
+
+    /// Return complete current span context for selected pending changes.
+    PendingContext(PendingContextArgs),
 
     #[command(name = "__context-service", hide = true)]
     ContextService(ContextServiceArgs),
@@ -580,6 +584,24 @@ pub struct ContextArgs {
     /// Stable idempotency key for a repair retry. Valid only with `--fix`.
     #[arg(long, value_name = "UUID", requires = "fix")]
     pub operation_id: Option<uuid::Uuid>,
+}
+
+/// The literal Git inspection whose pending changes select relationships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PendingInspection {
+    Status,
+    Diff,
+}
+
+/// Arguments following the inspected Git subcommand are forwarded literally.
+#[derive(Debug, Clone, clap::Args)]
+pub struct PendingContextArgs {
+    #[arg(value_enum)]
+    pub inspection: PendingInspection,
+
+    /// Original status/diff arguments, following the separating `--`.
+    #[arg(last = true, allow_hyphen_values = true)]
+    pub arguments: Vec<String>,
 }
 
 #[derive(Debug, Clone, clap::Args)]
@@ -997,6 +1019,9 @@ pub fn dispatch(
         Commands::CommitContext(args) => {
             let _perf = crate::perf::span("command.commit-context");
             commit_context::run_commit_context(repo, args, span_root)
+        }
+        Commands::PendingContext(args) => {
+            pending_context::run_pending_context(repo, args, span_root)
         }
         Commands::ContextService(args) => context_service::serve(repo, args),
         Commands::UpdateCheck => update_check::run_update_check(),

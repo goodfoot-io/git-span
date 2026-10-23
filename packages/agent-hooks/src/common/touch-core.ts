@@ -43,6 +43,7 @@ import {
 import { flushFailOpen, reportFailOpen } from './fail-open.js';
 import { resolveGitSpanCommand } from './git-span-command.js';
 import { caughtProperty, errnoCode, isOneOf, isRecord } from './guards.js';
+import type { PendingContextExecutor } from './pending-context.js';
 import type { CoreLogger, MemoStore } from './span-surface.js';
 
 // ---------------------------------------------------------------------------
@@ -629,6 +630,7 @@ export type TouchContextExecutor = (request: ContextQueryRequest) => Promise<Con
 
 /** The injected plural execution surface used by every hook driver. */
 export interface TouchExecutors {
+  pendingContext?: PendingContextExecutor;
   context: TouchContextExecutor;
   forInvocation?: () => TouchExecutors;
 }

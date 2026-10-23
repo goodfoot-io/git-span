@@ -37,6 +37,7 @@ pub const RESERVED_SPAN_NAMES: &[&str] = &[
     "history",
     "resolve",
     "context",
+    "pending-context",
 ];
 
 /// Tokens that were git-span subcommands in an earlier release, paired with
@@ -279,6 +280,7 @@ mod tests {
     #[test]
     fn is_reserved_covers_reserved_and_retired_but_not_hierarchies() {
         assert!(is_reserved_span_name("drift"));
+        assert!(is_reserved_span_name("pending-context"));
         assert!(is_reserved_span_name("show"));
         assert!(is_reserved_span_name("stale"));
         assert!(!is_reserved_span_name("drift/nested"));

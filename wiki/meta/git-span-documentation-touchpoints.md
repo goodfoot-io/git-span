@@ -156,7 +156,7 @@ Do not hand-maintain this list anywhere a gate reasons from: the hooks freshness
 its measured trees by replaying the `build:*` scripts and observing what they write,
 reconciled both ways against the registry's platform set.
 
-The [touch renderer](/packages/agent-hooks/src/common/touch-core.ts#L1008-L1091)
+The [touch renderer](/packages/agent-hooks/src/common/touch-core.ts#L1010-L1093)
 owns short wrapped anchored-path and drift notices, with `list` and `drift`
 guidance each shown once per session. Keep the website integration page aligned
 with the [authored hook-output reference](/skills-src/git-span/git-span/references/understanding-hook-output.md.eta#L31-L94),
