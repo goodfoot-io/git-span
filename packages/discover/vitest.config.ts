@@ -5,7 +5,7 @@
  * @summary Vitest configuration for @cards.management/discover.
  */
 
-import { loadCacheContract, withTestOutput } from '@goodfoot/vitest-cache/policy';
+import { withTestOutput } from '@goodfoot/vitest-cache/policy';
 import { defineConfig } from 'vitest/config';
 
 export default withTestOutput(
@@ -24,5 +24,8 @@ export default withTestOutput(
       testTimeout: 30_000
     }
   }),
-  loadCacheContract(new URL('./vitest.cache.json', import.meta.url))
+  {
+    uncached:
+      'Discovery integration tests invoke Git with inherited system and global configuration outside the repository.'
+  }
 );

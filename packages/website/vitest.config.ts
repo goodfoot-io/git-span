@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { loadCacheContract, withTestOutput } from '@goodfoot/vitest-cache/policy';
+import { withTestOutput } from '@goodfoot/vitest-cache/policy';
 import fumadocsMdx from 'fumadocs-mdx/vite';
 import { defineConfig } from 'vitest/config';
 
@@ -63,5 +63,8 @@ export default withTestOutput(
       testTimeout: 30_000
     }
   })),
-  loadCacheContract(new URL('./vitest.cache.json', import.meta.url))
+  // Artifact inventory checks observe the live Git index, and the DOM harness
+  // launches a nested Vitest process. The current contract cannot declare
+  // either input per file, so execute the suite instead of reusing results.
+  { uncached: 'Website checks observe the live Git index and launch nested Vitest processes.' }
 );

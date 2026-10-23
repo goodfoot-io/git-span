@@ -9,7 +9,7 @@
  * @module vitest.config
  */
 
-import { loadCacheContract, withTestOutput } from '@goodfoot/vitest-cache/policy';
+import { withTestOutput } from '@goodfoot/vitest-cache/policy';
 import { defineConfig } from 'vitest/config';
 
 export default withTestOutput(
@@ -21,5 +21,8 @@ export default withTestOutput(
       testTimeout: 30_000
     }
   }),
-  loadCacheContract(new URL('./vitest.cache.json', import.meta.url))
+  {
+    uncached:
+      'Extension unit tests import the host-provided vscode module through in-test mocks that the cache dependency graph cannot resolve.'
+  }
 );
