@@ -1,5 +1,11 @@
 {
   "files": {
+    "packages/website/app/routes/docs/identity.test.ts": [
+      "packages/website/app/**",
+      "packages/website/content/docs/**",
+      "packages/website/.source/**",
+      "packages/website/source.config.ts"
+    ],
     "packages/website/app/lib/content-negotiation.test.ts": [],
     "packages/website/app/lib/discovery-links.test.ts": [],
     "packages/website/app/lib/get-llm-text.test.ts": [

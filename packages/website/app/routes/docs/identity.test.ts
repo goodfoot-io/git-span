@@ -105,6 +105,8 @@ const HEADING_INVENTORY: Record<string, string[]> = {
     'tree',
     'history',
     'context',
+    'commit-context',
+    'pending-context',
     'audit-and-automate',
     'drift',
     'doctor',
