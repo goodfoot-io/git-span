@@ -7,7 +7,7 @@ Once installed (see [Getting started](/docs/getting-started)), the git-span plug
 
 - **A touch hook** — surfaces existing spans after supported reads and writes and repairs mechanically safe positional drift inline.
 - **Static planning and lifecycle hooks** — capture bounded pre-state for supported writes, deduplicate context, warm up the CLI, and clean up session state.
-- **Four skills** — `git-span` for declaration, inspection, and focused reconciliation; `review-notes` for adding and updating spans from commit notes; `review-notes-v2` for note-driven spans plus shared-assumption checks; and `reconcile` for multi-span triage.
+- **Three skills** — `git-span` for declaration, inspection, and focused reconciliation; `review-notes` for adding and updating spans from commit notes and challenging shared assumptions; and `reconcile` for multi-span triage.
 - **An expert subagent where supported** — Claude Code, Codex, and OpenCode ship one; Antigravity ships skills and hooks without a separate agent artifact.
 
 The integrations use the same scriptable `git span` CLI available in a terminal or CI.
@@ -54,7 +54,7 @@ Loading the plugin disables CLI update checks for the session. Set `OPENCODE_GIT
 
 ## Antigravity specifics
 
-Antigravity installs four skills and the workflow hooks without a marketplace or separate trust-review step. Empty `PreToolUse` responses mean denial on this host, so the retained pre-tool handlers return explicit allow decisions.
+Antigravity installs three skills and the workflow hooks without a marketplace or separate trust-review step. Empty `PreToolUse` responses mean denial on this host, so the retained pre-tool handlers return explicit allow decisions.
 
 Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive no touch attribution; explicit `git span drift` checks or CI verify their changes.
 
@@ -62,15 +62,13 @@ Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive
 
 ## Session note processing
 
-`review-notes-v2` is available for explicit invocation. It turns notes into spans and examines whether changed behaviors invalidate shared assumptions, returning concrete interaction witnesses and decisive checks. Existing hooks continue to dispatch `review-notes`.
-
 Claude Code and Codex shell hooks record observed Git commits as session notes. Editing a file alone creates no commit note. Install the CLI and plugin from the same release; receipt coordination uses a native CLI lock helper.
 
 All four hosts inspect a bounded, versioned notes response in the current repository and supplied workspace roots. Claude Code and Codex select recognized notes for their host/session; OpenCode and Antigravity retain repository-wide selection. Empty selection is normal. A lookup failure reports that commit notes could not be read.
 
 On Claude Code and Codex, an ordinary Stop with matching notes asks for a forked subagent using `review-notes`. Stop continuations skip another request to avoid recursive blocking. Codex retires touch state on an empty stop or continuation and preserves it while span creation is requested or its lookup fails; Claude retires it at session end.
 
-The subagent uses commit notes to identify contracts, implicit couplings and useful reminders, then extends existing spans or creates missing coverage. It validates anchors and whys against the current tree and leaves edits unstaged. Its summary covers spans created or updated, validation results, retained notes and incomplete scope. Validated notes are removed individually with matching ID/SHA/document receipts; unresolved notes remain.
+The hook prompt asks the subagent to extend existing spans or create missing coverage, validate anchors and whys against the current tree, remove only successfully processed notes, and leave edits unstaged. The parent must summarize validation, retained notes and incomplete scope. The `review-notes` skill lists notes, inspects commits, maintains spans and reports concrete shared-assumption concerns. It removes notes after validation or recorded evidence that no change was needed; it does not specify session selection or receipt matching.
 
 Antigravity requests span creation once per conversation at an idle, successful model stop with repository notes. Its existing session guard survives call-scoped cleanup. Error and step-limit stops do not request span creation. Lookup failures report the notes read error without forcing repeated continuation.
 

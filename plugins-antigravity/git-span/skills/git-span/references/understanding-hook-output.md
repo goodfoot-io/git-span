@@ -112,11 +112,12 @@ no post-state evidence to verify against), and response-derived read
 attribution is unavailable entirely — the degraded-parity caveat one notch
 past OpenCode's. Interrupted calls stay silent.
 
-Reviewers examine changed behavior before metadata. The parent owns production edits,
-staging and commits. Intentional code does not supersede requirements, and disputed
-findings remain visible. Metadata completion and zero drift do not establish semantic
-approval. Validated notes are removed individually with matching ID/SHA/document
-receipts; unresolved notes remain.
+The hook prompt requests current-tree anchor and why validation, removal of only
+successfully processed notes, and unstaged edits. The skill reports concrete shared-
+assumption concerns and removes notes after validation or evidence that no change
+was needed; it does not specify session selection or receipt matching. Check the
+selected notes and unresolved concerns before accepting completion. Zero drift
+does not establish semantic approval.
 
 The parser's candidate ceiling is 32 and is all-or-nothing: a bounded set is
 attributed completely or rejected before any touch. Planned records allow at

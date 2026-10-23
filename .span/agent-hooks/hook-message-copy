@@ -3,11 +3,11 @@ packages/agent-hooks/src/common/delivery-presentation.ts#L45-L54 rk64:4bae089107
 packages/agent-hooks/src/common/delivery-presentation.ts#L101-L128 rk64:10f51d2889adbdbc
 packages/agent-hooks/src/common/touch-core.ts#L1008-L1099 rk64:269470fe4311684d
 packages/git-span/src/cli/context.rs#L559-L581 rk64:ff505775865efacb
-packages/website/content/docs/agent-integration.mdx rk64:e7a41efc12cca8c5
-plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:7145c0423b99bb31
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:6f915260bda80466
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:216da357416a221b
-plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:5902ea38f215f371
-skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:fb2b7e6d9f2f6719
+packages/website/content/docs/agent-integration.mdx rk64:829c403133890c9e
+plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:3d22a8c6b0b45f54
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:104b050e74440fe1
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:732ec966c9236384
+plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:0ef5cc85ea07d4ec
+skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:7c662cc8c3de79ac
 
 The shared touch renderer and evidence revisions drive the short wrapped notices described by the hook-output template, its four generated references and website. Per-command retrieval guidance survives exposure resets and Codex turn cleanup; complete enumerations are partitioned without truncation, while previously delivered revisions without genuine drift advance silently.

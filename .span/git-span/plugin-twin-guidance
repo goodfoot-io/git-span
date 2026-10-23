@@ -39,7 +39,7 @@ plugins-opencode/git-span/skills/git-span/references/triage.md rk64:f527e6006627
 plugins-opencode/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:227a12c7c3574446
 plugins-opencode/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:e40c90e799a55a93
 plugins-opencode/git-span/skills/reconcile/SKILL.md rk64:42e45dcd6af025d1
-scripts/agent-skills-plugins.json rk64:397c82c16cd8c9a3
+scripts/agent-skills-plugins.json rk64:e0fe87db795a1101
 skills-src/git-span/git-span/SKILL.md.eta rk64:af64e3a3cdcd9b98
 skills-src/git-span/git-span/references/finding-span-candidates.md.eta rk64:39f5c66d5b8c5c84
 skills-src/git-span/git-span/references/hookignore.md.eta rk64:534d217ccc81e892
