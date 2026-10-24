@@ -9,10 +9,11 @@ context for delivery after the invocation's tool batch as an ephemeral
 message. Dedicated file tools have no pinned contract and receive no touch
 attribution.
 
-After the first successful supported write, span-authoring guidance appears once
-per session, including `git span add` and `git span why` examples. Preserve rules
-or relationships a future edit could break; anchor content carrying the rule or
-capable of violating it. Reads, failed attempts and duplicate events do not consume
+After the first successful supported write, a span-authoring requirement appears
+once per session: before committing, span each rule or relationship your edits create
+or rely on that a future edit could silently break, anchoring content carrying the rule
+or capable of violating it. It includes specification and cross-language contract
+`git span add`/`git span why` examples. Reads, failed attempts and duplicate events do not consume
 or repeat the reminder. It also applies to untracked new files without existing
 spans or commit notes; ordinary cleanup and exposure resets do not renew it.
 The reminder uses the pending PostInvocation delivery channel.

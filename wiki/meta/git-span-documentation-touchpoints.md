@@ -159,7 +159,7 @@ reconciled both ways against the registry's platform set.
 The [touch renderer](/packages/agent-hooks/src/common/touch-core.ts#L1010-L1101)
 owns short wrapped anchored-path and drift notices, with `list` and `drift`
 guidance each shown once per session. Keep the website integration page aligned
-with the [authored hook-output reference](/skills-src/git-span/git-span/references/understanding-hook-output.md.eta#L39-L100),
+with the [authored hook-output reference](/skills-src/git-span/git-span/references/understanding-hook-output.md.eta#L40-L101),
 then regenerate all four platform references. Broad notices record delivery;
 changed revisions without current drift advance prior baselines silently.
 Guidance survives exposure resets and eager session cleanup.
